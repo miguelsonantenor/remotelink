@@ -122,11 +122,11 @@ impl ConnectionMachine {
     }
 
     /// Mark that a remote offer is being answered.
+    ///
+    /// Only valid from [`ViewerPhase::Connecting`] or already
+    /// [`ViewerPhase::Answering`] (idempotent). Does not accept `Idle`.
     pub fn begin_answer(&mut self) {
-        if matches!(
-            self.phase,
-            ViewerPhase::Connecting | ViewerPhase::Answering | ViewerPhase::Idle
-        ) {
+        if matches!(self.phase, ViewerPhase::Connecting | ViewerPhase::Answering) {
             self.phase = ViewerPhase::Answering;
         }
     }
@@ -170,11 +170,12 @@ impl ConnectionMachine {
     }
 
     /// First (or subsequent) media unit received while connected.
+    ///
+    /// Only advances from [`ViewerPhase::Connected`] (or stays on
+    /// [`ViewerPhase::Streaming`]). Media observed during `Answering` is
+    /// ignored for phase purposes so input is not advertised before Connected.
     pub fn on_media_received(&mut self) {
-        if matches!(
-            self.phase,
-            ViewerPhase::Connected | ViewerPhase::Streaming | ViewerPhase::Answering
-        ) {
+        if matches!(self.phase, ViewerPhase::Connected | ViewerPhase::Streaming) {
             self.phase = ViewerPhase::Streaming;
         }
     }
@@ -234,5 +235,30 @@ mod tests {
         m.on_transport_state(ConnectionState::Connected);
         m.on_transport_state(ConnectionState::Disconnected);
         assert_eq!(m.phase(), &ViewerPhase::Disconnected);
+    }
+
+    #[test]
+    fn begin_answer_from_idle_is_noop() {
+        let mut m = ConnectionMachine::new();
+        m.begin_answer();
+        assert_eq!(m.phase(), &ViewerPhase::Idle);
+        assert!(!m.phase().can_send_input());
+    }
+
+    #[test]
+    fn media_in_answering_does_not_stream_or_enable_input() {
+        let mut m = ConnectionMachine::new();
+        m.begin_connect("h");
+        m.begin_answer();
+        assert_eq!(m.phase(), &ViewerPhase::Answering);
+        m.on_media_received();
+        assert_eq!(m.phase(), &ViewerPhase::Answering);
+        assert!(!m.phase().can_send_input());
+        // Only after Connected does media advance to Streaming.
+        m.on_transport_state(ConnectionState::Connected);
+        assert_eq!(m.phase(), &ViewerPhase::Connected);
+        m.on_media_received();
+        assert_eq!(m.phase(), &ViewerPhase::Streaming);
+        assert!(m.phase().can_send_input());
     }
 }

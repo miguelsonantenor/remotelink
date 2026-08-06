@@ -3225,7 +3225,6 @@ dependencies = [
 name = "remotelink-viewer-core"
 version = "0.1.0"
 dependencies = [
- "remotelink-common",
  "remotelink-media",
  "remotelink-net",
  "remotelink-protocol",

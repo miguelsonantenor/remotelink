@@ -1,6 +1,6 @@
 //! Connect credentials and session-intent stubs (server call deferred).
 
-use remotelink_protocol::SessionMode;
+use remotelink_protocol::{decode_message, encode_message, SessionMode, SignalMessage};
 use serde_json::{json, Value};
 
 use crate::error::{Result, ViewerError};
@@ -103,23 +103,33 @@ impl ConnectRequest {
         }
     }
 
-    /// Build a `session_intent` JSON body for a future signaling client.
+    /// Build a typed `session_intent` signaling message (protocol wire authority).
     ///
     /// Does not open a WebSocket; used by UI stubs and unit tests.
-    pub fn session_intent_stub(&self, session_id: &str, signal_seq: u64) -> Result<Value> {
+    pub fn session_intent_message(
+        &self,
+        session_id: impl Into<String>,
+        signal_seq: u64,
+    ) -> Result<SignalMessage> {
         self.validate()?;
-        Ok(json!({
-            "type": "session_intent",
-            "session_id": session_id,
-            "signal_seq": signal_seq,
-            "host_public_id": self.host_public_id,
-            "mode": match self.mode() {
-                SessionMode::Otp => "otp",
-                SessionMode::Password => "password",
-                SessionMode::Unattended => "unattended",
-            },
-            "prefilter": self.prefilter(),
-        }))
+        Ok(SignalMessage::SessionIntent {
+            session_id: session_id.into(),
+            signal_seq,
+            host_public_id: self.host_public_id.clone(),
+            mode: self.mode(),
+            prefilter: self.prefilter(),
+        })
+    }
+
+    /// Encode a `session_intent` via [`encode_message`] and return JSON [`Value`].
+    ///
+    /// Round-trips through [`decode_message`] so payload size limits apply.
+    pub fn session_intent_stub(&self, session_id: &str, signal_seq: u64) -> Result<Value> {
+        let msg = self.session_intent_message(session_id, signal_seq)?;
+        let wire = encode_message(&msg)?;
+        let checked = decode_message(&wire)?;
+        debug_assert_eq!(checked, msg);
+        serde_json::from_str(&wire).map_err(|e| ViewerError::Internal(e.to_string()))
     }
 }
 
@@ -183,6 +193,35 @@ mod tests {
         assert_eq!(v["host_public_id"], "host-pub");
         assert_eq!(v["mode"], "otp");
         assert_eq!(v["prefilter"]["otp"], "654321");
+    }
+
+    #[test]
+    fn session_intent_roundtrips_protocol_encode_decode() {
+        let r = ConnectRequest::password("host-pub", "s3cret");
+        let msg = r.session_intent_message("sess-1", 7).unwrap();
+        let wire = encode_message(&msg).unwrap();
+        let decoded = decode_message(&wire).unwrap();
+        assert_eq!(decoded, msg);
+        match decoded {
+            SignalMessage::SessionIntent {
+                session_id,
+                signal_seq,
+                host_public_id,
+                mode,
+                prefilter,
+            } => {
+                assert_eq!(session_id, "sess-1");
+                assert_eq!(signal_seq, 7);
+                assert_eq!(host_public_id, "host-pub");
+                assert_eq!(mode, SessionMode::Password);
+                assert_eq!(prefilter["password_hint_len"], 6);
+            }
+            other => panic!("expected SessionIntent, got {other:?}"),
+        }
+        // Value stub matches the same wire document.
+        let v = r.session_intent_stub("sess-1", 7).unwrap();
+        let from_value: SignalMessage = serde_json::from_value(v).unwrap();
+        assert_eq!(from_value, msg);
     }
 
     #[test]

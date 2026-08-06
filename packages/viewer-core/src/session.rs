@@ -1,5 +1,6 @@
 //! Viewer session: PeerTransport answerer + decode/playout/input.
 
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use remotelink_net::{
@@ -76,19 +77,26 @@ pub struct SessionStats {
 /// Owns a [`PeerTransport`], connection state machine, synthetic video decode
 /// hook, audio playout queue, and input emitter. Call [`Self::poll`] regularly
 /// (mock pull model; real backends may push into the same queues via callbacks).
+///
+/// # Reconnect
+///
+/// [`Self::begin_connect`] and [`Self::attach_transport`] tear down any previous
+/// peer (`close` + clear) so phase and transport stay aligned for a second
+/// Connect from the shell. Prefer a fresh [`ViewerSession`] when identity state
+/// (PR 13) must not carry over.
 pub struct ViewerSession {
     machine: ConnectionMachine,
     transport: Option<BoxPeerTransport>,
     callbacks: SessionCallbacks,
     video: Box<dyn VideoDecodeHook>,
-    /// Latest presentable video frames (bounded).
-    video_out: Vec<DecodedVideoFrame>,
+    /// Latest presentable video frames (bounded FIFO).
+    video_out: VecDeque<DecodedVideoFrame>,
     video_out_cap: usize,
     audio: AudioPlayoutQueue,
     input: InputEmitter,
     /// Local ICE candidates waiting for the signaling path to forward.
     pending_local_ice: Vec<IceCandidate>,
-    /// Remote ICE not yet applied (rare with mock; useful for async signaling).
+    /// Active / last stub session id.
     session_id: Option<String>,
     stats: SessionStats,
     /// All inbound video NALUs (encoded) for synthetic tests.
@@ -111,7 +119,7 @@ impl ViewerSession {
             transport: None,
             callbacks,
             video,
-            video_out: Vec::new(),
+            video_out: VecDeque::new(),
             video_out_cap: 32,
             audio: AudioPlayoutQueue::new(64),
             input: InputEmitter::new(),
@@ -160,7 +168,7 @@ impl ViewerSession {
 
     /// Drain presentable video frames produced since last drain.
     pub fn drain_video_frames(&mut self) -> Vec<DecodedVideoFrame> {
-        std::mem::take(&mut self.video_out)
+        self.video_out.drain(..).collect()
     }
 
     /// Drain audio playout queue.
@@ -169,7 +177,11 @@ impl ViewerSession {
     }
 
     /// Attach a peer transport (viewer is answerer). Replaces any previous.
+    ///
+    /// Closes and drops the prior transport (if any) and clears pending local ICE
+    /// / callback backlog so state cannot desync across reconnects.
     pub fn attach_transport(&mut self, mut transport: BoxPeerTransport) {
+        self.teardown_transport();
         transport.set_callbacks(Box::new(self.callbacks.clone()));
         self.transport = Some(transport);
     }
@@ -181,15 +193,20 @@ impl ViewerSession {
 
     /// Validate credentials and mark the session as connecting (server stub).
     ///
+    /// Tears down any previous peer first so a second Connect from the UI does
+    /// not leave a live `Connected` transport under a `Connecting` phase.
     /// Does not open WebSocket; returns the stub session id for later signaling.
     pub fn begin_connect(&mut self, req: &ConnectRequest) -> Result<ConnectStubResult> {
         let stub = connect_stub(req)?;
+        self.teardown_transport();
         self.machine.begin_connect(req.host_public_id.clone());
         self.session_id = Some(stub.session_id.clone());
         self.stats = SessionStats::default();
         self.recorded_video_nalus.clear();
         self.recorded_audio_packets.clear();
         self.video_out.clear();
+        self.audio = AudioPlayoutQueue::new(64);
+        self.input = InputEmitter::new();
         Ok(stub)
     }
 
@@ -280,11 +297,20 @@ impl ViewerSession {
 
     /// Close transport and mark session closed.
     pub fn close(&mut self) -> Result<()> {
-        if let Some(t) = self.transport.as_mut() {
-            t.close()?;
-        }
+        self.teardown_transport();
         self.machine.close();
         Ok(())
+    }
+
+    /// Close and drop the peer transport; clear ICE and callback backlog.
+    fn teardown_transport(&mut self) {
+        if let Some(mut t) = self.transport.take() {
+            let _ = t.close();
+        }
+        self.pending_local_ice.clear();
+        if let Ok(mut g) = self.callbacks.inner.lock() {
+            *g = EventBuf::default();
+        }
     }
 
     fn ensure_can_send_input(&self) -> Result<()> {
@@ -342,9 +368,9 @@ impl ViewerSession {
                 self.recorded_video_nalus.push(nalu.clone());
                 if let Some(decoded) = self.video.decode(&nalu) {
                     while self.video_out.len() >= self.video_out_cap {
-                        self.video_out.remove(0);
+                        self.video_out.pop_front();
                     }
-                    self.video_out.push(decoded);
+                    self.video_out.push_back(decoded);
                     self.stats.video_frames = self.stats.video_frames.saturating_add(1);
                     self.machine.on_media_received();
                 }
@@ -582,5 +608,54 @@ mod tests {
         assert_eq!(session.recorded_video_nalus().len(), 1);
         assert_eq!(session.recorded_video_nalus()[0].data.len(), 6);
         assert_eq!(session.stats().video_frames, 1);
+    }
+
+    #[test]
+    fn begin_connect_after_loopback_tears_down_transport() {
+        let (mut session, stats) = run_synthetic_loopback(2, 1).unwrap();
+        assert_eq!(stats.video_frames, 2);
+        assert!(session.has_transport());
+        assert_eq!(session.phase(), &ViewerPhase::Streaming);
+        assert_eq!(session.transport_state(), Some(ConnectionState::Connected));
+
+        let stub = session
+            .begin_connect(&ConnectRequest::otp("other-host", "654321"))
+            .unwrap();
+        assert!(stub.accepted);
+        assert_eq!(session.phase(), &ViewerPhase::Connecting);
+        assert!(!session.has_transport());
+        assert_eq!(session.transport_state(), None);
+        assert!(session.recorded_video_nalus().is_empty());
+        assert!(session.recorded_audio_packets().is_empty());
+        assert_eq!(session.stats().video_frames, 0);
+        // Input not allowed until a new peer is connected.
+        let err = session.send_mouse_move(0.1, 0.1).unwrap_err();
+        assert!(matches!(err, ViewerError::InvalidState { .. }));
+    }
+
+    #[test]
+    fn attach_transport_closes_previous() {
+        let mut session = ViewerSession::new();
+        session
+            .begin_connect(&ConnectRequest::otp("h", "123456"))
+            .unwrap();
+
+        let mut pair1 = MockPeerPair::new();
+        let first = std::mem::replace(
+            &mut pair1.peer_b,
+            remotelink_net::MockPeerTransport::new(Default::default()),
+        );
+        session.attach_transport(Box::new(first));
+        assert!(session.has_transport());
+
+        let mut pair2 = MockPeerPair::new();
+        let second = std::mem::replace(
+            &mut pair2.peer_b,
+            remotelink_net::MockPeerTransport::new(Default::default()),
+        );
+        session.attach_transport(Box::new(second));
+        assert!(session.has_transport());
+        // Re-attach does not leave dual peers; machine still Connecting until offer.
+        assert_eq!(session.phase(), &ViewerPhase::Connecting);
     }
 }
