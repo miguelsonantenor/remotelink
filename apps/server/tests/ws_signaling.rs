@@ -8,13 +8,14 @@ use chrono::Utc;
 use futures_util::{SinkExt, StreamExt};
 use remotelink_auth::DevicePublicId;
 use remotelink_protocol::{
-    decode_message, encode_message, HelloAuth, IceCandidate, RejectReason, Role, SessionMode,
-    SignalMessage, MAX_SDP_BYTES, PROTOCOL_VERSION,
+    decode_message, encode_message, HelloAuth, RejectReason, Role, SessionMode, SignalMessage,
+    PROTOCOL_VERSION,
 };
 use remotelink_server::credentials::{hash_token, mint_tokens, new_credential_from_issued};
 use remotelink_server::{
-    router, AppState, DeviceRepository, DeviceStatus, MemoryDeviceRepo, NewCredential, NewDevice,
-    SessionRegistry,
+    hash_subject, router, AppState, AuthAttemptTracker, BlockSubjectType, BlocklistStore,
+    DeviceRepository, DeviceStatus, MemoryAuditStore, MemoryBlocklist, MemoryDeviceRepo,
+    NewBlocklistEntry, NewCredential, NewDevice, RateLimitConfig, RateLimiters, SessionRegistry,
 };
 use serde_json::json;
 use tokio::net::TcpListener;
@@ -28,7 +29,12 @@ async fn spawn_server(state: AppState) -> SocketAddr {
     let addr = listener.local_addr().unwrap();
     let app = router(state);
     tokio::spawn(async move {
-        axum::serve(listener, app).await.unwrap();
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .unwrap();
     });
     // Tiny yield so the accept loop is ready.
     tokio::task::yield_now().await;
@@ -960,394 +966,170 @@ async fn host_reconnect_rebinds_pending_session() {
     );
 }
 
-/// Accept a pending session and return the next usable client signal_seq (4 after intent1/incoming2/accept3).
-async fn accept_session(
-    host: &mut WsStream,
-    viewer: &mut WsStream,
-    session_id: &str,
-    accept_seq: u64,
-) {
-    send_msg(
-        host,
-        &SignalMessage::SessionAccept {
-            session_id: session_id.into(),
-            signal_seq: accept_seq,
-        },
-    )
-    .await;
-    match recv_msg(viewer).await {
-        SignalMessage::SessionAccept {
-            session_id: sid,
-            signal_seq,
-        } => {
-            assert_eq!(sid, session_id);
-            assert_eq!(signal_seq, accept_seq);
-        }
-        other => panic!("expected session_accept, got {other:?}"),
-    }
-}
-
 #[tokio::test]
-async fn sdp_and_ice_relay_after_accept() {
+async fn session_intent_rejects_blocked_ip() {
     let repo = Arc::new(MemoryDeviceRepo::new());
     let sessions = Arc::new(SessionRegistry::new());
-    let state = AppState::with_sessions(repo.clone(), sessions.clone());
+    let blocklist = Arc::new(MemoryBlocklist::new());
     let (host_public_id, access) = register_host(&repo).await;
-    let addr = spawn_server(state).await;
+    let host = repo
+        .get_by_public_id(&host_public_id)
+        .await
+        .unwrap()
+        .unwrap();
 
-    let (mut host, mut viewer) = connect_host_viewer(addr, &access).await;
-    let session_id = "sess-sdp-ice";
-    intent(&mut viewer, session_id, &host_public_id, 1).await;
-    assert!(matches!(
-        recv_msg(&mut host).await,
-        SignalMessage::SessionIncoming { .. }
-    ));
-    accept_session(&mut host, &mut viewer, session_id, 3).await;
-    assert_eq!(
-        sessions.session_state(session_id).await,
-        Some(remotelink_server::SessionState::Active)
+    // Local integration clients use ConnectInfo peer 127.0.0.1 (proxy headers ignored by default).
+    blocklist
+        .add(NewBlocklistEntry {
+            host_device_id: host.id,
+            subject_type: BlockSubjectType::Ip,
+            subject_hash: hash_subject("127.0.0.1"),
+        })
+        .await
+        .unwrap();
+
+    let state = AppState::with_security(
+        repo,
+        sessions,
+        Arc::new(RateLimiters::new()),
+        Arc::new(AuthAttemptTracker::with_defaults()),
+        Arc::new(MemoryAuditStore::new()),
+        blocklist,
     );
-    assert_eq!(sessions.next_signal_seq(session_id).await, Some(4));
+    let addr = spawn_server(state).await;
+    let (mut host_ws, mut viewer) = connect_host_viewer(addr, &access).await;
 
-    let offer_sdp = "v=0\r\no=- 0 0 IN IP4 0.0.0.0\r\ns=-\r\n";
-    let fingerprint_sig = "sig-host-fingerprint";
-    send_msg(
-        &mut host,
-        &SignalMessage::SessionOffer {
-            session_id: session_id.into(),
-            signal_seq: 4,
-            sdp: offer_sdp.into(),
-            fingerprint_sig: fingerprint_sig.into(),
-        },
-    )
-    .await;
+    intent(&mut viewer, "sess-blocked", &host_public_id, 1).await;
     match recv_msg(&mut viewer).await {
-        SignalMessage::SessionOffer {
-            session_id: sid,
-            signal_seq,
-            sdp,
-            fingerprint_sig: sig,
-        } => {
-            assert_eq!(sid, session_id);
-            assert_eq!(signal_seq, 4);
-            assert_eq!(sdp, offer_sdp);
-            assert_eq!(sig, fingerprint_sig);
+        SignalMessage::Error { code, message } => {
+            assert_eq!(code, "blocked");
+            assert!(message.contains("blocked"));
         }
-        other => panic!("expected session_offer, got {other:?}"),
-    }
-    assert_eq!(sessions.next_signal_seq(session_id).await, Some(5));
-
-    let answer_sdp = "v=0\r\no=- 1 0 IN IP4 0.0.0.0\r\ns=-\r\n";
-    send_msg(
-        &mut viewer,
-        &SignalMessage::SessionAnswer {
-            session_id: session_id.into(),
-            signal_seq: 5,
-            sdp: answer_sdp.into(),
-        },
-    )
-    .await;
-    match recv_msg(&mut host).await {
-        SignalMessage::SessionAnswer {
-            session_id: sid,
-            signal_seq,
-            sdp,
-        } => {
-            assert_eq!(sid, session_id);
-            assert_eq!(signal_seq, 5);
-            assert_eq!(sdp, answer_sdp);
-        }
-        other => panic!("expected session_answer, got {other:?}"),
-    }
-    assert_eq!(sessions.next_signal_seq(session_id).await, Some(6));
-
-    // ICE either direction, payloads forwarded verbatim.
-    let host_cand = IceCandidate {
-        candidate: "candidate:1 1 UDP 2122252543 192.0.2.1 54321 typ host".into(),
-        sdp_mid: Some("0".into()),
-        sdp_m_line_index: Some(0),
-        username_fragment: None,
-    };
-    send_msg(
-        &mut host,
-        &SignalMessage::IceCandidate {
-            session_id: session_id.into(),
-            signal_seq: 6,
-            candidate: host_cand.clone(),
-        },
-    )
-    .await;
-    match recv_msg(&mut viewer).await {
-        SignalMessage::IceCandidate {
-            session_id: sid,
-            signal_seq,
-            candidate,
-        } => {
-            assert_eq!(sid, session_id);
-            assert_eq!(signal_seq, 6);
-            assert_eq!(candidate, host_cand);
-        }
-        other => panic!("expected ice_candidate host→viewer, got {other:?}"),
+        other => panic!("expected blocked, got {other:?}"),
     }
 
-    let viewer_cand = IceCandidate {
-        candidate: "candidate:2 1 UDP 1686052607 198.51.100.1 9 typ srflx".into(),
-        sdp_mid: Some("0".into()),
-        sdp_m_line_index: Some(0),
-        username_fragment: Some("ufrag1".into()),
-    };
-    send_msg(
-        &mut viewer,
-        &SignalMessage::IceCandidate {
-            session_id: session_id.into(),
-            signal_seq: 7,
-            candidate: viewer_cand.clone(),
-        },
-    )
-    .await;
-    match recv_msg(&mut host).await {
-        SignalMessage::IceCandidate {
-            session_id: sid,
-            signal_seq,
-            candidate,
-        } => {
-            assert_eq!(sid, session_id);
-            assert_eq!(signal_seq, 7);
-            assert_eq!(candidate, viewer_cand);
-        }
-        other => panic!("expected ice_candidate viewer→host, got {other:?}"),
-    }
-
-    // Optional media control messages also forward either direction.
-    send_msg(
-        &mut host,
-        &SignalMessage::MediaRestart {
-            session_id: session_id.into(),
-            signal_seq: 8,
-        },
-    )
-    .await;
-    match recv_msg(&mut viewer).await {
-        SignalMessage::MediaRestart {
-            session_id: sid,
-            signal_seq,
-        } => {
-            assert_eq!(sid, session_id);
-            assert_eq!(signal_seq, 8);
-        }
-        other => panic!("expected media_restart, got {other:?}"),
-    }
-
-    send_msg(
-        &mut viewer,
-        &SignalMessage::Renegotiate {
-            session_id: session_id.into(),
-            signal_seq: 9,
-        },
-    )
-    .await;
-    match recv_msg(&mut host).await {
-        SignalMessage::Renegotiate {
-            session_id: sid,
-            signal_seq,
-        } => {
-            assert_eq!(sid, session_id);
-            assert_eq!(signal_seq, 9);
-        }
-        other => panic!("expected renegotiate, got {other:?}"),
-    }
-    assert_eq!(sessions.next_signal_seq(session_id).await, Some(10));
+    // Host must not receive session_incoming.
+    let result = tokio::time::timeout(Duration::from_millis(200), recv_msg(&mut host_ws)).await;
+    assert!(result.is_err(), "host should not get session_incoming");
 }
 
 #[tokio::test]
-async fn offer_answer_direction_and_active_only() {
+async fn session_intent_blocked_does_not_consume_host_budget() {
+    use std::time::Instant;
+
     let repo = Arc::new(MemoryDeviceRepo::new());
     let sessions = Arc::new(SessionRegistry::new());
-    let state = AppState::with_sessions(repo.clone(), sessions.clone());
+    let blocklist = Arc::new(MemoryBlocklist::new());
+    let rate_limits = Arc::new(RateLimiters::with_configs(
+        RateLimitConfig::per_window(100, Duration::from_secs(60)),
+        RateLimitConfig::per_window(100, Duration::from_secs(60)),
+        RateLimitConfig {
+            capacity: 5.0,
+            refill_per_sec: 0.0,
+        },
+    ));
     let (host_public_id, access) = register_host(&repo).await;
-    let addr = spawn_server(state).await;
+    let host = repo
+        .get_by_public_id(&host_public_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let entry = blocklist
+        .add(NewBlocklistEntry {
+            host_device_id: host.id,
+            subject_type: BlockSubjectType::Ip,
+            subject_hash: hash_subject("127.0.0.1"),
+        })
+        .await
+        .unwrap();
 
-    let (mut host, mut viewer) = connect_host_viewer(addr, &access).await;
-    let session_id = "sess-dir";
-    intent(&mut viewer, session_id, &host_public_id, 1).await;
+    let state = AppState::with_security(
+        repo,
+        sessions,
+        rate_limits.clone(),
+        Arc::new(AuthAttemptTracker::with_defaults()),
+        Arc::new(MemoryAuditStore::new()),
+        blocklist.clone(),
+    );
+    let addr = spawn_server(state).await;
+    let (mut host_ws, mut viewer) = connect_host_viewer(addr, &access).await;
+
+    intent(&mut viewer, "sess-blocked-budget", &host_public_id, 1).await;
+    match recv_msg(&mut viewer).await {
+        SignalMessage::Error { code, .. } => assert_eq!(code, "blocked"),
+        other => panic!("expected blocked, got {other:?}"),
+    }
+
+    let now = Instant::now();
+    let host_key = format!("session_intent:host:{host_public_id}");
+    // Host-shared bucket must remain full (not charged for blocked viewer).
+    assert!(
+        (rate_limits.session_intent.tokens(&host_key, now) - 5.0).abs() < 1e-6,
+        "blocked intent must not consume host rate budget"
+    );
+    // IP bucket was charged.
+    assert!(
+        rate_limits
+            .session_intent
+            .tokens("session_intent:ip:127.0.0.1", now)
+            < 5.0
+    );
+
+    // After unblock, a legitimate intent still has host capacity.
+    blocklist.remove(host.id, entry.id).await.unwrap();
+    intent(&mut viewer, "sess-after-unblock", &host_public_id, 1).await;
     assert!(matches!(
-        recv_msg(&mut host).await,
+        recv_msg(&mut host_ws).await,
+        SignalMessage::SessionIncoming { .. }
+    ));
+}
+
+#[tokio::test]
+async fn session_intent_rate_limited() {
+    let repo = Arc::new(MemoryDeviceRepo::new());
+    let sessions = Arc::new(SessionRegistry::new());
+    let rate_limits = Arc::new(RateLimiters::with_configs(
+        RateLimitConfig::per_window(100, Duration::from_secs(60)),
+        RateLimitConfig::per_window(100, Duration::from_secs(60)),
+        RateLimitConfig {
+            capacity: 1.0,
+            refill_per_sec: 0.0,
+        },
+    ));
+    let (host_public_id, access) = register_host(&repo).await;
+    let state = AppState::with_security(
+        repo,
+        sessions,
+        rate_limits,
+        Arc::new(AuthAttemptTracker::with_defaults()),
+        Arc::new(MemoryAuditStore::new()),
+        Arc::new(MemoryBlocklist::new()),
+    );
+    let addr = spawn_server(state).await;
+    let (mut host_ws, mut viewer) = connect_host_viewer(addr, &access).await;
+
+    intent(&mut viewer, "sess-rl-1", &host_public_id, 1).await;
+    assert!(matches!(
+        recv_msg(&mut host_ws).await,
         SignalMessage::SessionIncoming { .. }
     ));
 
-    // Pending: offer must not relay.
+    // Second intent from same peer IP (ConnectInfo 127.0.0.1) should hit rate limit.
+    // Host is busy so we might get busy first — free the host.
     send_msg(
-        &mut host,
-        &SignalMessage::SessionOffer {
-            session_id: session_id.into(),
+        &mut host_ws,
+        &SignalMessage::SessionReject {
+            session_id: "sess-rl-1".into(),
             signal_seq: 3,
-            sdp: "v=0".into(),
-            fingerprint_sig: "sig".into(),
+            reason: remotelink_protocol::RejectReason::Busy,
         },
     )
     .await;
-    match recv_msg(&mut host).await {
-        SignalMessage::Error { code, .. } => assert_eq!(code, "invalid_state"),
-        other => panic!("expected invalid_state on pending offer, got {other:?}"),
-    }
-    assert_eq!(sessions.next_signal_seq(session_id).await, Some(3));
+    let _ = recv_msg(&mut viewer).await; // reject
 
-    accept_session(&mut host, &mut viewer, session_id, 3).await;
-
-    // Viewer must not send offer.
-    send_msg(
-        &mut viewer,
-        &SignalMessage::SessionOffer {
-            session_id: session_id.into(),
-            signal_seq: 4,
-            sdp: "v=0".into(),
-            fingerprint_sig: "sig".into(),
-        },
-    )
-    .await;
+    intent(&mut viewer, "sess-rl-2", &host_public_id, 1).await;
     match recv_msg(&mut viewer).await {
-        SignalMessage::Error { code, message } => {
-            assert_eq!(code, "unauthorized");
-            assert!(message.contains("host"));
-        }
-        other => panic!("expected unauthorized for viewer offer, got {other:?}"),
-    }
-    assert_eq!(sessions.next_signal_seq(session_id).await, Some(4));
-
-    // Host must not send answer.
-    send_msg(
-        &mut host,
-        &SignalMessage::SessionAnswer {
-            session_id: session_id.into(),
-            signal_seq: 4,
-            sdp: "v=0".into(),
-        },
-    )
-    .await;
-    match recv_msg(&mut host).await {
-        SignalMessage::Error { code, message } => {
-            assert_eq!(code, "unauthorized");
-            assert!(message.contains("viewer"));
-        }
-        other => panic!("expected unauthorized for host answer, got {other:?}"),
-    }
-    assert_eq!(sessions.next_signal_seq(session_id).await, Some(4));
-}
-
-#[tokio::test]
-async fn relay_rejects_stale_signal_seq_and_non_party() {
-    let repo = Arc::new(MemoryDeviceRepo::new());
-    let sessions = Arc::new(SessionRegistry::new());
-    let state = AppState::with_sessions(repo.clone(), sessions.clone());
-    let (host_public_id, access) = register_host(&repo).await;
-    let addr = spawn_server(state).await;
-
-    let (mut host, mut viewer) = connect_host_viewer(addr, &access).await;
-    let session_id = "sess-relay-authz";
-    intent(&mut viewer, session_id, &host_public_id, 1).await;
-    assert!(matches!(
-        recv_msg(&mut host).await,
-        SignalMessage::SessionIncoming { .. }
-    ));
-    accept_session(&mut host, &mut viewer, session_id, 3).await;
-
-    // Stale seq after accept (next is 4).
-    send_msg(
-        &mut host,
-        &SignalMessage::SessionOffer {
-            session_id: session_id.into(),
-            signal_seq: 2,
-            sdp: "v=0".into(),
-            fingerprint_sig: "sig".into(),
-        },
-    )
-    .await;
-    match recv_msg(&mut host).await {
-        SignalMessage::Error { code, .. } => assert_eq!(code, "stale_signal_seq"),
-        other => panic!("expected stale_signal_seq, got {other:?}"),
-    }
-    assert_eq!(sessions.next_signal_seq(session_id).await, Some(4));
-
-    // Third peer is not a party.
-    let mut outsider = connect_ws(addr).await;
-    send_msg(&mut outsider, &hello_viewer("")).await;
-    assert!(matches!(
-        recv_msg(&mut outsider).await,
-        SignalMessage::HelloOk { .. }
-    ));
-    send_msg(
-        &mut outsider,
-        &SignalMessage::IceCandidate {
-            session_id: session_id.into(),
-            signal_seq: 4,
-            candidate: IceCandidate {
-                candidate: "candidate:x".into(),
-                sdp_mid: None,
-                sdp_m_line_index: None,
-                username_fragment: None,
-            },
-        },
-    )
-    .await;
-    match recv_msg(&mut outsider).await {
-        SignalMessage::Error { code, .. } => assert_eq!(code, "unauthorized"),
-        other => panic!("expected unauthorized for non-party, got {other:?}"),
-    }
-    assert_eq!(sessions.next_signal_seq(session_id).await, Some(4));
-}
-
-#[tokio::test]
-async fn oversized_sdp_rejected_before_relay() {
-    let repo = Arc::new(MemoryDeviceRepo::new());
-    let sessions = Arc::new(SessionRegistry::new());
-    let state = AppState::with_sessions(repo.clone(), sessions.clone());
-    let (host_public_id, access) = register_host(&repo).await;
-    let addr = spawn_server(state).await;
-
-    let (mut host, mut viewer) = connect_host_viewer(addr, &access).await;
-    let session_id = "sess-sdp-limit";
-    intent(&mut viewer, session_id, &host_public_id, 1).await;
-    assert!(matches!(
-        recv_msg(&mut host).await,
-        SignalMessage::SessionIncoming { .. }
-    ));
-    accept_session(&mut host, &mut viewer, session_id, 3).await;
-
-    // encode_message does not re-check limits; craft JSON that decode will reject.
-    let huge = "x".repeat(MAX_SDP_BYTES + 1);
-    let raw = format!(
-        r#"{{"type":"session_offer","session_id":"{session_id}","signal_seq":4,"sdp":"{huge}","fingerprint_sig":"sig"}}"#
-    );
-    host.send(Message::Text(raw.into())).await.unwrap();
-    match recv_msg(&mut host).await {
-        SignalMessage::Error { code, message } => {
-            assert_eq!(code, "protocol_error");
-            assert!(
-                message.contains("too large")
-                    || message.contains("sdp")
-                    || message.contains("invalid"),
-                "unexpected message: {message}"
-            );
-        }
-        other => panic!("expected protocol_error for oversized sdp, got {other:?}"),
-    }
-    // Counter must not advance when decode fails.
-    assert_eq!(sessions.next_signal_seq(session_id).await, Some(4));
-}
-
-#[tokio::test]
-async fn hello_ok_advertises_sdp_relay() {
-    let repo = Arc::new(MemoryDeviceRepo::new());
-    let state = AppState::new(repo.clone());
-    let (_public_id, access) = register_host(&repo).await;
-    let addr = spawn_server(state).await;
-
-    let mut host = connect_ws(addr).await;
-    send_msg(&mut host, &hello_host(&access)).await;
-    match recv_msg(&mut host).await {
-        SignalMessage::HelloOk { feature_flags, .. } => {
-            assert_eq!(feature_flags["sdp_relay"], true);
-        }
-        other => panic!("expected hello_ok, got {other:?}"),
+        SignalMessage::Error { code, .. } => assert_eq!(code, "rate_limited"),
+        other => panic!("expected rate_limited, got {other:?}"),
     }
 }

@@ -5,20 +5,23 @@ use serde_json::{json, Value};
 
 use crate::error::{Result, ViewerError};
 
-/// Auth material the connect UI collects (password **or** OTP).
+/// Auth material the connect UI collects (password, OTP, or unattended secret).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConnectSecret {
-    /// Unattended / password mode secret.
+    /// Mode C password prefilter material.
     Password(String),
-    /// Short-lived OTP from the host.
+    /// Mode A short-lived OTP from the host tray/CLI.
     Otp(String),
+    /// Mode B unattended host secret (viewer-side copy; never sent as plaintext
+    /// proof — only length/hint in prefilter; MAC computed later).
+    Unattended(String),
 }
 
 impl ConnectSecret {
     /// Raw secret string for prefilter / logging redaction.
     pub fn as_str(&self) -> &str {
         match self {
-            ConnectSecret::Password(s) | ConnectSecret::Otp(s) => s,
+            ConnectSecret::Password(s) | ConnectSecret::Otp(s) | ConnectSecret::Unattended(s) => s,
         }
     }
 
@@ -27,6 +30,7 @@ impl ConnectSecret {
         match self {
             ConnectSecret::Password(_) => SessionMode::Password,
             ConnectSecret::Otp(_) => SessionMode::Otp,
+            ConnectSecret::Unattended(_) => SessionMode::Unattended,
         }
     }
 }
@@ -61,6 +65,15 @@ impl ConnectRequest {
         }
     }
 
+    /// Build an unattended Mode B connect request.
+    pub fn unattended(host_public_id: impl Into<String>, secret: impl Into<String>) -> Self {
+        Self {
+            host_public_id: host_public_id.into(),
+            secret: ConnectSecret::Unattended(secret.into()),
+            viewer_label: None,
+        }
+    }
+
     /// Attach a viewer display label.
     pub fn with_label(mut self, label: impl Into<String>) -> Self {
         self.viewer_label = Some(label.into());
@@ -76,7 +89,7 @@ impl ConnectRequest {
         }
         if self.secret.as_str().trim().is_empty() {
             return Err(ViewerError::InvalidConnect(
-                "password or OTP is required".into(),
+                "password, OTP, or unattended secret is required".into(),
             ));
         }
         if let ConnectSecret::Otp(otp) = &self.secret {
@@ -84,6 +97,13 @@ impl ConnectRequest {
             if otp.len() < 4 || otp.len() > 16 {
                 return Err(ViewerError::InvalidConnect(
                     "OTP length must be between 4 and 16".into(),
+                ));
+            }
+        }
+        if let ConnectSecret::Unattended(s) = &self.secret {
+            if s.len() < 8 {
+                return Err(ViewerError::InvalidConnect(
+                    "unattended secret looks too short".into(),
                 ));
             }
         }
@@ -96,10 +116,14 @@ impl ConnectRequest {
     }
 
     /// Opaque prefilter payload for server-side checks (stub; not a host auth proof).
+    ///
+    /// Mode A includes plaintext OTP for server hash prefilter (host already
+    /// published the hash). Mode B never sends the secret — only a length hint.
     pub fn prefilter(&self) -> Value {
         match &self.secret {
             ConnectSecret::Password(p) => json!({ "password_hint_len": p.len() }),
             ConnectSecret::Otp(o) => json!({ "otp": o }),
+            ConnectSecret::Unattended(s) => json!({ "unattended_hint_len": s.len() }),
         }
     }
 
@@ -193,6 +217,18 @@ mod tests {
         assert_eq!(v["host_public_id"], "host-pub");
         assert_eq!(v["mode"], "otp");
         assert_eq!(v["prefilter"]["otp"], "654321");
+    }
+
+    #[test]
+    fn unattended_session_intent_mode() {
+        let r = ConnectRequest::unattended("host-pub", "host-local-secret!!");
+        assert_eq!(r.mode(), SessionMode::Unattended);
+        let v = r.session_intent_stub("sess-u", 1).unwrap();
+        assert_eq!(v["mode"], "unattended");
+        assert_eq!(v["prefilter"]["unattended_hint_len"], 19);
+        // Secret must not appear in prefilter.
+        let s = v["prefilter"].to_string();
+        assert!(!s.contains("host-local-secret"));
     }
 
     #[test]

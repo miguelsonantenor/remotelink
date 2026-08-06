@@ -22,6 +22,7 @@ remotelink-net = { workspace = true }
 remotelink-platform-windows = { workspace = true }
 remotelink-protocol = { workspace = true }
 ed25519-dalek = { workspace = true }
+hex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

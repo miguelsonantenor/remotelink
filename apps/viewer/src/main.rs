@@ -46,11 +46,13 @@ fn print_usage() {
     eprintln!(
         "remotelink-viewer {} — connect shell (viewer-core)\n\n\
          Usage:\n  \
-         remotelink-viewer [--synthetic] [--host ID] [--password PW | --otp CODE]\n  \
+         remotelink-viewer [--synthetic] [--host ID] [--password PW | --otp CODE | --unattended SECRET]\n  \
          remotelink-viewer --connect-stub --host ID --otp CODE\n  \
          remotelink-viewer --gui          (requires --features gui)\n\n\
          Defaults:\n  \
-         --synthetic   run mock host→viewer media loopback and print stats\n",
+         --synthetic   run mock host→viewer media loopback and print stats\n  \
+         --otp CODE    Mode A session_intent with prefilter.otp\n  \
+         --unattended  Mode B session_intent (secret not in prefilter)\n",
         remotelink_common::VERSION
     );
 }
@@ -59,14 +61,21 @@ fn run_cli(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let host = flag_value(args, "--host").unwrap_or_else(|| "demo-host".into());
     let password = flag_value(args, "--password");
     let otp = flag_value(args, "--otp");
+    let unattended = flag_value(args, "--unattended");
     let connect_stub_only = args.iter().any(|a| a == "--connect-stub");
     let want_synthetic = args.iter().any(|a| a == "--synthetic");
     // Default with no args: synthetic demo. Credentials / --connect-stub → stub path.
-    let run_stub = connect_stub_only || ((password.is_some() || otp.is_some()) && !want_synthetic);
+    let has_creds = password.is_some() || otp.is_some() || unattended.is_some();
+    let run_stub = connect_stub_only || (has_creds && !want_synthetic);
     let run_synthetic = want_synthetic || args.is_empty() || (!run_stub && !want_synthetic);
 
     if run_stub {
-        let req = build_request(&host, password.as_deref(), otp.as_deref())?;
+        let req = build_request(
+            &host,
+            password.as_deref(),
+            otp.as_deref(),
+            unattended.as_deref(),
+        )?;
         let stub = connect_stub(&req)?;
         println!(
             "remotelink-viewer {} phase=connect_stub session_id={} host={} mode={:?}",
@@ -91,6 +100,7 @@ fn run_cli(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             &host,
             password.as_deref(),
             otp.as_deref().or(Some("123456")),
+            unattended.as_deref(),
         )?;
         println!(
             "connect host={} mode={:?} (stub ok)",
@@ -120,8 +130,11 @@ fn build_request(
     host: &str,
     password: Option<&str>,
     otp: Option<&str>,
+    unattended: Option<&str>,
 ) -> Result<ConnectRequest, Box<dyn std::error::Error>> {
-    let req = if let Some(pw) = password {
+    let req = if let Some(secret) = unattended {
+        ConnectRequest::unattended(host, secret)
+    } else if let Some(pw) = password {
         ConnectRequest::password(host, pw)
     } else if let Some(code) = otp {
         ConnectRequest::otp(host, code)
@@ -261,10 +274,22 @@ mod tests {
 
     #[test]
     fn build_request_password() {
-        let r = build_request("h1", Some("pw"), None).unwrap();
+        let r = build_request("h1", Some("pw"), None, None).unwrap();
         assert!(matches!(
             r.secret,
             remotelink_viewer_core::ConnectSecret::Password(_)
         ));
+    }
+
+    #[test]
+    fn build_request_otp_mode() {
+        let r = build_request("h1", None, Some("654321"), None).unwrap();
+        assert_eq!(r.mode(), remotelink_protocol::SessionMode::Otp);
+    }
+
+    #[test]
+    fn build_request_unattended() {
+        let r = build_request("h1", None, None, Some("host-local-secret!!")).unwrap();
+        assert_eq!(r.mode(), remotelink_protocol::SessionMode::Unattended);
     }
 }

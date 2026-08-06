@@ -8,11 +8,16 @@ use chrono::Utc;
 use remotelink_auth::{verifying_key_from_bytes, DevicePublicId};
 use remotelink_protocol::PROTOCOL_VERSION;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 use crate::credentials::{hash_token, mint_tokens, new_credential_from_issued};
 use crate::error::{AppError, AppResult};
 use crate::models::DeviceStatus;
 use crate::models::NewDevice;
+use crate::security::{
+    audit_best_effort, resolve_client_ip, AuditEventType, AuthAttemptTracker, NewAuditEvent,
+    OptionalPeer,
+};
 use crate::state::AppState;
 
 /// Registration request body.
@@ -63,8 +68,19 @@ pub struct DeleteParams {
 /// `POST /v1/devices/register`
 pub async fn register_device(
     State(state): State<AppState>,
+    headers: HeaderMap,
+    OptionalPeer(peer): OptionalPeer,
     Json(body): Json<RegisterRequest>,
 ) -> AppResult<(StatusCode, Json<RegisterResponse>)> {
+    let ip = client_ip(&state, &headers, peer);
+    if let Err(e) = state
+        .rate_limits
+        .register
+        .check_now(&format!("register:{ip}"))
+    {
+        return Err(AppError::rate_limited(e.to_string(), e.retry_after));
+    }
+
     let public_key = decode_public_key(&body.public_key)?;
     verifying_key_from_bytes(&public_key).map_err(|e| AppError::BadRequest(e.to_string()))?;
 
@@ -109,6 +125,20 @@ pub async fn register_device(
         .insert_credential(new_credential_from_issued(device.id, &issued, now))
         .await?;
 
+    audit_best_effort(
+        state.audit.as_ref(),
+        NewAuditEvent {
+            device_id: Some(device.id),
+            session_id: None,
+            event_type: AuditEventType::Register,
+            meta: json!({
+                "public_id": device.public_id,
+                "ip": ip,
+            }),
+        },
+    )
+    .await;
+
     Ok((
         StatusCode::CREATED,
         Json(RegisterResponse {
@@ -124,9 +154,32 @@ pub async fn register_device(
 pub async fn refresh_token(
     State(state): State<AppState>,
     Path(raw_id): Path<String>,
+    headers: HeaderMap,
+    OptionalPeer(peer): OptionalPeer,
     Json(body): Json<RefreshRequest>,
 ) -> AppResult<Json<TokenResponse>> {
     let public_id = parse_public_id_path(&raw_id)?;
+    let ip = client_ip(&state, &headers, peer);
+
+    // Rate limit refresh traffic (success or fail) by IP + device path id.
+    if let Err(e) = state
+        .rate_limits
+        .refresh
+        .check_now(&format!("refresh:ip:{ip}"))
+    {
+        return Err(AppError::rate_limited(e.to_string(), e.retry_after));
+    }
+    if let Err(e) = state
+        .rate_limits
+        .refresh
+        .check_now(&format!("refresh:device:{public_id}"))
+    {
+        return Err(AppError::rate_limited(e.to_string(), e.retry_after));
+    }
+
+    // Exponential backoff lockout after repeated auth failures.
+    check_auth_lockout(&state, &public_id, &ip)?;
+
     if body.refresh_token.is_empty() {
         return Err(AppError::BadRequest("refresh_token is required".into()));
     }
@@ -137,13 +190,38 @@ pub async fn refresh_token(
     // If the token is valid but for another device, reject without rotating.
     if let Some((device, cred)) = state.repo.find_by_refresh_hash(&refresh_hash).await? {
         if device.public_id != public_id {
+            // Valid secret for *another* device — do not lock the path device globally.
+            record_auth_failure(
+                &state,
+                &public_id,
+                &ip,
+                "device_mismatch",
+                AuthFailureScope::IpOnly,
+            )
+            .await;
             return Err(AppError::Unauthorized);
         }
         if device.status != DeviceStatus::Active {
+            record_auth_failure(
+                &state,
+                &public_id,
+                &ip,
+                "device_inactive",
+                AuthFailureScope::CredentialBound,
+            )
+            .await;
             return Err(AppError::Unauthorized);
         }
         let now = Utc::now();
         if cred.expires_at < now {
+            record_auth_failure(
+                &state,
+                &public_id,
+                &ip,
+                "refresh_expired",
+                AuthFailureScope::CredentialBound,
+            )
+            .await;
             return Err(AppError::Unauthorized);
         }
 
@@ -151,13 +229,111 @@ pub async fn refresh_token(
         let new = new_credential_from_issued(device.id, &issued, now);
         // Atomic rotate: concurrent double-refresh → one StaleCredential (401).
         match state.repo.rotate_refresh(&refresh_hash, new, now).await {
-            Ok(_) => Ok(Json(token_response(&issued))),
-            Err(crate::repo::RepoError::StaleCredential) => Err(AppError::Unauthorized),
+            Ok(_) => {
+                clear_auth_failures(&state, &public_id, &ip);
+                audit_best_effort(
+                    state.audit.as_ref(),
+                    NewAuditEvent {
+                        device_id: Some(device.id),
+                        session_id: None,
+                        event_type: AuditEventType::LoginSuccess,
+                        meta: json!({ "ip": ip, "via": "refresh" }),
+                    },
+                )
+                .await;
+                Ok(Json(token_response(&issued)))
+            }
+            Err(crate::repo::RepoError::StaleCredential) => {
+                record_auth_failure(
+                    &state,
+                    &public_id,
+                    &ip,
+                    "stale_credential",
+                    AuthFailureScope::CredentialBound,
+                )
+                .await;
+                Err(AppError::Unauthorized)
+            }
             Err(e) => Err(e.into()),
         }
     } else {
+        // Garbage / unknown token: IP (and device_ip) only — never bare device lockout.
+        record_auth_failure(
+            &state,
+            &public_id,
+            &ip,
+            "unknown_refresh",
+            AuthFailureScope::IpOnly,
+        )
+        .await;
         Err(AppError::Unauthorized)
     }
+}
+
+/// `POST /v1/devices/{id}/otp` — host mints OTP hash (plaintext never sent if host hashed).
+///
+/// Host authenticates with its access token, posts digest+salt from
+/// [`remotelink_auth::hash_otp`], and the server stores the hash with TTL for
+/// viewer `session_intent` prefilter. Plaintext code stays on the host UI only.
+pub async fn mint_otp(
+    State(state): State<AppState>,
+    Path(raw_id): Path<String>,
+    headers: HeaderMap,
+    OptionalPeer(peer): OptionalPeer,
+    Json(body): Json<crate::otp::OtpMintRequest>,
+) -> AppResult<(StatusCode, Json<crate::otp::OtpMintResponse>)> {
+    let public_id = parse_public_id_path(&raw_id)?;
+    let access_token = bearer_token(&headers)?;
+    let token_hash = hash_token(&access_token);
+    let (device, cred) = state
+        .repo
+        .find_by_access_hash(&token_hash)
+        .await?
+        .ok_or(AppError::Unauthorized)?;
+
+    if device.public_id != public_id {
+        return Err(AppError::Unauthorized);
+    }
+    let now = Utc::now();
+    if cred.access_expires_at < now {
+        return Err(AppError::Unauthorized);
+    }
+    if device.status != DeviceStatus::Active {
+        return Err(AppError::Unauthorized);
+    }
+
+    let hash = body
+        .parse_hash()
+        .map_err(|e| AppError::BadRequest(e.to_string()))?;
+    let ttl = body
+        .ttl_secs()
+        .map_err(|e| AppError::BadRequest(e.to_string()))?;
+    let expires_at = now + chrono::Duration::seconds(ttl as i64);
+    let row = state.otp.store_hash(device.id, hash, expires_at, now);
+
+    let ip = client_ip(&state, &headers, peer);
+    audit_best_effort(
+        state.audit.as_ref(),
+        NewAuditEvent {
+            device_id: Some(device.id),
+            session_id: None,
+            event_type: AuditEventType::OtpMint,
+            meta: json!({
+                "otp_id": row.id,
+                "expires_at": expires_at.to_rfc3339(),
+                "ip": ip,
+            }),
+        },
+    )
+    .await;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(crate::otp::OtpMintResponse {
+            expires_at: expires_at.to_rfc3339(),
+            otp_id: row.id,
+        }),
+    ))
 }
 
 /// `DELETE /v1/devices/{id}` — soft-delete + revoke credentials.
@@ -165,6 +341,7 @@ pub async fn delete_device(
     State(state): State<AppState>,
     Path(raw_id): Path<String>,
     headers: HeaderMap,
+    OptionalPeer(peer): OptionalPeer,
 ) -> AppResult<StatusCode> {
     let public_id = parse_public_id_path(&raw_id)?;
     let access_token = bearer_token(&headers)?;
@@ -195,7 +372,108 @@ pub async fn delete_device(
         return Err(AppError::NotFound);
     }
 
+    let ip = client_ip(&state, &headers, peer);
+    audit_best_effort(
+        state.audit.as_ref(),
+        NewAuditEvent {
+            device_id: Some(device.id),
+            session_id: None,
+            event_type: AuditEventType::Delete,
+            meta: json!({ "public_id": public_id, "ip": ip }),
+        },
+    )
+    .await;
+
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// How broadly an auth failure should count toward lockout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AuthFailureScope {
+    /// Unauthenticated noise (unknown token / wrong-path token). IP only.
+    /// Never increments bare `device:{public_id}` (avoids lockout DoS on known IDs).
+    IpOnly,
+    /// A credential row for this device was involved (expired, inactive, stale rotate).
+    CredentialBound,
+}
+
+fn client_ip(state: &AppState, headers: &HeaderMap, peer: Option<std::net::SocketAddr>) -> String {
+    resolve_client_ip(headers, peer, state.client_ip)
+}
+
+fn check_auth_lockout(state: &AppState, public_id: &str, ip: &str) -> AppResult<()> {
+    // Always enforce IP and device_ip. Device-wide lockout only applies when prior
+    // credential-bound failures set it (not unauthenticated garbage).
+    for key in [
+        AuthAttemptTracker::key_ip(ip),
+        AuthAttemptTracker::key_device_ip(public_id, ip),
+        AuthAttemptTracker::key_device(public_id),
+    ] {
+        if let Err(lock) = state.auth_attempts.check_now(&key) {
+            return Err(AppError::rate_limited(lock.to_string(), lock.retry_after));
+        }
+    }
+    Ok(())
+}
+
+async fn record_auth_failure(
+    state: &AppState,
+    public_id: &str,
+    ip: &str,
+    reason: &str,
+    scope: AuthFailureScope,
+) {
+    let mut keys = vec![AuthAttemptTracker::key_ip(ip)];
+    match scope {
+        AuthFailureScope::IpOnly => {
+            // Optional tighter key: same attacker hammering one device from one IP.
+            keys.push(AuthAttemptTracker::key_device_ip(public_id, ip));
+        }
+        AuthFailureScope::CredentialBound => {
+            keys.push(AuthAttemptTracker::key_device(public_id));
+            keys.push(AuthAttemptTracker::key_device_ip(public_id, ip));
+        }
+    }
+    for key in &keys {
+        state.auth_attempts.record_failure_now(key);
+    }
+
+    // Resolve device_id for audit when possible (path id is public_id).
+    let device_id = match state.repo.get_by_public_id(public_id).await {
+        Ok(Some(d)) => Some(d.id),
+        _ => None,
+    };
+
+    audit_best_effort(
+        state.audit.as_ref(),
+        NewAuditEvent {
+            device_id,
+            session_id: None,
+            event_type: AuditEventType::LoginFail,
+            meta: json!({
+                "public_id": public_id,
+                "ip": ip,
+                "reason": reason,
+                "scope": match scope {
+                    AuthFailureScope::IpOnly => "ip_only",
+                    AuthFailureScope::CredentialBound => "credential_bound",
+                },
+            }),
+        },
+    )
+    .await;
+}
+
+fn clear_auth_failures(state: &AppState, public_id: &str, ip: &str) {
+    state
+        .auth_attempts
+        .record_success(&AuthAttemptTracker::key_ip(ip));
+    state
+        .auth_attempts
+        .record_success(&AuthAttemptTracker::key_device(public_id));
+    state
+        .auth_attempts
+        .record_success(&AuthAttemptTracker::key_device_ip(public_id, ip));
 }
 
 fn token_response(issued: &crate::models::IssuedTokens) -> TokenResponse {
@@ -649,5 +927,504 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("connection refused"));
+    }
+
+    #[tokio::test]
+    async fn mint_otp_host_authenticated_and_consume_once() {
+        use crate::otp::{MemoryOtpStore, DEFAULT_OTP_PEPPER};
+        use remotelink_auth::mint_otp;
+
+        let app = test_app();
+        let reg = register(&app).await;
+        let public_id = reg["public_id"].as_str().unwrap().to_string();
+        let access = reg["access_token"].as_str().unwrap().to_string();
+
+        let (code, hash) = mint_otp(6, DEFAULT_OTP_PEPPER).unwrap();
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/devices/{public_id}/otp"))
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {access}"))
+                    .body(Body::from(
+                        json!({
+                            "digest_hex": hex::encode(hash.digest),
+                            "salt_hex": hex::encode(hash.salt),
+                            "keyed": true,
+                            "expires_in_secs": 300
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::CREATED);
+        let body = body_json(res).await;
+        assert!(body["otp_id"].as_i64().unwrap() >= 1);
+        assert!(body["expires_at"].as_str().is_some());
+
+        // Unauthorized without bearer.
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/devices/{public_id}/otp"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "digest_hex": hex::encode(hash.digest),
+                            "salt_hex": hex::encode(hash.salt),
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+
+        // Direct store prefilter consume-once (integration with store used by state).
+        let store = MemoryOtpStore::new();
+        let now = Utc::now();
+        store
+            .mint_for_tests(42, code.as_str(), DEFAULT_OTP_PEPPER, 300, now)
+            .unwrap();
+        assert_eq!(
+            store.prefilter_bind(42, code.as_str(), DEFAULT_OTP_PEPPER, "sess-otp", now),
+            crate::otp::OtpPrefilterResult::Ok
+        );
+        store.consume_for_session(42, "sess-otp", now).unwrap();
+        assert!(store.consume_for_session(42, "sess-otp", now).is_err());
+        assert_eq!(
+            store.prefilter_bind(42, code.as_str(), DEFAULT_OTP_PEPPER, "sess-2", now),
+            crate::otp::OtpPrefilterResult::NoActiveOtp
+        );
+    }
+
+    #[tokio::test]
+    async fn register_rate_limited_after_burst() {
+        use crate::security::{
+            AuthAttemptTracker, ClientIpConfig, MemoryAuditStore, MemoryBlocklist, RateLimitConfig,
+            RateLimiters,
+        };
+        use crate::session::SessionRegistry;
+        use crate::state::AppState;
+        use std::time::Duration;
+
+        let rate_limits = Arc::new(RateLimiters::with_configs(
+            RateLimitConfig {
+                capacity: 2.0,
+                refill_per_sec: 0.0,
+            },
+            RateLimitConfig::per_window(100, Duration::from_secs(60)),
+            RateLimitConfig::per_window(100, Duration::from_secs(60)),
+        ));
+        // Trust proxy so XFF is the rate-limit key in oneshot tests (no ConnectInfo).
+        let state = AppState::with_security(
+            Arc::new(MemoryDeviceRepo::new()),
+            Arc::new(SessionRegistry::new()),
+            rate_limits,
+            Arc::new(AuthAttemptTracker::with_defaults()),
+            Arc::new(MemoryAuditStore::new()),
+            Arc::new(MemoryBlocklist::new()),
+        )
+        .with_client_ip(ClientIpConfig { trust_proxy: true });
+        let app = crate::routes::router(state);
+
+        for i in 0..2 {
+            let res = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/v1/devices/register")
+                        .header("content-type", "application/json")
+                        .header("x-forwarded-for", "203.0.113.50")
+                        .body(Body::from(
+                            json!({
+                                "public_key": sample_pubkey_b64(),
+                                "display_name": format!("pc-{i}"),
+                            })
+                            .to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::CREATED, "register {i}");
+        }
+
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/devices/register")
+                    .header("content-type", "application/json")
+                    .header("x-forwarded-for", "203.0.113.50")
+                    .body(Body::from(
+                        json!({ "public_key": sample_pubkey_b64() }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert!(res.headers().get("retry-after").is_some());
+        let body = body_json(res).await;
+        assert_eq!(body["error"], "rate_limited");
+    }
+
+    #[tokio::test]
+    async fn spoofed_xff_ignored_without_trust_proxy() {
+        use crate::security::{
+            AuthAttemptTracker, MemoryAuditStore, MemoryBlocklist, RateLimitConfig, RateLimiters,
+        };
+        use crate::session::SessionRegistry;
+        use crate::state::AppState;
+        use std::time::Duration;
+
+        // capacity 1: if XFF were trusted, different spoofed IPs would each succeed.
+        // Without trust, oneshot peers collapse to "unknown" and second request 429s.
+        let rate_limits = Arc::new(RateLimiters::with_configs(
+            RateLimitConfig {
+                capacity: 1.0,
+                refill_per_sec: 0.0,
+            },
+            RateLimitConfig::per_window(100, Duration::from_secs(60)),
+            RateLimitConfig::per_window(100, Duration::from_secs(60)),
+        ));
+        let state = AppState::with_security(
+            Arc::new(MemoryDeviceRepo::new()),
+            Arc::new(SessionRegistry::new()),
+            rate_limits,
+            Arc::new(AuthAttemptTracker::with_defaults()),
+            Arc::new(MemoryAuditStore::new()),
+            Arc::new(MemoryBlocklist::new()),
+        ); // trust_proxy = false (default)
+        let app = crate::routes::router(state);
+
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/devices/register")
+                    .header("content-type", "application/json")
+                    .header("x-forwarded-for", "203.0.113.1")
+                    .body(Body::from(
+                        json!({ "public_key": sample_pubkey_b64() }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::CREATED);
+
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/devices/register")
+                    .header("content-type", "application/json")
+                    .header("x-forwarded-for", "203.0.113.2") // different spoofed IP
+                    .body(Body::from(
+                        json!({ "public_key": sample_pubkey_b64() }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "spoofed XFF must not create a new rate-limit bucket when trust_proxy is off"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_lockout_after_repeated_failures() {
+        use crate::security::{
+            AuthAttemptConfig, AuthAttemptTracker, ClientIpConfig, MemoryAuditStore,
+            MemoryBlocklist, RateLimiters,
+        };
+        use crate::session::SessionRegistry;
+        use crate::state::AppState;
+        use std::time::Duration;
+
+        let auth = Arc::new(AuthAttemptTracker::new(AuthAttemptConfig {
+            max_failures_before_lockout: 3,
+            base_lockout: Duration::from_secs(30),
+            max_lockout: Duration::from_secs(60),
+            failure_window: Duration::from_secs(300),
+        }));
+        // IP lockout on unknown_refresh (not device-wide).
+        let state = AppState::with_security(
+            Arc::new(MemoryDeviceRepo::new()),
+            Arc::new(SessionRegistry::new()),
+            Arc::new(RateLimiters::new()),
+            auth,
+            Arc::new(MemoryAuditStore::new()),
+            Arc::new(MemoryBlocklist::new()),
+        )
+        .with_client_ip(ClientIpConfig { trust_proxy: true });
+        let app = crate::routes::router(state);
+        let reg = register(&app).await;
+        let public_id = reg["public_id"].as_str().unwrap().to_string();
+
+        for _ in 0..3 {
+            let res = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(format!("/v1/devices/{public_id}/token/refresh"))
+                        .header("content-type", "application/json")
+                        .header("x-forwarded-for", "198.51.100.7")
+                        .body(Body::from(
+                            json!({ "refresh_token": "rl_rt_definitely_wrong" }).to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+        }
+
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/devices/{public_id}/token/refresh"))
+                    .header("content-type", "application/json")
+                    .header("x-forwarded-for", "198.51.100.7")
+                    .body(Body::from(
+                        json!({ "refresh_token": "rl_rt_definitely_wrong" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::TOO_MANY_REQUESTS);
+        let body = body_json(res).await;
+        assert_eq!(body["error"], "rate_limited");
+    }
+
+    #[tokio::test]
+    async fn garbage_refresh_does_not_device_lock_other_ip() {
+        use crate::security::{
+            AuthAttemptConfig, AuthAttemptTracker, ClientIpConfig, MemoryAuditStore,
+            MemoryBlocklist, RateLimiters,
+        };
+        use crate::session::SessionRegistry;
+        use crate::state::AppState;
+        use std::time::Duration;
+
+        let auth = Arc::new(AuthAttemptTracker::new(AuthAttemptConfig {
+            max_failures_before_lockout: 3,
+            base_lockout: Duration::from_secs(30),
+            max_lockout: Duration::from_secs(60),
+            failure_window: Duration::from_secs(300),
+        }));
+        let state = AppState::with_security(
+            Arc::new(MemoryDeviceRepo::new()),
+            Arc::new(SessionRegistry::new()),
+            Arc::new(RateLimiters::new()),
+            auth,
+            Arc::new(MemoryAuditStore::new()),
+            Arc::new(MemoryBlocklist::new()),
+        )
+        .with_client_ip(ClientIpConfig { trust_proxy: true });
+        let app = crate::routes::router(state);
+        let reg = register(&app).await;
+        let public_id = reg["public_id"].as_str().unwrap().to_string();
+        let refresh = reg["refresh_token"].as_str().unwrap().to_string();
+
+        // Attacker from IP X hammers unknown tokens against the public device id.
+        for _ in 0..5 {
+            let res = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(format!("/v1/devices/{public_id}/token/refresh"))
+                        .header("content-type", "application/json")
+                        .header("x-forwarded-for", "198.51.100.10")
+                        .body(Body::from(
+                            json!({ "refresh_token": "rl_rt_garbage_attack" }).to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert!(
+                res.status() == StatusCode::UNAUTHORIZED
+                    || res.status() == StatusCode::TOO_MANY_REQUESTS
+            );
+        }
+
+        // Legitimate owner from a different IP must still refresh successfully
+        // (no bare device:{public_id} lockout from unauthenticated noise).
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/devices/{public_id}/token/refresh"))
+                    .header("content-type", "application/json")
+                    .header("x-forwarded-for", "198.51.100.99")
+                    .body(Body::from(json!({ "refresh_token": refresh }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::OK,
+            "device-wide lockout must not apply after garbage refresh from another IP"
+        );
+    }
+
+    #[tokio::test]
+    async fn blocklist_add_list_check_and_audit() {
+        let app = test_app();
+        let reg = register(&app).await;
+        let public_id = reg["public_id"].as_str().unwrap().to_string();
+        let access = reg["access_token"].as_str().unwrap().to_string();
+
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/devices/{public_id}/blocklist"))
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {access}"))
+                    .body(Body::from(
+                        json!({
+                            "subject_type": "ip",
+                            "subject": "203.0.113.99"
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::CREATED);
+        let entry = body_json(res).await;
+        assert_eq!(entry["subject_type"], "ip");
+        assert!(entry["subject_hash"].as_str().unwrap().len() == 64);
+        let entry_id = entry["id"].as_i64().unwrap();
+
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/v1/devices/{public_id}/blocklist"))
+                    .header("authorization", format!("Bearer {access}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let list = body_json(res).await;
+        assert_eq!(list["entries"].as_array().unwrap().len(), 1);
+
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!(
+                        "/v1/devices/{public_id}/blocklist/check?subject_type=ip&subject=203.0.113.99"
+                    ))
+                    .header("authorization", format!("Bearer {access}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let check = body_json(res).await;
+        assert_eq!(check["blocked"], true);
+
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!(
+                        "/v1/devices/{public_id}/blocklist/check?subject_type=ip&subject=203.0.113.1"
+                    ))
+                    .header("authorization", format!("Bearer {access}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let check = body_json(res).await;
+        assert_eq!(check["blocked"], false);
+
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/v1/devices/{public_id}/audit"))
+                    .header("authorization", format!("Bearer {access}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let audit = body_json(res).await;
+        let events = audit["events"].as_array().unwrap();
+        assert!(events
+            .iter()
+            .any(|e| e["event_type"] == "register" || e["event_type"] == "blocklist_add"));
+
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/v1/devices/{public_id}/blocklist/{entry_id}"))
+                    .header("authorization", format!("Bearer {access}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn blocklist_requires_owner_bearer() {
+        let app = test_app();
+        let a = register(&app).await;
+        let b = register(&app).await;
+        let public_id_a = a["public_id"].as_str().unwrap();
+        let access_b = b["access_token"].as_str().unwrap();
+
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/devices/{public_id_a}/blocklist"))
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {access_b}"))
+                    .body(Body::from(
+                        json!({ "subject_type": "ip", "subject": "1.2.3.4" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
     }
 }

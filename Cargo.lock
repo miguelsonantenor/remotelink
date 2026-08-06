@@ -3159,6 +3159,7 @@ name = "remotelink-host"
 version = "0.1.0"
 dependencies = [
  "ed25519-dalek",
+ "hex",
  "remotelink-auth",
  "remotelink-common",
  "remotelink-media",
