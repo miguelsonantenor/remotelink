@@ -2,17 +2,32 @@
 //!
 //! Wire encoding is JSON via `serde_json`. See `DESIGN.md` WebSocket (`/v1/ws`)
 //! and input path (v1 freeze) sections.
+//!
+//! # Size limits
+//!
+//! [`decode_message`] enforces [`MAX_SDP_BYTES`], [`MAX_ICE_CANDIDATE_BYTES`],
+//! [`MAX_FINGERPRINT_SIG_BYTES`], and [`MAX_OPAQUE_PAYLOAD_BYTES`] on decoded
+//! fields. Callers should still cap WebSocket frame size at the transport layer.
+//!
+//! # Input wire freeze
+//!
+//! [`InputEvent`] / [`MouseWheel`] etc. in this crate are the v1 field authority.
+//! Wheel JSON is `{delta_x, delta_y, precise, x, y, display_id}` (not
+//! `precise_delta`).
 
+mod error;
 mod input;
 mod limits;
 mod message;
 
+pub use error::ProtocolError;
 pub use input::{
     modifiers, InputEvent, InputPayload, KeyEvent, MouseButton, MouseButtonKind, MouseMove,
     MouseWheel,
 };
 pub use limits::{
-    MAX_FINGERPRINT_SIG_BYTES, MAX_ICE_CANDIDATE_BYTES, MAX_OPAQUE_PAYLOAD_BYTES, MAX_SDP_BYTES,
+    validate_message_limits, MAX_FINGERPRINT_SIG_BYTES, MAX_ICE_CANDIDATE_BYTES,
+    MAX_OPAQUE_PAYLOAD_BYTES, MAX_SDP_BYTES,
 };
 pub use message::{HelloAuth, IceCandidate, RejectReason, Role, SessionMode, SignalMessage};
 
@@ -29,29 +44,31 @@ pub fn encode_json_pretty<T: serde::Serialize>(value: &T) -> Result<String, serd
     serde_json::to_string_pretty(value)
 }
 
-/// Decode a value from a JSON string slice.
+/// Decode a value from a JSON string slice (no size-limit checks).
 pub fn decode_json<'a, T: serde::Deserialize<'a>>(s: &'a str) -> Result<T, serde_json::Error> {
     serde_json::from_str(s)
 }
 
 /// Encode a signaling message.
-pub fn encode_message(msg: &SignalMessage) -> Result<String, serde_json::Error> {
-    encode_json(msg)
+pub fn encode_message(msg: &SignalMessage) -> Result<String, ProtocolError> {
+    Ok(encode_json(msg)?)
 }
 
-/// Decode a signaling message.
-pub fn decode_message(s: &str) -> Result<SignalMessage, serde_json::Error> {
-    decode_json(s)
+/// Decode a signaling message and enforce payload size limits.
+pub fn decode_message(s: &str) -> Result<SignalMessage, ProtocolError> {
+    let msg: SignalMessage = decode_json(s)?;
+    validate_message_limits(&msg)?;
+    Ok(msg)
 }
 
 /// Encode an input event.
-pub fn encode_input(event: &InputEvent) -> Result<String, serde_json::Error> {
-    encode_json(event)
+pub fn encode_input(event: &InputEvent) -> Result<String, ProtocolError> {
+    Ok(encode_json(event)?)
 }
 
 /// Decode an input event.
-pub fn decode_input(s: &str) -> Result<InputEvent, serde_json::Error> {
-    decode_json(s)
+pub fn decode_input(s: &str) -> Result<InputEvent, ProtocolError> {
+    Ok(decode_json(s)?)
 }
 
 #[cfg(test)]
@@ -134,11 +151,12 @@ mod tests {
         assert_signal_roundtrip(
             SignalMessage::SessionIntent {
                 session_id: "sess-1".into(),
+                signal_seq: 1,
                 host_public_id: "host-pub".into(),
                 mode: SessionMode::Otp,
                 prefilter: json!({"otp": "123456"}),
             },
-            r#"{"type":"session_intent","session_id":"sess-1","host_public_id":"host-pub","mode":"otp","prefilter":{"otp":"123456"}}"#,
+            r#"{"type":"session_intent","session_id":"sess-1","signal_seq":1,"host_public_id":"host-pub","mode":"otp","prefilter":{"otp":"123456"}}"#,
         );
     }
 
@@ -151,6 +169,7 @@ mod tests {
         ] {
             let msg = SignalMessage::SessionIntent {
                 session_id: "s".into(),
+                signal_seq: 7,
                 host_public_id: "h".into(),
                 mode,
                 prefilter: json!({}),
@@ -160,6 +179,7 @@ mod tests {
                 encoded.contains(&format!(r#""mode":"{wire}""#)),
                 "expected mode {wire} in {encoded}"
             );
+            assert!(encoded.contains(r#""signal_seq":7"#));
             assert_eq!(decode_message(&encoded).unwrap(), msg);
         }
     }
@@ -169,9 +189,10 @@ mod tests {
         assert_signal_roundtrip(
             SignalMessage::SessionIncoming {
                 session_id: "sess-1".into(),
+                signal_seq: 2,
                 viewer_info: json!({"display_name": "alice"}),
             },
-            r#"{"type":"session_incoming","session_id":"sess-1","viewer_info":{"display_name":"alice"}}"#,
+            r#"{"type":"session_incoming","session_id":"sess-1","signal_seq":2,"viewer_info":{"display_name":"alice"}}"#,
         );
     }
 
@@ -180,9 +201,10 @@ mod tests {
         assert_signal_roundtrip(
             SignalMessage::AuthChallenge {
                 session_id: "sess-1".into(),
+                signal_seq: 3,
                 payload: json!({"nonce": "n1"}),
             },
-            r#"{"type":"auth_challenge","session_id":"sess-1","payload":{"nonce":"n1"}}"#,
+            r#"{"type":"auth_challenge","session_id":"sess-1","signal_seq":3,"payload":{"nonce":"n1"}}"#,
         );
     }
 
@@ -191,9 +213,10 @@ mod tests {
         assert_signal_roundtrip(
             SignalMessage::AuthResponse {
                 session_id: "sess-1".into(),
+                signal_seq: 4,
                 payload: json!({"mac": "deadbeef"}),
             },
-            r#"{"type":"auth_response","session_id":"sess-1","payload":{"mac":"deadbeef"}}"#,
+            r#"{"type":"auth_response","session_id":"sess-1","signal_seq":4,"payload":{"mac":"deadbeef"}}"#,
         );
     }
 
@@ -202,8 +225,9 @@ mod tests {
         assert_signal_roundtrip(
             SignalMessage::SessionAccept {
                 session_id: "sess-1".into(),
+                signal_seq: 5,
             },
-            r#"{"type":"session_accept","session_id":"sess-1"}"#,
+            r#"{"type":"session_accept","session_id":"sess-1","signal_seq":5}"#,
         );
     }
 
@@ -212,9 +236,10 @@ mod tests {
         assert_signal_roundtrip(
             SignalMessage::SessionReject {
                 session_id: "sess-1".into(),
+                signal_seq: 6,
                 reason: RejectReason::Busy,
             },
-            r#"{"type":"session_reject","session_id":"sess-1","reason":"busy"}"#,
+            r#"{"type":"session_reject","session_id":"sess-1","signal_seq":6,"reason":"busy"}"#,
         );
     }
 
@@ -227,6 +252,7 @@ mod tests {
         ] {
             let msg = SignalMessage::SessionReject {
                 session_id: "s".into(),
+                signal_seq: 1,
                 reason,
             };
             let encoded = encode_message(&msg).unwrap();
@@ -240,10 +266,11 @@ mod tests {
         assert_signal_roundtrip(
             SignalMessage::SessionOffer {
                 session_id: "sess-1".into(),
+                signal_seq: 8,
                 sdp: "v=0\r\no=- 0 0 IN IP4 0.0.0.0\r\n".into(),
                 fingerprint_sig: "sig-bytes".into(),
             },
-            r#"{"type":"session_offer","session_id":"sess-1","sdp":"v=0\r\no=- 0 0 IN IP4 0.0.0.0\r\n","fingerprint_sig":"sig-bytes"}"#,
+            r#"{"type":"session_offer","session_id":"sess-1","signal_seq":8,"sdp":"v=0\r\no=- 0 0 IN IP4 0.0.0.0\r\n","fingerprint_sig":"sig-bytes"}"#,
         );
     }
 
@@ -252,9 +279,10 @@ mod tests {
         assert_signal_roundtrip(
             SignalMessage::SessionAnswer {
                 session_id: "sess-1".into(),
+                signal_seq: 9,
                 sdp: "v=0\r\n".into(),
             },
-            r#"{"type":"session_answer","session_id":"sess-1","sdp":"v=0\r\n"}"#,
+            r#"{"type":"session_answer","session_id":"sess-1","signal_seq":9,"sdp":"v=0\r\n"}"#,
         );
     }
 
@@ -263,6 +291,7 @@ mod tests {
         assert_signal_roundtrip(
             SignalMessage::IceCandidate {
                 session_id: "sess-1".into(),
+                signal_seq: 10,
                 candidate: IceCandidate {
                     candidate: "candidate:1 1 UDP 2122252543 192.0.2.1 54321 typ host".into(),
                     sdp_mid: Some("0".into()),
@@ -270,7 +299,24 @@ mod tests {
                     username_fragment: None,
                 },
             },
-            r#"{"type":"ice_candidate","session_id":"sess-1","candidate":{"candidate":"candidate:1 1 UDP 2122252543 192.0.2.1 54321 typ host","sdp_mid":"0","sdp_m_line_index":0}}"#,
+            r#"{"type":"ice_candidate","session_id":"sess-1","signal_seq":10,"candidate":{"candidate":"candidate:1 1 UDP 2122252543 192.0.2.1 54321 typ host","sdp_mid":"0","sdp_m_line_index":0}}"#,
+        );
+    }
+
+    #[test]
+    fn golden_ice_candidate_full_optionals() {
+        assert_signal_roundtrip(
+            SignalMessage::IceCandidate {
+                session_id: "sess-1".into(),
+                signal_seq: 11,
+                candidate: IceCandidate {
+                    candidate: "candidate:2 1 UDP 1686052607 198.51.100.1 9 typ srflx".into(),
+                    sdp_mid: Some("1".into()),
+                    sdp_m_line_index: Some(1),
+                    username_fragment: Some("ufrag1".into()),
+                },
+            },
+            r#"{"type":"ice_candidate","session_id":"sess-1","signal_seq":11,"candidate":{"candidate":"candidate:2 1 UDP 1686052607 198.51.100.1 9 typ srflx","sdp_mid":"1","sdp_m_line_index":1,"username_fragment":"ufrag1"}}"#,
         );
     }
 
@@ -279,8 +325,9 @@ mod tests {
         assert_signal_roundtrip(
             SignalMessage::MediaRestart {
                 session_id: "sess-1".into(),
+                signal_seq: 12,
             },
-            r#"{"type":"media_restart","session_id":"sess-1"}"#,
+            r#"{"type":"media_restart","session_id":"sess-1","signal_seq":12}"#,
         );
     }
 
@@ -289,8 +336,9 @@ mod tests {
         assert_signal_roundtrip(
             SignalMessage::Renegotiate {
                 session_id: "sess-1".into(),
+                signal_seq: 13,
             },
-            r#"{"type":"renegotiate","session_id":"sess-1"}"#,
+            r#"{"type":"renegotiate","session_id":"sess-1","signal_seq":13}"#,
         );
     }
 
@@ -299,21 +347,29 @@ mod tests {
         assert_signal_roundtrip(
             SignalMessage::SessionEnd {
                 session_id: "sess-1".into(),
+                signal_seq: 14,
                 reason: "user_hangup".into(),
             },
-            r#"{"type":"session_end","session_id":"sess-1","reason":"user_hangup"}"#,
+            r#"{"type":"session_end","session_id":"sess-1","signal_seq":14,"reason":"user_hangup"}"#,
         );
     }
 
     #[test]
     fn golden_stats() {
-        assert_signal_roundtrip(
-            SignalMessage::Stats {
-                session_id: "sess-1".into(),
-                payload: json!({"rtt_ms": 12.5, "bitrate_kbps": 8000}),
-            },
-            r#"{"type":"stats","session_id":"sess-1","payload":{"bitrate_kbps":8000,"rtt_ms":12.5}}"#,
-        );
+        // Free-form Value payloads: assert structural equality, not Map key order.
+        let msg = SignalMessage::Stats {
+            session_id: "sess-1".into(),
+            signal_seq: 15,
+            payload: json!({"rtt_ms": 12.5, "bitrate_kbps": 8000}),
+        };
+        let encoded = encode_message(&msg).expect("encode");
+        assert!(encoded.contains(r#""type":"stats""#));
+        assert!(encoded.contains(r#""session_id":"sess-1""#));
+        assert!(encoded.contains(r#""signal_seq":15"#));
+        let decoded = decode_message(&encoded).expect("decode");
+        assert_eq!(decoded, msg);
+        assert_eq!(decoded.signal_seq(), Some(15));
+        assert_eq!(decoded.session_id(), Some("sess-1"));
     }
 
     #[test]
@@ -325,6 +381,12 @@ mod tests {
             },
             r#"{"type":"error","code":"protocol_version","message":"unsupported protocol_version"}"#,
         );
+        let err = decode_message(
+            r#"{"type":"error","code":"protocol_version","message":"unsupported protocol_version"}"#,
+        )
+        .unwrap();
+        assert_eq!(err.signal_seq(), None);
+        assert_eq!(err.session_id(), None);
     }
 
     #[test]
@@ -363,12 +425,12 @@ mod tests {
 
     #[test]
     fn golden_input_mouse_buttons_all() {
-        for kind in [
-            MouseButtonKind::Left,
-            MouseButtonKind::Right,
-            MouseButtonKind::Middle,
-            MouseButtonKind::X1,
-            MouseButtonKind::X2,
+        for (kind, wire) in [
+            (MouseButtonKind::Left, "left"),
+            (MouseButtonKind::Right, "right"),
+            (MouseButtonKind::Middle, "middle"),
+            (MouseButtonKind::X1, "x1"),
+            (MouseButtonKind::X2, "x2"),
         ] {
             let event = InputEvent {
                 client_ts_us: 1,
@@ -382,6 +444,10 @@ mod tests {
                 }),
             };
             let encoded = encode_input(&event).unwrap();
+            assert!(
+                encoded.contains(&format!(r#""button":"{wire}""#)),
+                "expected button wire {wire} in {encoded}"
+            );
             assert_eq!(decode_input(&encoded).unwrap(), event);
         }
     }
@@ -442,7 +508,99 @@ mod tests {
     #[test]
     fn reject_unknown_message_type() {
         let err = decode_message(r#"{"type":"not_a_real_type"}"#).unwrap_err();
-        assert!(err.to_string().contains("unknown variant") || err.is_data());
+        let msg = err.to_string();
+        assert!(
+            msg.contains("unknown variant"),
+            "expected unknown variant wording, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn reject_unknown_input_kind() {
+        let err = decode_input(
+            r#"{"client_ts_us":1,"seq":1,"payload":{"kind":"not_a_payload","x":0.0}}"#,
+        )
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("unknown variant"),
+            "expected unknown variant wording, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn reject_missing_required_fields() {
+        let hello_no_auth =
+            decode_message(r#"{"type":"hello","role":"host","protocol_version":1}"#);
+        assert!(hello_no_auth.is_err(), "hello without auth must fail");
+
+        let offer_no_sig = decode_message(
+            r#"{"type":"session_offer","session_id":"s","signal_seq":1,"sdp":"v=0"}"#,
+        );
+        assert!(
+            offer_no_sig.is_err(),
+            "session_offer without fingerprint_sig must fail"
+        );
+
+        let intent_no_seq = decode_message(
+            r#"{"type":"session_intent","session_id":"s","host_public_id":"h","mode":"otp","prefilter":{}}"#,
+        );
+        assert!(
+            intent_no_seq.is_err(),
+            "session_intent without signal_seq must fail"
+        );
+    }
+
+    #[test]
+    fn reject_oversized_sdp() {
+        let huge = "x".repeat(MAX_SDP_BYTES + 1);
+        let msg = SignalMessage::SessionAnswer {
+            session_id: "s".into(),
+            signal_seq: 1,
+            sdp: huge,
+        };
+        // Bypass encode path: build JSON with oversized field.
+        let json = format!(
+            r#"{{"type":"session_answer","session_id":"s","signal_seq":1,"sdp":"{}"}}"#,
+            "x".repeat(MAX_SDP_BYTES + 1)
+        );
+        let err = decode_message(&json).unwrap_err();
+        match err {
+            ProtocolError::PayloadTooLarge { field, len, max } => {
+                assert_eq!(field, "sdp");
+                assert_eq!(len, MAX_SDP_BYTES + 1);
+                assert_eq!(max, MAX_SDP_BYTES);
+            }
+            other => panic!("expected PayloadTooLarge, got {other}"),
+        }
+        // validate_message_limits also rejects in-memory oversized values
+        assert!(validate_message_limits(&msg).is_err());
+    }
+
+    #[test]
+    fn reject_oversized_fingerprint_sig() {
+        let json = format!(
+            r#"{{"type":"session_offer","session_id":"s","signal_seq":1,"sdp":"v=0","fingerprint_sig":"{}"}}"#,
+            "s".repeat(MAX_FINGERPRINT_SIG_BYTES + 1)
+        );
+        let err = decode_message(&json).unwrap_err();
+        match err {
+            ProtocolError::PayloadTooLarge { field, .. } => assert_eq!(field, "fingerprint_sig"),
+            other => panic!("expected PayloadTooLarge, got {other}"),
+        }
+    }
+
+    #[test]
+    fn reject_oversized_ice_candidate() {
+        let json = format!(
+            r#"{{"type":"ice_candidate","session_id":"s","signal_seq":1,"candidate":{{"candidate":"{}"}}}}"#,
+            "c".repeat(MAX_ICE_CANDIDATE_BYTES + 1)
+        );
+        let err = decode_message(&json).unwrap_err();
+        match err {
+            ProtocolError::PayloadTooLarge { field, .. } => assert_eq!(field, "candidate"),
+            other => panic!("expected PayloadTooLarge, got {other}"),
+        }
     }
 
     #[test]

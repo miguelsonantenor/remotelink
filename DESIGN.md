@@ -482,7 +482,7 @@ skew_ms = audio_playout_host_equiv_ms - video_present_host_equiv_ms
 **Key repeat:** **Viewer-generated** repeats (OS repeat while held) sent as additional KeyEvents; host does not auto-repeat.
 
 **Mouse buttons:** left, right, middle, x1, x2.  
-**Wheel:** high-resolution if available (`precise_delta`); else line notches.
+**Wheel:** high-resolution if available; else line notches. **v1 wire authority** (`packages/protocol`): `MouseWheel = { delta_x, delta_y, precise, x, y, display_id }` (`precise: bool`; not a separate `precise_delta` field).
 
 **Reliability:**
 
@@ -558,7 +558,7 @@ flowchart TB
 
 **Presence:** Redis key `presence:{device_id}` → `{node_id, exp}`; TTL **30s** refreshed every 10s over WS. On node death: hosts reconnect, re-register; viewers in-flight sessions fail until ICE/media survives (media independent) but signaling control may drop—clients treat signaling disconnect as soft warning if media up; full teardown after grace.
 
-**Split-brain:** pub/sub delivery is best-effort; session messages include `session_id` + monotonic `signal_seq`; host ignores stale seq. Single-session lock in Postgres (`UPDATE ... WHERE active_session IS NULL`) as source of truth.
+**Split-brain:** pub/sub delivery is best-effort; session messages include `session_id` + monotonic `signal_seq` (v1 wire field on every session-scoped `/v1/ws` message; see `packages/protocol`); host ignores stale seq. Single-session lock in Postgres (`UPDATE ... WHERE active_session IS NULL`) as source of truth.
 
 **G4 NAT mix test plan (lab):**
 
@@ -632,21 +632,23 @@ remotelink/
 ```json
 { "type": "hello", "role": "host|viewer", "protocol_version": 1, "auth": { "device_token": "..." } }
 { "type": "hello_ok", "server_time": "...", "feature_flags": {} }
-{ "type": "session_intent", "session_id": "...", "host_public_id": "...", "mode": "otp|unattended|password", "prefilter": {} }
-{ "type": "session_incoming", "session_id": "...", "viewer_info": {} }
-{ "type": "auth_challenge", "session_id": "...", "payload": {} }
-{ "type": "auth_response", "session_id": "...", "payload": {} }
-{ "type": "session_accept", "session_id": "..." }
-{ "type": "session_reject", "session_id": "...", "reason": "busy|auth|policy" }
-{ "type": "session_offer", "session_id": "...", "sdp": "...", "fingerprint_sig": "..." }
-{ "type": "session_answer", "session_id": "...", "sdp": "..." }
-{ "type": "ice_candidate", "session_id": "...", "candidate": {} }
-{ "type": "media_restart", "session_id": "..." }
-{ "type": "renegotiate", "session_id": "..." }
-{ "type": "session_end", "session_id": "...", "reason": "..." }
-{ "type": "stats", "session_id": "...", "payload": {} }
+{ "type": "session_intent", "session_id": "...", "signal_seq": 1, "host_public_id": "...", "mode": "otp|unattended|password", "prefilter": {} }
+{ "type": "session_incoming", "session_id": "...", "signal_seq": 2, "viewer_info": {} }
+{ "type": "auth_challenge", "session_id": "...", "signal_seq": 3, "payload": {} }
+{ "type": "auth_response", "session_id": "...", "signal_seq": 4, "payload": {} }
+{ "type": "session_accept", "session_id": "...", "signal_seq": 5 }
+{ "type": "session_reject", "session_id": "...", "signal_seq": 6, "reason": "busy|auth|policy" }
+{ "type": "session_offer", "session_id": "...", "signal_seq": 7, "sdp": "...", "fingerprint_sig": "..." }
+{ "type": "session_answer", "session_id": "...", "signal_seq": 8, "sdp": "..." }
+{ "type": "ice_candidate", "session_id": "...", "signal_seq": 9, "candidate": {} }
+{ "type": "media_restart", "session_id": "...", "signal_seq": 10 }
+{ "type": "renegotiate", "session_id": "...", "signal_seq": 11 }
+{ "type": "session_end", "session_id": "...", "signal_seq": 12, "reason": "..." }
+{ "type": "stats", "session_id": "...", "signal_seq": 13, "payload": {} }
 { "type": "error", "code": "...", "message": "..." }
 ```
+
+**`signal_seq`:** required `u64` on every session-scoped message above (not on `hello` / `hello_ok` / `error`). Per-session monotonic counter; receivers drop messages with `signal_seq` ≤ last applied.
 
 **WS auth:** `hello.auth.device_token` = bearer from enrollment/refresh (host) or short-lived viewer token from `POST /v1/sessions` pre-step. Bind WS connection id → `device_id` in memory; reject mid-connection device_id spoof. No cookies → CSRF less relevant; still check `Origin` if browser ever used.
 

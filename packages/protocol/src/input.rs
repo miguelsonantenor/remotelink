@@ -1,4 +1,12 @@
 //! Viewer → host input events (DataChannel payload schema, v1 freeze).
+//!
+//! These Rust types are the **v1 wire authority** for input JSON (and for a
+//! future binary encoding of the same field set). Notable freezes:
+//! - Coordinates are normalized `x,y ∈ [0.0, 1.0]` over the selected capture
+//!   rectangle; `display_id` is reserved (always `0` in v1).
+//! - Keys use Windows scan-set-1 scancodes + extended flag (not Unicode).
+//! - Wheel wire shape is `{delta_x, delta_y, precise, x, y, display_id}`
+//!   (`precise` replaces the DESIGN prose name `precise_delta`).
 
 use serde::{Deserialize, Serialize};
 
@@ -44,6 +52,9 @@ pub struct MouseButton {
 }
 
 /// Mouse wheel / high-resolution scroll.
+///
+/// Wire: `delta_x`, `delta_y`, `precise`, `x`, `y`, `display_id`.
+/// When `precise` is true, deltas are high-resolution; otherwise line notches.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MouseWheel {
     /// Horizontal scroll delta.
