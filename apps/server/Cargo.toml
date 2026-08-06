@@ -6,9 +6,34 @@ license.workspace = true
 description = "RemoteLink signaling/registry server"
 publish = false
 
+[lib]
+name = "remotelink_server"
+path = "src/lib.rs"
+
 [[bin]]
 name = "remotelink-server"
 path = "src/main.rs"
 
 [dependencies]
 remotelink-common = { workspace = true }
+remotelink-auth = { workspace = true }
+remotelink-protocol = { workspace = true }
+async-trait = { workspace = true }
+axum = { workspace = true }
+base64 = { workspace = true }
+chrono = { workspace = true }
+hex = { workspace = true }
+rand = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+sqlx = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+zeroize = { workspace = true }
+
+[dev-dependencies]
+http-body-util = { workspace = true }
+tower = { workspace = true }

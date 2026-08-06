@@ -30,3 +30,21 @@ sha2 = "0.10"
 subtle = "2"
 thiserror = "2"
 zeroize = { version = "1", features = ["derive"] }
+async-trait = "0.1"
+axum = { version = "0.8", features = ["json", "macros"] }
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+hex = "0.4"
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio",
+    "tls-rustls-ring-webpki",
+    "postgres",
+    "chrono",
+    "migrate",
+    "macros",
+] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal"] }
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

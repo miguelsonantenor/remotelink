@@ -1,5 +1,43 @@
-//! RemoteLink signaling/registry server stub.
+//! RemoteLink registry/signaling server binary.
 
-fn main() {
-    println!("remotelink-server {}", remotelink_common::VERSION);
+use std::env;
+use std::net::SocketAddr;
+use std::sync::Arc;
+
+use remotelink_server::{router, AppState, MemoryDeviceRepo, PostgresDeviceRepo};
+use tracing_subscriber::EnvFilter;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
+        .init();
+
+    let listen = env::var("LISTEN_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".into());
+    let addr: SocketAddr = listen.parse()?;
+
+    let state = match env::var("DATABASE_URL") {
+        Ok(url) if !url.is_empty() => {
+            tracing::info!("using Postgres repository");
+            let repo = PostgresDeviceRepo::connect(&url).await?;
+            AppState::new(Arc::new(repo))
+        }
+        _ => {
+            tracing::warn!("DATABASE_URL unset; using in-memory repository (not durable)");
+            AppState::new(Arc::new(MemoryDeviceRepo::new()))
+        }
+    };
+
+    let app = router(state);
+    tracing::info!(
+        %addr,
+        version = remotelink_server::VERSION,
+        "remotelink-server listening"
+    );
+
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    axum::serve(listener, app).await?;
+    Ok(())
 }
