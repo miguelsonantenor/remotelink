@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "packages/common",
+    "packages/auth",
     "apps/host",
     "apps/viewer",
     "apps/server",
@@ -16,3 +17,13 @@ description = "RemoteLink: low-latency remote desktop with system audio"
 
 [workspace.dependencies]
 remotelink-common = { path = "packages/common", version = "0.1.0" }
+remotelink-auth = { path = "packages/auth", version = "0.1.0" }
+
+argon2 = { version = "0.5", features = ["std"] }
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+hmac = "0.12"
+rand = "0.8"
+sha2 = "0.10"
+subtle = "2"
+thiserror = "2"
+zeroize = { version = "1", features = ["derive"] }
