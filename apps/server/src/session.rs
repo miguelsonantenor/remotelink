@@ -2,9 +2,14 @@
 //!
 //! Tracks:
 //! - Connected hosts/viewers (connection id → outbound channel)
-//! - Host presence by `public_id` (single live WS per host)
+//! - Host presence by `public_id` (single live WS per host; re-hello replaces prior)
 //! - Pending/active sessions with a **single-session busy lock** per host
+//! - Session TTLs so busy locks cannot pin a host indefinitely
+//! - Monotonic per-session `signal_seq` (strict: inbound must be ≥ `next_signal_seq`)
 //! - Short-lived viewer session tokens (until `POST /v1/sessions`)
+//!
+//! Postgres `devices.active_session_id` CAS is deferred to multi-node / Redis work;
+//! this map is the single-node source of truth for PR 5a.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -49,6 +54,12 @@ pub enum SessionState {
     Closed,
 }
 
+/// Default how long a pending (unaccepted) session may hold the busy lock.
+pub const PENDING_SESSION_TTL: Duration = Duration::minutes(2);
+
+/// Default how long an active session may live without re-auth (idle ceiling).
+pub const ACTIVE_SESSION_TTL: Duration = Duration::hours(8);
+
 /// In-memory session record.
 #[derive(Debug, Clone)]
 pub struct Session {
@@ -59,9 +70,13 @@ pub struct Session {
     pub viewer_conn: ConnId,
     pub mode: SessionMode,
     pub state: SessionState,
-    /// Monotonic counter; next value to assign on server-originated messages.
+    /// Next acceptable `signal_seq` for inbound session-scoped messages.
+    /// Server-originated messages also consume this counter.
     pub next_signal_seq: u64,
     pub created_at: DateTime<Utc>,
+    /// Absolute expiry; pending uses [`PENDING_SESSION_TTL`], active uses
+    /// [`ACTIVE_SESSION_TTL`] (refreshed on accept).
+    pub expires_at: DateTime<Utc>,
 }
 
 /// Authenticated (or anonymous) peer bound to a live WS connection.
@@ -85,22 +100,35 @@ struct ViewerTokenRecord {
 pub const VIEWER_TOKEN_TTL: Duration = Duration::minutes(15);
 
 /// Thread-safe in-memory session + presence registry.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct SessionRegistry {
     inner: Mutex<RegistryInner>,
+    pending_ttl: Duration,
+    active_ttl: Duration,
+}
+
+impl Default for SessionRegistry {
+    fn default() -> Self {
+        Self {
+            inner: Mutex::new(RegistryInner::default()),
+            pending_ttl: PENDING_SESSION_TTL,
+            active_ttl: ACTIVE_SESSION_TTL,
+        }
+    }
 }
 
 #[derive(Debug, Default)]
 struct RegistryInner {
     /// Live connections and their send handles.
     conns: HashMap<ConnId, ConnTx>,
-    /// Host public_id → connection (last hello wins).
+    /// Host public_id → connection (re-hello replaces prior; see [`SessionRegistry::bind_peer`]).
     host_by_public_id: HashMap<String, ConnId>,
     /// Connection → peer identity after successful hello.
     peers: HashMap<ConnId, PeerIdentity>,
     /// session_id → session.
     sessions: HashMap<String, Session>,
     /// Host public_id → session_id while busy (pending or active).
+    /// Single-node lock; multi-node will use Postgres `devices.active_session_id` / Redis.
     host_busy: HashMap<String, String>,
     /// Viewer access-token hash → expiry.
     viewer_tokens: HashMap<String, ViewerTokenRecord>,
@@ -109,6 +137,15 @@ struct RegistryInner {
 impl SessionRegistry {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Construct with custom TTLs (tests / tighter deployments).
+    pub fn with_ttls(pending_ttl: Duration, active_ttl: Duration) -> Self {
+        Self {
+            inner: Mutex::new(RegistryInner::default()),
+            pending_ttl,
+            active_ttl,
+        }
     }
 
     /// Register a new WS connection; returns its id and the receiver half
@@ -121,13 +158,17 @@ impl SessionRegistry {
         (id, rx)
     }
 
-    /// Drop a connection and release any sessions it owned.
+    /// Drop a connection and release any sessions it still owns.
     pub async fn unregister_conn(&self, conn: ConnId) {
         let mut g = self.inner.lock().await;
+        Self::unregister_conn_locked(&mut g, conn, "peer_disconnected");
+    }
+
+    fn unregister_conn_locked(g: &mut RegistryInner, conn: ConnId, end_reason: &str) {
         g.conns.remove(&conn);
         g.peers.remove(&conn);
 
-        // Remove host presence if this conn was the live host socket.
+        // Remove host presence only if this conn is still the published one.
         let host_ids: Vec<String> = g
             .host_by_public_id
             .iter()
@@ -143,7 +184,7 @@ impl SessionRegistry {
             g.host_by_public_id.remove(&pid);
         }
 
-        // Close sessions involving this connection; notify peer when possible.
+        // Close sessions that still reference this connection.
         let affected: Vec<String> = g
             .sessions
             .iter()
@@ -157,40 +198,38 @@ impl SessionRegistry {
             .collect();
 
         for sid in affected {
-            let Some(mut session) = g.sessions.remove(&sid) else {
-                continue;
-            };
-            g.host_busy.remove(&session.host_public_id);
-            if session.state == SessionState::Closed {
-                continue;
-            }
-            session.state = SessionState::Closed;
-            let peer = if session.host_conn == conn {
-                session.viewer_conn
-            } else {
-                session.host_conn
-            };
-            let seq = session.next_signal_seq;
-            session.next_signal_seq = seq.saturating_add(1);
-            // Keep closed record briefly? drop for memory simplicity.
-            let _ = session;
-            if let Some(tx) = g.conns.get(&peer) {
-                let _ = tx.send(SignalMessage::SessionEnd {
-                    session_id: sid,
-                    signal_seq: seq,
-                    reason: "peer_disconnected".into(),
-                });
-            }
+            Self::close_session_locked(g, &sid, end_reason);
         }
     }
 
     /// Bind identity after a successful `hello`. Hosts are published for presence.
+    ///
+    /// If the same host `public_id` already has a live socket, that socket is
+    /// replaced: in-flight sessions rebind `host_conn` to the new connection and
+    /// the old connection is dropped with `connection_replaced`.
     pub async fn bind_peer(&self, conn: ConnId, identity: PeerIdentity) {
         let mut g = self.inner.lock().await;
         if identity.role == Role::Host {
             if let Some(ref public_id) = identity.device_public_id {
-                // Last connection wins for presence.
-                g.host_by_public_id.insert(public_id.clone(), conn);
+                if let Some(old) = g.host_by_public_id.insert(public_id.clone(), conn) {
+                    if old != conn {
+                        // Transfer pending/active sessions to the new host socket.
+                        for session in g.sessions.values_mut() {
+                            if session.host_conn == old && session.host_public_id == *public_id {
+                                session.host_conn = conn;
+                            }
+                        }
+                        // Evict old connection (do not end rebinding sessions —
+                        // they no longer reference `old`).
+                        if let Some(tx) = g.conns.remove(&old) {
+                            let _ = tx.send(SignalMessage::Error {
+                                code: "connection_replaced".into(),
+                                message: "host reconnected on another socket".into(),
+                            });
+                        }
+                        g.peers.remove(&old);
+                    }
+                }
             }
         }
         g.peers.insert(conn, identity);
@@ -232,6 +271,54 @@ impl SessionRegistry {
         matches!(g.viewer_tokens.get(&h), Some(r) if r.expires_at >= now)
     }
 
+    /// Reap sessions past `expires_at`; releases busy locks and notifies peers.
+    pub async fn reap_expired(&self, now: DateTime<Utc>) -> usize {
+        let mut g = self.inner.lock().await;
+        Self::reap_expired_locked(&mut g, now)
+    }
+
+    fn reap_expired_locked(g: &mut RegistryInner, now: DateTime<Utc>) -> usize {
+        let expired: Vec<String> = g
+            .sessions
+            .iter()
+            .filter_map(|(sid, s)| {
+                if s.state != SessionState::Closed && s.expires_at <= now {
+                    Some(sid.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let n = expired.len();
+        for sid in expired {
+            Self::close_session_locked(g, &sid, "session_ttl");
+        }
+        n
+    }
+
+    /// Close a session, release busy, notify both peers with `session_end`.
+    fn close_session_locked(g: &mut RegistryInner, session_id: &str, reason: &str) {
+        let Some(session) = g.sessions.remove(session_id) else {
+            return;
+        };
+        g.host_busy.remove(&session.host_public_id);
+        if session.state == SessionState::Closed {
+            return;
+        }
+        let seq = session.next_signal_seq;
+        let msg = SignalMessage::SessionEnd {
+            session_id: session_id.to_string(),
+            signal_seq: seq,
+            reason: reason.into(),
+        };
+        if let Some(tx) = g.conns.get(&session.host_conn) {
+            let _ = tx.send(msg.clone());
+        }
+        if let Some(tx) = g.conns.get(&session.viewer_conn) {
+            let _ = tx.send(msg);
+        }
+    }
+
     /// Create a pending session and notify the host, or return a terminal error message
     /// for the viewer (Error / SessionReject busy).
     pub async fn create_pending_session(
@@ -249,6 +336,8 @@ impl SessionRegistry {
         } = req;
 
         let mut g = self.inner.lock().await;
+        let now = Utc::now();
+        Self::reap_expired_locked(&mut g, now);
 
         if g.sessions.contains_key(&session_id) {
             return Err(error_msg(
@@ -273,7 +362,25 @@ impl SessionRegistry {
         };
 
         // Incoming uses the next monotonic seq after the intent.
-        let incoming_seq = signal_seq.saturating_add(1);
+        let incoming_seq = match signal_seq.checked_add(1) {
+            Some(s) => s,
+            None => {
+                return Err(error_msg(
+                    "bad_request",
+                    "signal_seq overflow; start a new session",
+                ));
+            }
+        };
+        let next_signal_seq = match incoming_seq.checked_add(1) {
+            Some(s) => s,
+            None => {
+                return Err(error_msg(
+                    "bad_request",
+                    "signal_seq overflow; start a new session",
+                ));
+            }
+        };
+
         let session = Session {
             session_id: session_id.clone(),
             host_public_id: host_public_id.clone(),
@@ -282,8 +389,9 @@ impl SessionRegistry {
             viewer_conn,
             mode,
             state: SessionState::Pending,
-            next_signal_seq: incoming_seq.saturating_add(1),
-            created_at: Utc::now(),
+            next_signal_seq,
+            created_at: now,
+            expires_at: now + self.pending_ttl,
         };
 
         g.host_busy.insert(host_public_id, session_id.clone());
@@ -312,6 +420,10 @@ impl SessionRegistry {
     }
 
     /// Host accept: mark active and forward to viewer.
+    ///
+    /// **signal_seq policy (strict):** inbound `signal_seq` must be ≥
+    /// `session.next_signal_seq`; otherwise `stale_signal_seq`. On success
+    /// `next_signal_seq = signal_seq + 1` and the client seq is forwarded.
     pub async fn accept_session(
         &self,
         host_conn: ConnId,
@@ -319,6 +431,9 @@ impl SessionRegistry {
         signal_seq: u64,
     ) -> Result<(), SignalMessage> {
         let mut g = self.inner.lock().await;
+        let now = Utc::now();
+        Self::reap_expired_locked(&mut g, now);
+
         let Some(session) = g.sessions.get_mut(session_id) else {
             return Err(error_msg("not_found", "unknown session_id"));
         };
@@ -331,10 +446,15 @@ impl SessionRegistry {
                 format!("session is {:?}, expected pending", session.state),
             ));
         }
-        session.state = SessionState::Active;
-        if signal_seq >= session.next_signal_seq {
-            session.next_signal_seq = signal_seq.saturating_add(1);
+        if signal_seq < session.next_signal_seq {
+            return Err(error_msg(
+                "stale_signal_seq",
+                format!("signal_seq {signal_seq} < next {}", session.next_signal_seq),
+            ));
         }
+        session.state = SessionState::Active;
+        session.expires_at = now + self.active_ttl;
+        session.next_signal_seq = signal_seq.saturating_add(1);
         let viewer = session.viewer_conn;
         let msg = SignalMessage::SessionAccept {
             session_id: session_id.to_string(),
@@ -347,6 +467,7 @@ impl SessionRegistry {
     }
 
     /// Host reject: close session, release busy lock, forward to viewer.
+    /// Strict `signal_seq` (see [`Self::accept_session`]).
     pub async fn reject_session(
         &self,
         host_conn: ConnId,
@@ -355,6 +476,9 @@ impl SessionRegistry {
         reason: remotelink_protocol::RejectReason,
     ) -> Result<(), SignalMessage> {
         let mut g = self.inner.lock().await;
+        let now = Utc::now();
+        Self::reap_expired_locked(&mut g, now);
+
         let Some(session) = g.sessions.get_mut(session_id) else {
             return Err(error_msg("not_found", "unknown session_id"));
         };
@@ -367,11 +491,15 @@ impl SessionRegistry {
                 format!("session is {:?}, expected pending", session.state),
             ));
         }
-        session.state = SessionState::Closed;
+        if signal_seq < session.next_signal_seq {
+            return Err(error_msg(
+                "stale_signal_seq",
+                format!("signal_seq {signal_seq} < next {}", session.next_signal_seq),
+            ));
+        }
         let host_public_id = session.host_public_id.clone();
         let viewer = session.viewer_conn;
         g.host_busy.remove(&host_public_id);
-        // Drop closed session entry.
         g.sessions.remove(session_id);
 
         let msg = SignalMessage::SessionReject {
@@ -386,6 +514,7 @@ impl SessionRegistry {
     }
 
     /// Either peer ends a pending/active session: release busy lock and notify the other side.
+    /// Strict `signal_seq` (see [`Self::accept_session`]).
     pub async fn end_session(
         &self,
         conn: ConnId,
@@ -394,6 +523,9 @@ impl SessionRegistry {
         reason: String,
     ) -> Result<(), SignalMessage> {
         let mut g = self.inner.lock().await;
+        let now = Utc::now();
+        Self::reap_expired_locked(&mut g, now);
+
         let Some(session) = g.sessions.get(session_id).cloned() else {
             return Err(error_msg("not_found", "unknown session_id"));
         };
@@ -402,6 +534,12 @@ impl SessionRegistry {
         }
         if session.state == SessionState::Closed {
             return Ok(());
+        }
+        if signal_seq < session.next_signal_seq {
+            return Err(error_msg(
+                "stale_signal_seq",
+                format!("signal_seq {signal_seq} < next {}", session.next_signal_seq),
+            ));
         }
         g.host_busy.remove(&session.host_public_id);
         g.sessions.remove(session_id);
@@ -422,16 +560,35 @@ impl SessionRegistry {
         Ok(())
     }
 
-    /// Test/helper: current busy session for a host, if any.
+    /// Test/helper: current busy session for a host, if any (after reap).
     pub async fn busy_session_for_host(&self, host_public_id: &str) -> Option<String> {
-        let g = self.inner.lock().await;
+        let mut g = self.inner.lock().await;
+        Self::reap_expired_locked(&mut g, Utc::now());
         g.host_busy.get(host_public_id).cloned()
     }
 
-    /// Test/helper: session state.
+    /// Test/helper: session state (after reap).
     pub async fn session_state(&self, session_id: &str) -> Option<SessionState> {
-        let g = self.inner.lock().await;
+        let mut g = self.inner.lock().await;
+        Self::reap_expired_locked(&mut g, Utc::now());
         g.sessions.get(session_id).map(|s| s.state)
+    }
+
+    /// Test/helper: force a session's `expires_at` into the past, then reap.
+    pub async fn force_expire_session(&self, session_id: &str) -> bool {
+        let mut g = self.inner.lock().await;
+        let Some(session) = g.sessions.get_mut(session_id) else {
+            return false;
+        };
+        session.expires_at = Utc::now() - Duration::seconds(1);
+        Self::reap_expired_locked(&mut g, Utc::now());
+        true
+    }
+
+    /// Test/helper: next expected signal_seq for a session.
+    pub async fn next_signal_seq(&self, session_id: &str) -> Option<u64> {
+        let g = self.inner.lock().await;
+        g.sessions.get(session_id).map(|s| s.next_signal_seq)
     }
 }
 

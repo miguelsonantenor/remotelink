@@ -61,7 +61,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
         }
     };
 
-    state.sessions.bind_peer(conn_id, identity.clone()).await;
+    // Presence already bound inside expect_hello (before hello_ok).
 
     // Process subsequent messages until disconnect.
     while let Some(frame) = stream.next().await {
@@ -149,6 +149,9 @@ async fn expect_hello(
     }
 
     let identity = authenticate(state, role, &auth).await?;
+
+    // Publish presence before hello_ok so intents cannot race a still-"offline" host.
+    state.sessions.bind_peer(conn_id, identity.clone()).await;
 
     // hello_ok
     let ok = SignalMessage::HelloOk {
@@ -240,7 +243,10 @@ async fn resolve_device_token(
         .repo
         .find_by_access_hash(&token_hash)
         .await
-        .map_err(|e| error_msg("internal", e.to_string()))?
+        .map_err(|e| {
+            tracing::error!(error = %e, "find_by_access_hash failed");
+            error_msg("internal", "internal error")
+        })?
         .ok_or_else(|| error_msg("unauthorized", "invalid device_token"))?;
 
     let now = Utc::now();
@@ -288,7 +294,10 @@ async fn handle_text(
                 .repo
                 .get_by_public_id(&host_public_id)
                 .await
-                .map_err(|e| error_msg("internal", e.to_string()))?
+                .map_err(|e| {
+                    tracing::error!(error = %e, "get_by_public_id failed");
+                    error_msg("internal", "internal error")
+                })?
                 .ok_or_else(|| error_msg("not_found", "unknown host_public_id"))?;
 
             if host_device.status != DeviceStatus::Active {

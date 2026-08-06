@@ -11,9 +11,10 @@ use remotelink_protocol::{
     decode_message, encode_message, HelloAuth, RejectReason, Role, SessionMode, SignalMessage,
     PROTOCOL_VERSION,
 };
-use remotelink_server::credentials::{mint_tokens, new_credential_from_issued};
+use remotelink_server::credentials::{hash_token, mint_tokens, new_credential_from_issued};
 use remotelink_server::{
-    router, AppState, DeviceRepository, MemoryDeviceRepo, NewDevice, SessionRegistry,
+    router, AppState, DeviceRepository, DeviceStatus, MemoryDeviceRepo, NewCredential, NewDevice,
+    SessionRegistry,
 };
 use serde_json::json;
 use tokio::net::TcpListener;
@@ -485,4 +486,476 @@ async fn signal_seq_present_on_session_messages() {
     let incoming = recv_msg(&mut host).await;
     assert_eq!(incoming.signal_seq(), Some(11));
     assert_eq!(incoming.session_id(), Some("sess-seq"));
+}
+
+/// Shared setup: online host + anonymous viewer after hello_ok.
+async fn connect_host_viewer(addr: SocketAddr, access: &str) -> (WsStream, WsStream) {
+    let mut host = connect_ws(addr).await;
+    send_msg(&mut host, &hello_host(access)).await;
+    assert!(matches!(
+        recv_msg(&mut host).await,
+        SignalMessage::HelloOk { .. }
+    ));
+    let mut viewer = connect_ws(addr).await;
+    send_msg(&mut viewer, &hello_viewer("")).await;
+    assert!(matches!(
+        recv_msg(&mut viewer).await,
+        SignalMessage::HelloOk { .. }
+    ));
+    (host, viewer)
+}
+
+async fn intent(viewer: &mut WsStream, session_id: &str, host_public_id: &str, signal_seq: u64) {
+    send_msg(
+        viewer,
+        &SignalMessage::SessionIntent {
+            session_id: session_id.into(),
+            signal_seq,
+            host_public_id: host_public_id.into(),
+            mode: SessionMode::Otp,
+            prefilter: json!({}),
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn host_disconnect_releases_busy_and_notifies_viewer() {
+    let repo = Arc::new(MemoryDeviceRepo::new());
+    let sessions = Arc::new(SessionRegistry::new());
+    let state = AppState::with_sessions(repo.clone(), sessions.clone());
+    let (host_public_id, access) = register_host(&repo).await;
+    let addr = spawn_server(state).await;
+
+    let (host, mut viewer) = connect_host_viewer(addr, &access).await;
+    intent(&mut viewer, "sess-disc-host", &host_public_id, 1).await;
+
+    // Drain session_incoming on host before dropping it.
+    let mut host = host;
+    assert!(matches!(
+        recv_msg(&mut host).await,
+        SignalMessage::SessionIncoming { .. }
+    ));
+    assert!(sessions
+        .busy_session_for_host(&host_public_id)
+        .await
+        .is_some());
+
+    drop(host);
+
+    match recv_msg(&mut viewer).await {
+        SignalMessage::SessionEnd {
+            reason, session_id, ..
+        } => {
+            assert_eq!(session_id, "sess-disc-host");
+            assert_eq!(reason, "peer_disconnected");
+        }
+        other => panic!("expected session_end, got {other:?}"),
+    }
+    assert!(sessions
+        .busy_session_for_host(&host_public_id)
+        .await
+        .is_none());
+}
+
+#[tokio::test]
+async fn viewer_disconnect_releases_busy_and_notifies_host() {
+    let repo = Arc::new(MemoryDeviceRepo::new());
+    let sessions = Arc::new(SessionRegistry::new());
+    let state = AppState::with_sessions(repo.clone(), sessions.clone());
+    let (host_public_id, access) = register_host(&repo).await;
+    let addr = spawn_server(state).await;
+
+    let (mut host, mut viewer) = connect_host_viewer(addr, &access).await;
+    intent(&mut viewer, "sess-disc-viewer", &host_public_id, 1).await;
+    assert!(matches!(
+        recv_msg(&mut host).await,
+        SignalMessage::SessionIncoming { .. }
+    ));
+
+    drop(viewer);
+
+    match recv_msg(&mut host).await {
+        SignalMessage::SessionEnd { reason, .. } => {
+            assert_eq!(reason, "peer_disconnected");
+        }
+        other => panic!("expected session_end, got {other:?}"),
+    }
+    assert!(sessions
+        .busy_session_for_host(&host_public_id)
+        .await
+        .is_none());
+}
+
+#[tokio::test]
+async fn busy_lock_while_active_rejects_second_intent() {
+    let repo = Arc::new(MemoryDeviceRepo::new());
+    let sessions = Arc::new(SessionRegistry::new());
+    let state = AppState::with_sessions(repo.clone(), sessions.clone());
+    let (host_public_id, access) = register_host(&repo).await;
+    let addr = spawn_server(state).await;
+
+    let (mut host, mut viewer) = connect_host_viewer(addr, &access).await;
+    intent(&mut viewer, "sess-active-busy", &host_public_id, 1).await;
+    assert!(matches!(
+        recv_msg(&mut host).await,
+        SignalMessage::SessionIncoming { .. }
+    ));
+    send_msg(
+        &mut host,
+        &SignalMessage::SessionAccept {
+            session_id: "sess-active-busy".into(),
+            signal_seq: 3,
+        },
+    )
+    .await;
+    assert!(matches!(
+        recv_msg(&mut viewer).await,
+        SignalMessage::SessionAccept { .. }
+    ));
+    assert_eq!(
+        sessions.session_state("sess-active-busy").await,
+        Some(remotelink_server::SessionState::Active)
+    );
+
+    let mut v2 = connect_ws(addr).await;
+    send_msg(&mut v2, &hello_viewer("")).await;
+    assert!(matches!(
+        recv_msg(&mut v2).await,
+        SignalMessage::HelloOk { .. }
+    ));
+    intent(&mut v2, "sess-active-busy-2", &host_public_id, 1).await;
+    match recv_msg(&mut v2).await {
+        SignalMessage::SessionReject { reason, .. } => {
+            assert_eq!(reason, RejectReason::Busy);
+        }
+        other => panic!("expected busy while active, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn session_end_releases_busy() {
+    let repo = Arc::new(MemoryDeviceRepo::new());
+    let sessions = Arc::new(SessionRegistry::new());
+    let state = AppState::with_sessions(repo.clone(), sessions.clone());
+    let (host_public_id, access) = register_host(&repo).await;
+    let addr = spawn_server(state).await;
+
+    let (mut host, mut viewer) = connect_host_viewer(addr, &access).await;
+    intent(&mut viewer, "sess-end-1", &host_public_id, 1).await;
+    assert!(matches!(
+        recv_msg(&mut host).await,
+        SignalMessage::SessionIncoming { .. }
+    ));
+    send_msg(
+        &mut host,
+        &SignalMessage::SessionAccept {
+            session_id: "sess-end-1".into(),
+            signal_seq: 3,
+        },
+    )
+    .await;
+    assert!(matches!(
+        recv_msg(&mut viewer).await,
+        SignalMessage::SessionAccept { .. }
+    ));
+
+    send_msg(
+        &mut host,
+        &SignalMessage::SessionEnd {
+            session_id: "sess-end-1".into(),
+            signal_seq: 4,
+            reason: "host_hangup".into(),
+        },
+    )
+    .await;
+
+    match recv_msg(&mut viewer).await {
+        SignalMessage::SessionEnd { reason, .. } => assert_eq!(reason, "host_hangup"),
+        other => panic!("expected session_end, got {other:?}"),
+    }
+    assert!(sessions
+        .busy_session_for_host(&host_public_id)
+        .await
+        .is_none());
+}
+
+#[tokio::test]
+async fn host_hello_rejects_expired_access_token() {
+    let repo = Arc::new(MemoryDeviceRepo::new());
+    let public_id = DevicePublicId::generate().into_string();
+    let device = repo
+        .create_device(NewDevice {
+            public_id,
+            display_name: None,
+            public_key: vec![9; 32],
+            protocol_version_last: Some(1),
+        })
+        .await
+        .unwrap();
+    let now = Utc::now();
+    let access = "rl_at_expired_for_ws_hello_0000000001";
+    repo.insert_credential(NewCredential {
+        device_id: device.id,
+        token_hash: hash_token(access),
+        refresh_token_hash: hash_token("rl_rt_still_ok"),
+        access_expires_at: now - chrono::Duration::minutes(1),
+        expires_at: now + chrono::Duration::days(7),
+    })
+    .await
+    .unwrap();
+
+    let state = AppState::new(repo);
+    let addr = spawn_server(state).await;
+    let mut host = connect_ws(addr).await;
+    send_msg(&mut host, &hello_host(access)).await;
+    match recv_msg(&mut host).await {
+        SignalMessage::Error { code, message } => {
+            assert_eq!(code, "unauthorized");
+            assert!(message.contains("expired") || message.contains("unauthorized"));
+        }
+        other => panic!("expected unauthorized, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn host_hello_rejects_disabled_device() {
+    let repo = Arc::new(MemoryDeviceRepo::new());
+    let (public_id, access) = register_host(&repo).await;
+    repo.set_status(&public_id, DeviceStatus::Disabled).unwrap();
+
+    let state = AppState::new(repo);
+    let addr = spawn_server(state).await;
+    let mut host = connect_ws(addr).await;
+    send_msg(&mut host, &hello_host(&access)).await;
+    match recv_msg(&mut host).await {
+        SignalMessage::Error { code, .. } => assert_eq!(code, "unauthorized"),
+        other => panic!("expected unauthorized, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn role_reverse_viewer_cannot_accept_host_cannot_intent() {
+    let repo = Arc::new(MemoryDeviceRepo::new());
+    let state = AppState::new(repo.clone());
+    let (host_public_id, access) = register_host(&repo).await;
+    let addr = spawn_server(state).await;
+
+    let (mut host, mut viewer) = connect_host_viewer(addr, &access).await;
+
+    // Host must not send session_intent.
+    intent(&mut host, "sess-role", &host_public_id, 1).await;
+    match recv_msg(&mut host).await {
+        SignalMessage::Error { code, message } => {
+            assert_eq!(code, "unauthorized");
+            assert!(message.contains("viewers"));
+        }
+        other => panic!("expected unauthorized for host intent, got {other:?}"),
+    }
+
+    // Viewer must not send session_accept.
+    send_msg(
+        &mut viewer,
+        &SignalMessage::SessionAccept {
+            session_id: "nope".into(),
+            signal_seq: 1,
+        },
+    )
+    .await;
+    match recv_msg(&mut viewer).await {
+        SignalMessage::Error { code, message } => {
+            assert_eq!(code, "unauthorized");
+            assert!(message.contains("hosts"));
+        }
+        other => panic!("expected unauthorized for viewer accept, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn duplicate_session_id_conflicts() {
+    let repo = Arc::new(MemoryDeviceRepo::new());
+    let sessions = Arc::new(SessionRegistry::new());
+    let state = AppState::with_sessions(repo.clone(), sessions);
+    let (host_public_id, access) = register_host(&repo).await;
+    let addr = spawn_server(state).await;
+
+    let (mut host, mut viewer) = connect_host_viewer(addr, &access).await;
+    intent(&mut viewer, "sess-dup", &host_public_id, 1).await;
+    assert!(matches!(
+        recv_msg(&mut host).await,
+        SignalMessage::SessionIncoming { .. }
+    ));
+
+    // Same session_id from another viewer while first is still pending.
+    // Busy rejects first when same host; use reject path by ending first?
+    // Actually host is busy so we get busy not conflict. Force conflict by
+    // same session_id on a free host — register second host.
+    let (host2_id, access2) = register_host(&repo).await;
+    let mut host2 = connect_ws(addr).await;
+    send_msg(&mut host2, &hello_host(&access2)).await;
+    assert!(matches!(
+        recv_msg(&mut host2).await,
+        SignalMessage::HelloOk { .. }
+    ));
+
+    let mut v2 = connect_ws(addr).await;
+    send_msg(&mut v2, &hello_viewer("")).await;
+    assert!(matches!(
+        recv_msg(&mut v2).await,
+        SignalMessage::HelloOk { .. }
+    ));
+    // Reuse session_id that still exists on first host's pending session.
+    intent(&mut v2, "sess-dup", &host2_id, 1).await;
+    match recv_msg(&mut v2).await {
+        SignalMessage::Error { code, .. } => assert_eq!(code, "conflict"),
+        other => panic!("expected conflict, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn stale_signal_seq_rejected_on_accept() {
+    let repo = Arc::new(MemoryDeviceRepo::new());
+    let sessions = Arc::new(SessionRegistry::new());
+    let state = AppState::with_sessions(repo.clone(), sessions.clone());
+    let (host_public_id, access) = register_host(&repo).await;
+    let addr = spawn_server(state).await;
+
+    let (mut host, mut viewer) = connect_host_viewer(addr, &access).await;
+    intent(&mut viewer, "sess-stale-seq", &host_public_id, 1).await;
+    assert!(matches!(
+        recv_msg(&mut host).await,
+        SignalMessage::SessionIncoming { .. }
+    ));
+    // next_signal_seq is 3 after intent(1) → incoming(2)
+    assert_eq!(sessions.next_signal_seq("sess-stale-seq").await, Some(3));
+
+    send_msg(
+        &mut host,
+        &SignalMessage::SessionAccept {
+            session_id: "sess-stale-seq".into(),
+            signal_seq: 0, // stale
+        },
+    )
+    .await;
+    match recv_msg(&mut host).await {
+        SignalMessage::Error { code, .. } => assert_eq!(code, "stale_signal_seq"),
+        other => panic!("expected stale_signal_seq, got {other:?}"),
+    }
+    // Still pending — not advanced.
+    assert_eq!(
+        sessions.session_state("sess-stale-seq").await,
+        Some(remotelink_server::SessionState::Pending)
+    );
+}
+
+#[tokio::test]
+async fn pending_session_ttl_releases_busy() {
+    let repo = Arc::new(MemoryDeviceRepo::new());
+    let sessions = Arc::new(SessionRegistry::new());
+    let state = AppState::with_sessions(repo.clone(), sessions.clone());
+    let (host_public_id, access) = register_host(&repo).await;
+    let addr = spawn_server(state).await;
+
+    let (mut host, mut viewer) = connect_host_viewer(addr, &access).await;
+    intent(&mut viewer, "sess-ttl", &host_public_id, 1).await;
+    assert!(matches!(
+        recv_msg(&mut host).await,
+        SignalMessage::SessionIncoming { .. }
+    ));
+    assert!(sessions
+        .busy_session_for_host(&host_public_id)
+        .await
+        .is_some());
+
+    assert!(sessions.force_expire_session("sess-ttl").await);
+
+    // Both peers should see session_end reason=session_ttl (order nondeterministic
+    // if both read; check busy released and at least one peer notified).
+    // force_expire reaps under the lock and sends to both; drain both.
+    let mut saw_ttl = false;
+    for peer in [&mut host, &mut viewer] {
+        if let Ok(SignalMessage::SessionEnd { reason, .. }) =
+            tokio::time::timeout(Duration::from_millis(500), async {
+                loop {
+                    let frame = peer.next().await.expect("ws").expect("err");
+                    match frame {
+                        Message::Text(t) => return decode_message(t.as_str()).unwrap(),
+                        Message::Ping(p) => {
+                            peer.send(Message::Pong(p)).await.ok();
+                        }
+                        _ => {}
+                    }
+                }
+            })
+            .await
+        {
+            assert_eq!(reason, "session_ttl");
+            saw_ttl = true;
+        }
+    }
+    assert!(saw_ttl, "expected at least one session_ttl end");
+    assert!(sessions
+        .busy_session_for_host(&host_public_id)
+        .await
+        .is_none());
+
+    // Host free for a new intent.
+    intent(&mut viewer, "sess-after-ttl", &host_public_id, 1).await;
+    assert!(matches!(
+        recv_msg(&mut host).await,
+        SignalMessage::SessionIncoming {
+            session_id: ref sid,
+            ..
+        } if sid == "sess-after-ttl"
+    ));
+}
+
+#[tokio::test]
+async fn host_reconnect_rebinds_pending_session() {
+    let repo = Arc::new(MemoryDeviceRepo::new());
+    let sessions = Arc::new(SessionRegistry::new());
+    let state = AppState::with_sessions(repo.clone(), sessions.clone());
+    let (host_public_id, access) = register_host(&repo).await;
+    let addr = spawn_server(state).await;
+
+    let (mut host_a, mut viewer) = connect_host_viewer(addr, &access).await;
+    intent(&mut viewer, "sess-rebind", &host_public_id, 1).await;
+    assert!(matches!(
+        recv_msg(&mut host_a).await,
+        SignalMessage::SessionIncoming { .. }
+    ));
+
+    // Second host connection with same token replaces presence.
+    let mut host_b = connect_ws(addr).await;
+    send_msg(&mut host_b, &hello_host(&access)).await;
+    assert!(matches!(
+        recv_msg(&mut host_b).await,
+        SignalMessage::HelloOk { .. }
+    ));
+
+    // Old socket should see connection_replaced (best-effort).
+    match recv_msg(&mut host_a).await {
+        SignalMessage::Error { code, .. } => assert_eq!(code, "connection_replaced"),
+        other => panic!("expected connection_replaced, got {other:?}"),
+    }
+
+    // New socket can accept the transferred pending session.
+    send_msg(
+        &mut host_b,
+        &SignalMessage::SessionAccept {
+            session_id: "sess-rebind".into(),
+            signal_seq: 3,
+        },
+    )
+    .await;
+    match recv_msg(&mut viewer).await {
+        SignalMessage::SessionAccept { session_id, .. } => {
+            assert_eq!(session_id, "sess-rebind");
+        }
+        other => panic!("expected accept after rebind, got {other:?}"),
+    }
+    assert_eq!(
+        sessions.session_state("sess-rebind").await,
+        Some(remotelink_server::SessionState::Active)
+    );
 }
