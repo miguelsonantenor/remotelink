@@ -3155,6 +3155,24 @@ name = "remotelink-common"
 version = "0.1.0"
 
 [[package]]
+name = "remotelink-e2e"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "chrono",
+ "futures-util",
+ "remotelink-auth",
+ "remotelink-host",
+ "remotelink-net",
+ "remotelink-protocol",
+ "remotelink-server",
+ "remotelink-viewer-core",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite 0.26.2",
+]
+
+[[package]]
 name = "remotelink-host"
 version = "0.1.0"
 dependencies = [

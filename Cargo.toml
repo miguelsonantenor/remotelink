@@ -11,6 +11,7 @@ members = [
     "apps/host",
     "apps/viewer",
     "apps/server",
+    "tests/e2e",
 ]
 
 [workspace.package]

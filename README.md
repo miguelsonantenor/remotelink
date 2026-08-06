@@ -53,6 +53,16 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
+### Synthetic E2E (identity bind + A/V + input mock)
+
+PR 15 composes host `SessionManager` + `viewer-core` over `MockPeerTransport` (no GPU, no real network):
+
+```bash
+cargo test -p remotelink-e2e
+```
+
+Coverage: Mode A/B authorize → DTLS fingerprint_sig → DataChannel identity bind; input rejected before bind / accepted after; synthetic video/audio on the viewer; optional in-process server `session_intent` + accept smoke (`127.0.0.1:0` only).
+
 CI (`.github/workflows/ci.yml`) runs `fmt --check`, `clippy -D warnings`, and `test` on `ubuntu-latest`.
 
 ## License
