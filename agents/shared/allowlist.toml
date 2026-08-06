@@ -1,0 +1,16 @@
+# Coverage allowlist bootstrap for RemoteLink multi-agent testing.
+#
+# Coverage fail-closed gates are OFF until a later PR (PR 25 — ci: enforce
+# per-package coverage gates). Until then, coverage is report-only: missing
+# tests or unallowlisted public items must not fail CI.
+#
+# This file intentionally starts empty — no intentional coverage gaps are
+# registered yet. When gates are enabled, list packages/items here with a
+# reason (e.g. FFI shims, GUI paint paths).
+#
+# Example future entries (commented; not active):
+#
+# [[gap]]
+# crate = "remotelink-common"
+# item = "some_item"
+# reason = "placeholder until hand tests land"

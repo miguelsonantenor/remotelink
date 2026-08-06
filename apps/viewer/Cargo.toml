@@ -1,0 +1,14 @@
+[package]
+name = "remotelink-viewer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "RemoteLink viewer client (decode, render, input capture)"
+publish = false
+
+[[bin]]
+name = "remotelink-viewer"
+path = "src/main.rs"
+
+[dependencies]
+remotelink-common = { workspace = true }
