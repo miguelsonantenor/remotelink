@@ -5,7 +5,7 @@
 //! - `POST /v1/devices/register` — enroll host, store pubkey + public_id, issue tokens
 //! - `POST /v1/devices/{id}/token/refresh` — rotate device credentials
 //! - `DELETE /v1/devices/{id}` — soft-delete + revoke credentials
-//! - `GET /v1/ws` — signaling WebSocket (`hello`, `session_intent`, accept/reject)
+//! - `GET /v1/ws` — signaling WebSocket (hello, session lifecycle, SDP/ICE relay)
 //! - `GET /healthz` / `GET /readyz` — probes
 //!
 //! Storage is abstracted via [`repo::DeviceRepository`] with in-memory and

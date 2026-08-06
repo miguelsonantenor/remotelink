@@ -1,10 +1,12 @@
 //! WebSocket signaling endpoint (`GET /v1/ws`).
 //!
-//! Flow (PR 5a):
+//! Flow:
 //! 1. Client connects and sends `hello` (host device token; viewer token or anonymous).
 //! 2. Server replies `hello_ok` and publishes host presence.
 //! 3. Viewer sends `session_intent` → host receives `session_incoming` (busy lock).
 //! 4. Host sends `session_accept` or `session_reject` → forwarded to viewer.
+//! 5. After accept: `session_offer` / `session_answer` / `ice_candidate` (and optional
+//!    `media_restart` / `renegotiate`) are forward-only relayed between parties.
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
@@ -158,7 +160,7 @@ async fn expect_hello(
         server_time: Utc::now().to_rfc3339(),
         feature_flags: json!({
             "max_protocol_version": PROTOCOL_VERSION,
-            "sdp_relay": false,
+            "sdp_relay": true,
         }),
     };
     if !state.sessions.send_to(conn_id, ok).await {
@@ -349,18 +351,15 @@ async fn handle_text(
                 .reject_session(conn_id, &session_id, signal_seq, reason)
                 .await
         }
-        // PR 5b will relay SDP/ICE; reject early with a clear code.
-        SignalMessage::SessionOffer { .. }
+        // Forward-only SDP/ICE/media control between session parties (active only).
+        // Size limits are enforced by decode_message (MAX_SDP_BYTES, MAX_ICE_*, etc.).
+        msg @ (SignalMessage::SessionOffer { .. }
         | SignalMessage::SessionAnswer { .. }
         | SignalMessage::IceCandidate { .. }
         | SignalMessage::MediaRestart { .. }
-        | SignalMessage::Renegotiate { .. }
-        | SignalMessage::AuthChallenge { .. }
-        | SignalMessage::AuthResponse { .. }
-        | SignalMessage::Stats { .. } => Err(error_msg(
-            "not_implemented",
-            "message type not handled in this server version",
-        )),
+        | SignalMessage::Renegotiate { .. }) => {
+            state.sessions.relay_session_message(conn_id, msg).await
+        }
         SignalMessage::SessionEnd {
             session_id,
             signal_seq,
@@ -371,6 +370,13 @@ async fn handle_text(
                 .end_session(conn_id, &session_id, signal_seq, reason)
                 .await
         }
+        // Auth challenge/response and stats relay land in a later PR.
+        SignalMessage::AuthChallenge { .. }
+        | SignalMessage::AuthResponse { .. }
+        | SignalMessage::Stats { .. } => Err(error_msg(
+            "not_implemented",
+            "message type not handled in this server version",
+        )),
         SignalMessage::HelloOk { .. }
         | SignalMessage::SessionIncoming { .. }
         | SignalMessage::Error { .. } => Err(error_msg(

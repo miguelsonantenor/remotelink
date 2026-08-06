@@ -43,12 +43,12 @@ impl std::fmt::Display for ConnId {
     }
 }
 
-/// Session lifecycle state for PR 5a (SDP/ICE relay is PR 5b).
+/// Session lifecycle state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionState {
     /// Viewer intent delivered; waiting for host accept/reject.
     Pending,
-    /// Host accepted; media signaling may follow (PR 5b).
+    /// Host accepted; SDP/ICE and related payloads may be relayed.
     Active,
     /// Terminal — rejected or ended; lock released.
     Closed,
@@ -554,6 +554,116 @@ impl SessionRegistry {
             signal_seq,
             reason,
         };
+        if let Some(tx) = g.conns.get(&peer) {
+            let _ = tx.send(msg);
+        }
+        Ok(())
+    }
+
+    /// Forward a post-accept signaling payload to the other party (no rewrite).
+    ///
+    /// Allowed only for **active** sessions and only from a party to that session.
+    /// Direction rules:
+    /// - `session_offer` — host → viewer
+    /// - `session_answer` — viewer → host
+    /// - `ice_candidate`, `media_restart`, `renegotiate` — either direction
+    ///
+    /// Strict `signal_seq` (see [`Self::accept_session`]). Size limits are enforced
+    /// by [`remotelink_protocol::decode_message`] before this is called.
+    pub async fn relay_session_message(
+        &self,
+        conn: ConnId,
+        msg: SignalMessage,
+    ) -> Result<(), SignalMessage> {
+        let (session_id, signal_seq) = match &msg {
+            SignalMessage::SessionOffer {
+                session_id,
+                signal_seq,
+                ..
+            }
+            | SignalMessage::SessionAnswer {
+                session_id,
+                signal_seq,
+                ..
+            }
+            | SignalMessage::IceCandidate {
+                session_id,
+                signal_seq,
+                ..
+            }
+            | SignalMessage::MediaRestart {
+                session_id,
+                signal_seq,
+            }
+            | SignalMessage::Renegotiate {
+                session_id,
+                signal_seq,
+            } => (session_id.as_str(), *signal_seq),
+            _ => {
+                return Err(error_msg(
+                    "protocol_error",
+                    "message type is not a relayable session payload",
+                ));
+            }
+        };
+
+        let mut g = self.inner.lock().await;
+        let now = Utc::now();
+        Self::reap_expired_locked(&mut g, now);
+
+        let Some(session) = g.sessions.get_mut(session_id) else {
+            return Err(error_msg("not_found", "unknown session_id"));
+        };
+        if session.host_conn != conn && session.viewer_conn != conn {
+            return Err(error_msg("unauthorized", "not a party to this session"));
+        }
+        if session.state != SessionState::Active {
+            return Err(error_msg(
+                "invalid_state",
+                format!("session is {:?}, expected active", session.state),
+            ));
+        }
+        if signal_seq < session.next_signal_seq {
+            return Err(error_msg(
+                "stale_signal_seq",
+                format!("signal_seq {signal_seq} < next {}", session.next_signal_seq),
+            ));
+        }
+
+        let is_host = session.host_conn == conn;
+        let peer = match &msg {
+            SignalMessage::SessionOffer { .. } => {
+                if !is_host {
+                    return Err(error_msg(
+                        "unauthorized",
+                        "only the host may send session_offer",
+                    ));
+                }
+                session.viewer_conn
+            }
+            SignalMessage::SessionAnswer { .. } => {
+                if is_host {
+                    return Err(error_msg(
+                        "unauthorized",
+                        "only the viewer may send session_answer",
+                    ));
+                }
+                session.host_conn
+            }
+            SignalMessage::IceCandidate { .. }
+            | SignalMessage::MediaRestart { .. }
+            | SignalMessage::Renegotiate { .. } => {
+                if is_host {
+                    session.viewer_conn
+                } else {
+                    session.host_conn
+                }
+            }
+            _ => unreachable!("relay filter already matched"),
+        };
+
+        session.next_signal_seq = signal_seq.saturating_add(1);
+
         if let Some(tx) = g.conns.get(&peer) {
             let _ = tx.send(msg);
         }
