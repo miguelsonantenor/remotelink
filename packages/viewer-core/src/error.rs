@@ -26,6 +26,10 @@ pub enum ViewerError {
     #[error("protocol: {0}")]
     Protocol(#[from] remotelink_protocol::ProtocolError),
 
+    /// Auth / identity bind failure (fingerprint_sig or DC challenge).
+    #[error("auth: {0}")]
+    Auth(#[from] remotelink_auth::AuthError),
+
     /// Media decode / playout failure.
     #[error("media: {0}")]
     Media(String),

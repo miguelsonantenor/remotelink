@@ -7,9 +7,11 @@ description = "Toolkit-agnostic RemoteLink viewer core (session, decode hooks, p
 publish = false
 
 [dependencies]
+remotelink-auth = { workspace = true }
 remotelink-protocol = { workspace = true }
 remotelink-media = { workspace = true }
 remotelink-net = { workspace = true }
+ed25519-dalek = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

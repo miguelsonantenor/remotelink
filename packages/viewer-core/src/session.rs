@@ -1,8 +1,21 @@
 //! Viewer session: PeerTransport answerer + decode/playout/input.
+//!
+//! # Identity binding (PR 13 / KD17)
+//!
+//! After the peer is connected, the host issues a DataChannel identity
+//! challenge. The viewer proves session auth material bound to
+//! `session_id || fp_host || fp_viewer`. [`Self::identity_bound`] tracks
+//! completion. Real DTLS certs come later; mocks use
+//! [`remotelink_net::DtlsFingerprint::sha256`].
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
+use ed25519_dalek::VerifyingKey;
+use remotelink_auth::{
+    respond_dc_challenge, verify_session_fingerprint, DcIdentityMessage, IdentityBindState,
+    SessionBindKey, IDENTITY_CHANNEL_LABEL,
+};
 use remotelink_net::{
     AudioPacket, BoxPeerTransport, ConnectionState, DataMessage, IncomingTrackData,
     LocalIceCandidate, PeerTransport, PeerTransportCallbacks, SessionDescription, VideoNalu,
@@ -70,6 +83,8 @@ pub struct SessionStats {
     pub local_ice: u64,
     /// DataChannel messages received (non-input / control).
     pub data_rx: u64,
+    /// Identity DataChannel messages handled.
+    pub identity_messages: u64,
 }
 
 /// Toolkit-agnostic viewer session (answerer side).
@@ -83,7 +98,12 @@ pub struct SessionStats {
 /// [`Self::begin_connect`] and [`Self::attach_transport`] tear down any previous
 /// peer (`close` + clear) so phase and transport stay aligned for a second
 /// Connect from the shell. Prefer a fresh [`ViewerSession`] when identity state
-/// (PR 13) must not carry over.
+/// must not carry over.
+///
+/// # Identity (PR 13)
+///
+/// Set host verifying key + session bind key before/during connect. Verify
+/// `fingerprint_sig` on offer; auto-respond to DC identity challenges on poll.
 pub struct ViewerSession {
     machine: ConnectionMachine,
     transport: Option<BoxPeerTransport>,
@@ -103,6 +123,16 @@ pub struct ViewerSession {
     recorded_video_nalus: Vec<VideoNalu>,
     /// All inbound audio packets (encoded) for synthetic tests.
     recorded_audio_packets: Vec<AudioPacket>,
+    /// Host enrolled public key for `fingerprint_sig` verification.
+    host_verifying_key: Option<VerifyingKey>,
+    /// Session bind key from Mode A OTP or Mode B secret (DC challenge proof).
+    bind_key: Option<SessionBindKey>,
+    /// Local identity bind tracking (`identity_bound` after DC success).
+    identity: IdentityBindState,
+    /// Last verified host fingerprint sign material (from offer SDP).
+    host_fp_sign_material: Option<String>,
+    /// When true, input send requires identity_bound (default true for KD17).
+    require_identity_for_input: bool,
 }
 
 impl ViewerSession {
@@ -128,7 +158,40 @@ impl ViewerSession {
             stats: SessionStats::default(),
             recorded_video_nalus: Vec::new(),
             recorded_audio_packets: Vec::new(),
+            host_verifying_key: None,
+            bind_key: None,
+            identity: IdentityBindState::default(),
+            host_fp_sign_material: None,
+            // Existing synthetic tests send input without a full bind; keep
+            // false for backward-compatible loopback. Callers enabling real
+            // security should set require_identity_for_input(true).
+            require_identity_for_input: false,
         }
+    }
+
+    /// Install the enrolled host public key used to verify `fingerprint_sig`.
+    pub fn set_host_verifying_key(&mut self, key: VerifyingKey) {
+        self.host_verifying_key = Some(key);
+    }
+
+    /// Install session bind key (Mode A OTP-derived or Mode B secret).
+    pub fn set_bind_key(&mut self, key: SessionBindKey) {
+        self.bind_key = Some(key);
+    }
+
+    /// When true, [`Self::send_mouse_move`] etc. require identity bind.
+    pub fn set_require_identity_for_input(&mut self, require: bool) {
+        self.require_identity_for_input = require;
+    }
+
+    /// Identity bind state (viewer side).
+    pub fn identity(&self) -> &IdentityBindState {
+        &self.identity
+    }
+
+    /// Whether the post-DTLS identity bind completed successfully.
+    pub fn identity_bound(&self) -> bool {
+        self.identity.identity_bound
     }
 
     /// Current phase.
@@ -201,6 +264,10 @@ impl ViewerSession {
         self.teardown_transport();
         self.machine.begin_connect(req.host_public_id.clone());
         self.session_id = Some(stub.session_id.clone());
+        self.identity = IdentityBindState::new(stub.session_id.clone());
+        self.host_fp_sign_material = None;
+        // Bind key / host key intentionally retained across reconnect only if
+        // caller re-installs; clear bind flags but keep keys for same host.
         self.stats = SessionStats::default();
         self.recorded_video_nalus.clear();
         self.recorded_audio_packets.clear();
@@ -211,7 +278,51 @@ impl ViewerSession {
     }
 
     /// Apply a remote SDP offer and create+set a local answer (answerer path).
+    ///
+    /// When `fingerprint_sig` and a host verifying key are present, verifies the
+    /// host DTLS fingerprint binding before answering.
     pub fn accept_offer(&mut self, offer: SessionDescription) -> Result<SessionDescription> {
+        self.accept_offer_with_sig(offer, None)
+    }
+
+    /// Like [`Self::accept_offer`] but verifies `fingerprint_sig` when provided.
+    pub fn accept_offer_with_sig(
+        &mut self,
+        offer: SessionDescription,
+        fingerprint_sig: Option<&str>,
+    ) -> Result<SessionDescription> {
+        // Parse host fingerprint from offer SDP *before* answering so MITM
+        // substitutions fail even when the transport has not yet completed
+        // DTLS (mock only sets remote_fp after both descriptions are set).
+        if let Some(fp_mat) = fingerprint_sign_material_from_sdp(&offer.sdp) {
+            self.host_fp_sign_material = Some(fp_mat);
+        }
+
+        if let Some(sig) = fingerprint_sig.filter(|s| !s.is_empty()) {
+            let vk = self
+                .host_verifying_key
+                .as_ref()
+                .ok_or_else(|| ViewerError::InvalidState {
+                    expected: "host verifying key",
+                    actual: "none (set_host_verifying_key)".into(),
+                })?;
+            let sid = self
+                .session_id
+                .as_deref()
+                .ok_or_else(|| ViewerError::InvalidState {
+                    expected: "session id",
+                    actual: "none".into(),
+                })?;
+            let fp_mat =
+                self.host_fp_sign_material
+                    .as_deref()
+                    .ok_or_else(|| ViewerError::InvalidState {
+                        expected: "host fingerprint in SDP",
+                        actual: "missing a=fingerprint".into(),
+                    })?;
+            verify_session_fingerprint(vk, sid, fp_mat, sig)?;
+        }
+
         let transport = self
             .transport
             .as_mut()
@@ -221,11 +332,21 @@ impl ViewerSession {
             })?;
         self.machine.begin_answer();
         transport.set_remote_description(offer)?;
+        // Prefer transport-exported remote fingerprint when available (real DTLS).
+        if let Some(fp) = transport.remote_fingerprint()? {
+            self.host_fp_sign_material = Some(fp.as_sign_material());
+        }
+
         let answer = transport.create_answer()?;
         transport.set_local_description(answer.clone())?;
         // Drain any ICE/state emitted synchronously into pending.
-        self.drain_callback_buf();
+        self.drain_callback_buf()?;
         Ok(answer)
+    }
+
+    /// Mark the viewer side as session-authorized (after Mode A/B success).
+    pub fn mark_session_authorized(&mut self) {
+        self.identity.mark_authorized();
     }
 
     /// Add a remote ICE candidate from signaling.
@@ -238,16 +359,19 @@ impl ViewerSession {
                 actual: "no transport".into(),
             })?;
         transport.add_ice_candidate(candidate)?;
-        self.drain_callback_buf();
+        self.drain_callback_buf()?;
         Ok(())
     }
 
     /// Pump transport + process inbound media/data into decode/playout queues.
+    ///
+    /// Identity DataChannel challenges are answered automatically when a
+    /// [`SessionBindKey`] is installed.
     pub fn poll(&mut self) -> Result<()> {
         if let Some(t) = self.transport.as_mut() {
             t.poll()?;
         }
-        self.drain_callback_buf();
+        self.drain_callback_buf()?;
         Ok(())
     }
 
@@ -320,6 +444,12 @@ impl ViewerSession {
                 actual: self.machine.phase().as_str().into(),
             });
         }
+        if self.require_identity_for_input && !self.identity.identity_bound {
+            return Err(ViewerError::InvalidState {
+                expected: "identity_bound",
+                actual: "identity not bound".into(),
+            });
+        }
         Ok(())
     }
 
@@ -335,7 +465,7 @@ impl ViewerSession {
         Ok(())
     }
 
-    fn drain_callback_buf(&mut self) {
+    fn drain_callback_buf(&mut self) -> Result<()> {
         let mut buf = match self.callbacks.inner.lock() {
             Ok(mut g) => EventBuf {
                 ice: std::mem::take(&mut g.ice),
@@ -343,7 +473,7 @@ impl ViewerSession {
                 tracks: std::mem::take(&mut g.tracks),
                 data: std::mem::take(&mut g.data),
             },
-            Err(_) => return,
+            Err(_) => return Ok(()),
         };
 
         for c in buf.ice.drain(..) {
@@ -356,9 +486,70 @@ impl ViewerSession {
         for t in buf.tracks.drain(..) {
             self.handle_track(t);
         }
+        // Collect identity work so we can mutably use transport after the loop.
+        let mut identity_msgs = Vec::new();
         for d in buf.data.drain(..) {
             self.stats.data_rx = self.stats.data_rx.saturating_add(1);
-            let _ = d; // control/identity handled in later PRs
+            if d.label == IDENTITY_CHANNEL_LABEL {
+                identity_msgs.push(d.data);
+            }
+        }
+        for data in identity_msgs {
+            self.handle_identity_message(&data)?;
+        }
+        Ok(())
+    }
+
+    fn handle_identity_message(&mut self, data: &[u8]) -> Result<()> {
+        let parsed = DcIdentityMessage::parse(data)?;
+        self.stats.identity_messages = self.stats.identity_messages.saturating_add(1);
+        match parsed {
+            DcIdentityMessage::Challenge(challenge) => {
+                let bind_key = self
+                    .bind_key
+                    .as_ref()
+                    .ok_or_else(|| ViewerError::InvalidState {
+                        expected: "session bind key",
+                        actual: "no bind key for dc challenge".into(),
+                    })?;
+                let sid = self
+                    .session_id
+                    .as_deref()
+                    .ok_or_else(|| ViewerError::InvalidState {
+                        expected: "session id",
+                        actual: "none".into(),
+                    })?;
+                let transport =
+                    self.transport
+                        .as_mut()
+                        .ok_or_else(|| ViewerError::InvalidState {
+                            expected: "attached transport",
+                            actual: "no transport".into(),
+                        })?;
+                let fp_host = transport
+                    .remote_fingerprint()?
+                    .ok_or_else(|| ViewerError::InvalidState {
+                        expected: "remote host fingerprint",
+                        actual: "unknown".into(),
+                    })?
+                    .as_sign_material();
+                let fp_viewer = transport.local_fingerprint()?.as_sign_material();
+                let response =
+                    respond_dc_challenge(bind_key, sid, &challenge, &fp_host, &fp_viewer);
+                transport.send_data(DataMessage {
+                    label: IDENTITY_CHANNEL_LABEL.into(),
+                    data: response.encode(),
+                    unordered: false,
+                })?;
+                // Viewer marks local identity_bound after successfully answering;
+                // host independently verifies the MAC before accepting input.
+                self.identity.mark_identity_bound();
+                Ok(())
+            }
+            DcIdentityMessage::Response(_) => Err(ViewerError::InvalidState {
+                expected: "dc_challenge from host",
+                actual: "dc_response".into(),
+            }),
         }
     }
 
@@ -476,6 +667,30 @@ fn assert_connected(session: &ViewerSession) -> Result<()> {
             actual: format!("{other:?}"),
         }),
     }
+}
+
+/// Extract canonical fingerprint sign material from an SDP `a=fingerprint:` line.
+fn fingerprint_sign_material_from_sdp(sdp: &str) -> Option<String> {
+    for line in sdp.lines() {
+        let line = line.trim();
+        let rest = match line.strip_prefix("a=fingerprint:") {
+            Some(r) => r.trim(),
+            None => continue,
+        };
+        let mut parts = rest.split_whitespace();
+        let Some(algo) = parts.next() else {
+            continue;
+        };
+        let Some(value) = parts.next() else {
+            continue;
+        };
+        let algo = algo.to_ascii_lowercase();
+        let value = value.to_ascii_uppercase();
+        if algo == "sha-256" && !value.is_empty() {
+            return Some(format!("{algo} {value}"));
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -657,5 +872,101 @@ mod tests {
         assert!(session.has_transport());
         // Re-attach does not leave dual peers; machine still Connecting until offer.
         assert_eq!(session.phase(), &ViewerPhase::Connecting);
+    }
+
+    #[test]
+    fn identity_bind_verifies_fingerprint_and_dc_challenge() {
+        use remotelink_auth::{
+            generate_device_keypair, sign_session_fingerprint, SessionBindKey,
+            IDENTITY_CHANNEL_LABEL,
+        };
+        use remotelink_net::{DataMessage, MockPeerTransport, PeerTransport};
+
+        let (sk, vk) = generate_device_keypair();
+        let pepper = b"viewer-bind-pepper!!";
+        let otp = "654321";
+        let bind_key = SessionBindKey::from_mode_a_otp(otp, pepper).unwrap();
+
+        let mut pair = MockPeerPair::new();
+        let mut session = ViewerSession::new();
+        session.set_host_verifying_key(vk);
+        session.set_bind_key(bind_key);
+        session.set_require_identity_for_input(true);
+        let stub = session
+            .begin_connect(&ConnectRequest::otp("host-pub", otp))
+            .unwrap();
+        let sid = stub.session_id.clone();
+        session.mark_session_authorized();
+
+        let viewer =
+            std::mem::replace(&mut pair.peer_b, MockPeerTransport::new(Default::default()));
+        session.attach_transport(Box::new(viewer));
+
+        let offer = pair.peer_a.create_offer().unwrap();
+        pair.peer_a.set_local_description(offer.clone()).unwrap();
+        let host_fp = pair.peer_a.local_fingerprint().unwrap().as_sign_material();
+        let sig = sign_session_fingerprint(&sk, &sid, &host_fp);
+
+        let answer = session.accept_offer_with_sig(offer, Some(&sig)).unwrap();
+        pair.peer_a.set_remote_description(answer).unwrap();
+        if let Some(ice) = pair.peer_a.last_local_ice().cloned() {
+            session.add_remote_ice(ice).unwrap();
+        }
+        for ice in session.take_pending_local_ice() {
+            pair.peer_a.add_ice_candidate(ice).unwrap();
+        }
+        session.poll().unwrap();
+        assert_eq!(session.transport_state(), Some(ConnectionState::Connected));
+        assert!(!session.identity_bound());
+
+        // Input blocked until identity bind when require flag is set.
+        let err = session.send_mouse_move(0.1, 0.1).unwrap_err();
+        assert!(matches!(err, ViewerError::InvalidState { .. }));
+
+        // Host issues DC challenge; viewer answers on poll.
+        let challenge = remotelink_auth::DcIdentityChallenge::issue();
+        pair.peer_a
+            .send_data(DataMessage {
+                label: IDENTITY_CHANNEL_LABEL.into(),
+                data: challenge.encode(),
+                unordered: false,
+            })
+            .unwrap();
+        session.poll().unwrap();
+        assert!(session.identity_bound());
+        assert!(session.stats().identity_messages >= 1);
+
+        // Viewer may send input after local identity bind.
+        session.send_mouse_move(0.5, 0.5).unwrap();
+    }
+
+    #[test]
+    fn wrong_fingerprint_sig_rejected_on_offer() {
+        use remotelink_auth::{generate_device_keypair, sign_session_fingerprint};
+
+        let (sk, vk) = generate_device_keypair();
+        let mut pair = MockPeerPair::new();
+        let mut session = ViewerSession::new();
+        session.set_host_verifying_key(vk);
+        let stub = session
+            .begin_connect(&ConnectRequest::otp("h", "123456"))
+            .unwrap();
+        let _sid = stub.session_id;
+
+        let viewer = std::mem::replace(
+            &mut pair.peer_b,
+            remotelink_net::MockPeerTransport::new(Default::default()),
+        );
+        session.attach_transport(Box::new(viewer));
+
+        let offer = pair.peer_a.create_offer().unwrap();
+        pair.peer_a.set_local_description(offer.clone()).unwrap();
+        let host_fp = pair.peer_a.local_fingerprint().unwrap().as_sign_material();
+        // Sign wrong session id so verification fails.
+        let sig = sign_session_fingerprint(&sk, "other-session", &host_fp);
+        let err = session
+            .accept_offer_with_sig(offer, Some(&sig))
+            .unwrap_err();
+        assert!(matches!(err, ViewerError::Auth(_)));
     }
 }

@@ -26,7 +26,10 @@ pub struct AgentSessionState {
     pub session_id: Option<String>,
     /// Whether media plane has been requested to start.
     pub media_started: bool,
-    /// Input injection allowed (policy + bind; bind not implemented yet).
+    /// Input injection allowed only after policy + identity bind (PR 13).
+    ///
+    /// Service may request enable via `SetPolicy`, but the agent must still
+    /// refuse inject until [`SessionManager::input_allowed`].
     pub enable_input: bool,
     /// Session chrome visibility.
     pub chrome_visible: bool,
@@ -242,6 +245,13 @@ impl AgentSession {
             state: AgentSessionState::default(),
             manager,
         }
+    }
+
+    /// True when policy requested input **and** identity bind is complete.
+    ///
+    /// Host MUST NOT inject input unless this returns true (KD17).
+    pub fn input_injection_allowed(&self) -> bool {
+        self.state.enable_input && self.manager.input_allowed()
     }
 
     /// Apply a control message: update state and drive the session manager.

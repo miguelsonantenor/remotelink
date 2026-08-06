@@ -14,6 +14,6 @@ pub use service::{
     build_session_start_sequence, run_colocate_synthetic, service_kill_switch, signal_to_agent,
 };
 pub use session::{
-    parse_ice_payload, parse_sdp_payload, signal_kind, PumpStats, SdpPayload, SessionError,
-    SessionManager,
+    parse_ice_payload, parse_sdp_payload, signal_kind, InboundStats, PumpStats, SdpPayload,
+    SessionError, SessionManager, INPUT_CHANNEL_LABEL,
 };

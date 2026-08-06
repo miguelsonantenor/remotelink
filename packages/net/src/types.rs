@@ -70,18 +70,22 @@ pub type TransportIceCandidate = IceCandidate;
 /// - `value`: **uppercase** colon-separated hex, exactly 32 bytes (64 hex digits →
 ///   95 characters with colons).
 /// - [`Self::as_sign_material`] returns `sha-256 AA:BB:…` (algorithm SP value) —
-///   the fingerprint half of the signed payload. Host signs
-///   `session_id || "\0" || as_sign_material()` (or equivalent documented in auth);
+///   the fingerprint half of the signed payload. Host signs via
+///   `remotelink_auth::sign_session_fingerprint` over `session_id` + this string;
 ///   do **not** sign mixed-case or colon-stripped variants.
 /// - [`Self::digest_bytes`] returns the raw 32-byte digest for binary APIs.
 ///
-/// # Timing
+/// # Mock vs real DTLS (PR 13)
 ///
-/// - **Mock:** [`crate::PeerTransport::remote_fingerprint`] is parsed from the
-///   remote SDP `a=fingerprint:` line when both descriptions are set (no real DTLS).
-/// - **Real backends:** export local fingerprint from the DTLS certificate used in
-///   the handshake; remote fingerprint must be taken from the **completed DTLS**
-///   cert (not solely from SDP) before identity bind enables input.
+/// Real WebRTC DTLS certificates are **not** minted in-tree yet. Construct mock
+/// fingerprints with [`Self::sha256`]. [`crate::mock::MockPeerTransport`] embeds
+/// them in synthetic SDP and exports them via
+/// [`crate::PeerTransport::local_fingerprint`] /
+/// [`crate::PeerTransport::remote_fingerprint`] (remote parsed from SDP).
+///
+/// **Later backends:** export local fingerprint from the DTLS certificate used
+/// in the handshake; remote fingerprint must be taken from the **completed DTLS**
+/// cert (not solely from SDP) before identity bind enables input.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DtlsFingerprint {
     /// Hash algorithm label (v1: always `"sha-256"` lowercase).

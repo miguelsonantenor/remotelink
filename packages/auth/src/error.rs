@@ -29,6 +29,23 @@ pub enum AuthError {
     #[error("fingerprint signature verification failed")]
     FingerprintSigInvalid,
 
+    /// Post-DTLS DataChannel identity bind failed.
+    #[error("identity bind failed: {0}")]
+    IdentityBind(String),
+
+    /// Session is not authorized (Mode A/B) yet.
+    #[error("session not authorized")]
+    SessionNotAuthorized,
+
+    /// Input rejected: identity not bound and/or session not authorized.
+    #[error("input not allowed: identity_bound={identity_bound} session_authorized={session_authorized}")]
+    InputNotAllowed {
+        /// Whether DTLS/fingerprint + DC challenge completed.
+        identity_bound: bool,
+        /// Whether Mode A/B session auth succeeded.
+        session_authorized: bool,
+    },
+
     /// Cryptographic / key material error.
     #[error("crypto error: {0}")]
     Crypto(String),

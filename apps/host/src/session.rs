@@ -2,22 +2,42 @@
 //!
 //! KD5: video NALUs and audio packets stay **inside** the agent and go only to
 //! PeerTransport. Control IPC carries signaling ([`SignalForward`]) never media.
+//!
+//! # Identity binding (PR 13 / KD17)
+//!
+//! Host **MUST NOT** accept input until
+//! [`IdentityBindState::input_allowed`](remotelink_auth::IdentityBindState::input_allowed)
+//! (`identity_bound && session_authorized`). Mode A/B authorization and the
+//! post-DTLS DataChannel challenge are driven through this manager.
+//!
+//! Real DTLS certificates are deferred; the mock PeerTransport uses synthetic
+//! [`DtlsFingerprint::sha256`](remotelink_net::DtlsFingerprint::sha256) values
+//! exported via [`PeerTransport::local_fingerprint`].
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use ed25519_dalek::SigningKey;
+use remotelink_auth::{
+    authorize_mode_a, authorize_mode_b, complete_dc_bind, sign_session_fingerprint, AuthChallenge,
+    AuthError, DcIdentityChallenge, DcIdentityMessage, HostSecret, IdentityBindState, OtpRecord,
+    SessionBindKey, IDENTITY_CHANNEL_LABEL,
+};
 use remotelink_media::{
     AudioSource, MockOpusEncoder, OpusEncoder, RtpEpoch, SyntheticAudioTone, SyntheticVideoBars,
     VideoSource,
 };
 use remotelink_net::{
-    AudioPacket, BoxPeerTransport, ConnectionState, LocalIceCandidate, MockPeerConfig,
+    AudioPacket, BoxPeerTransport, ConnectionState, DataMessage, LocalIceCandidate, MockPeerConfig,
     MockPeerTransport, NaluFormat, NetError, PeerTransport, PeerTransportCallbacks,
     SessionDescription, TransportIceCandidate, VideoNalu,
 };
 use remotelink_platform_windows::ipc::message::{SignalForward, SignalHop};
 use remotelink_protocol::IceCandidate;
 use serde::{Deserialize, Serialize};
+
+/// DataChannel label for viewer → host input events.
+pub const INPUT_CHANNEL_LABEL: &str = "input";
 
 /// Signaling kinds carried on control IPC [`SignalForward::kind`].
 pub mod signal_kind {
@@ -54,6 +74,12 @@ pub enum SessionError {
     /// Session / media not in the expected state.
     #[error("invalid state: {0}")]
     InvalidState(String),
+    /// Auth / identity bind failure.
+    #[error("auth: {0}")]
+    Auth(#[from] AuthError),
+    /// Input rejected by identity gate.
+    #[error("input rejected: {0}")]
+    InputRejected(String),
 }
 
 /// Result alias for session media plane operations.
@@ -70,6 +96,17 @@ pub struct PumpStats {
     pub skipped_not_connected: bool,
 }
 
+/// Outcome of processing inbound DataChannel messages (identity + input).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct InboundStats {
+    /// Identity DC messages handled.
+    pub identity_messages: u32,
+    /// Input events accepted (gate open).
+    pub input_accepted: u32,
+    /// Input events rejected (not bound / not authorized).
+    pub input_rejected: u32,
+}
+
 /// Synthetic capture + mock encode state for one media start.
 struct MediaPlane {
     video: SyntheticVideoBars,
@@ -84,6 +121,7 @@ struct MediaPlane {
 struct AgentPeerCallbacksInner {
     ice: Vec<LocalIceCandidate>,
     states: Vec<ConnectionState>,
+    data: Vec<DataMessage>,
 }
 
 /// Shared callback sink used by both the transport and the session manager.
@@ -103,6 +141,13 @@ impl SharedAgentCallbacks {
             .map(|mut g| std::mem::take(&mut g.ice))
             .unwrap_or_default()
     }
+
+    fn take_data(&self) -> Vec<DataMessage> {
+        self.inner
+            .lock()
+            .map(|mut g| std::mem::take(&mut g.data))
+            .unwrap_or_default()
+    }
 }
 
 impl PeerTransportCallbacks for SharedAgentCallbacks {
@@ -120,12 +165,19 @@ impl PeerTransportCallbacks for SharedAgentCallbacks {
 
     fn on_track(&mut self, _data: remotelink_net::IncomingTrackData) {}
 
-    fn on_data(&mut self, _message: remotelink_net::DataMessage) {}
+    fn on_data(&mut self, message: DataMessage) {
+        if let Ok(mut g) = self.inner.lock() {
+            g.data.push(message);
+        }
+    }
 }
 
 /// Owns the agent PeerTransport and (when started) synthetic A/V sources.
 ///
 /// Media bytes never leave this process via control IPC.
+///
+/// Identity (PR 13): after Mode A/B auth and a successful DataChannel bind,
+/// [`Self::input_allowed`] is true and input DataChannel messages are accepted.
 pub struct SessionManager {
     session_id: Option<String>,
     peer: BoxPeerTransport,
@@ -137,6 +189,18 @@ pub struct SessionManager {
     synth_width: u32,
     synth_height: u32,
     synth_fps: u32,
+    /// Identity bind flags for the attached session.
+    identity: IdentityBindState,
+    /// Enrolled device signing key (host). Required for `fingerprint_sig`.
+    device_signing_key: Option<SigningKey>,
+    /// Session bind key after Mode A/B authorization (for DC challenge).
+    bind_key: Option<SessionBindKey>,
+    /// Outstanding DC identity challenge awaiting viewer response.
+    pending_dc_challenge: Option<DcIdentityChallenge>,
+    /// Accepted input DataChannel messages (tests / inject path later).
+    accepted_input: Vec<DataMessage>,
+    /// Count of rejected input messages.
+    rejected_input_count: u64,
 }
 
 impl SessionManager {
@@ -161,14 +225,51 @@ impl SessionManager {
             synth_width: 64,
             synth_height: 36,
             synth_fps: 30,
+            identity: IdentityBindState::default(),
+            device_signing_key: None,
+            bind_key: None,
+            pending_dc_challenge: None,
+            accepted_input: Vec::new(),
+            rejected_input_count: 0,
         }
     }
 
-    /// Bind to a session id (does not start media).
+    /// Install the enrolled device signing key used for `fingerprint_sig`.
+    pub fn set_device_signing_key(&mut self, key: SigningKey) {
+        self.device_signing_key = Some(key);
+    }
+
+    /// Current identity bind state.
+    pub fn identity(&self) -> &IdentityBindState {
+        &self.identity
+    }
+
+    /// Host may accept remote input only when identity-bound and session-authorized.
+    pub fn input_allowed(&self) -> bool {
+        self.identity.input_allowed()
+    }
+
+    /// Accepted input messages (drain for inject path / tests).
+    pub fn take_accepted_input(&mut self) -> Vec<DataMessage> {
+        std::mem::take(&mut self.accepted_input)
+    }
+
+    /// Number of input messages rejected by the identity gate.
+    pub fn rejected_input_count(&self) -> u64 {
+        self.rejected_input_count
+    }
+
+    /// Bind to a session id (does not start media). Resets identity flags.
     pub fn attach(&mut self, session_id: impl Into<String>) {
-        self.session_id = Some(session_id.into());
+        let sid = session_id.into();
+        self.session_id = Some(sid.clone());
         self.media = None;
         self.outbound_signals.clear();
+        self.identity = IdentityBindState::new(sid);
+        self.bind_key = None;
+        self.pending_dc_challenge = None;
+        self.accepted_input.clear();
+        self.rejected_input_count = 0;
     }
 
     /// Clear session binding and stop media.
@@ -176,6 +277,159 @@ impl SessionManager {
         let _ = self.stop_media();
         self.session_id = None;
         self.outbound_signals.clear();
+        self.identity = IdentityBindState::default();
+        self.bind_key = None;
+        self.pending_dc_challenge = None;
+        self.accepted_input.clear();
+        self.rejected_input_count = 0;
+    }
+
+    /// Mode A (OTP): verify + consume host OTP; mark `session_authorized`.
+    pub fn authorize_mode_a(
+        &mut self,
+        record: &mut OtpRecord,
+        code: &str,
+        pepper: &[u8],
+        now_unix: u64,
+    ) -> Result<()> {
+        let key = authorize_mode_a(record, code, pepper, now_unix)?;
+        self.bind_key = Some(key);
+        self.identity.mark_authorized();
+        Ok(())
+    }
+
+    /// Mode B (unattended): verify host-only challenge-response MAC.
+    pub fn authorize_mode_b(
+        &mut self,
+        secret: &HostSecret,
+        challenge: &AuthChallenge,
+        fingerprint_host: &[u8],
+        fingerprint_viewer: &[u8],
+        mac: &[u8],
+    ) -> Result<()> {
+        let sid = self
+            .session_id
+            .as_deref()
+            .ok_or_else(|| SessionError::InvalidState("no session attached".into()))?;
+        let key = authorize_mode_b(
+            secret,
+            challenge,
+            sid,
+            fingerprint_host,
+            fingerprint_viewer,
+            mac,
+        )?;
+        self.bind_key = Some(key);
+        self.identity.mark_authorized();
+        Ok(())
+    }
+
+    /// Issue a post-DTLS DataChannel identity challenge (host → viewer).
+    ///
+    /// Requires an attached session, Mode A/B authorization, and a Connected peer.
+    pub fn start_identity_challenge(&mut self) -> Result<()> {
+        if self.session_id.is_none() {
+            return Err(SessionError::InvalidState("no session attached".into()));
+        }
+        if !self.identity.session_authorized {
+            return Err(SessionError::Auth(AuthError::SessionNotAuthorized));
+        }
+        if self.bind_key.is_none() {
+            return Err(SessionError::InvalidState(
+                "no session bind key (authorize Mode A/B first)".into(),
+            ));
+        }
+        if self.peer.connection_state() != ConnectionState::Connected {
+            return Err(SessionError::InvalidState(
+                "peer not connected for identity challenge".into(),
+            ));
+        }
+        let challenge = DcIdentityChallenge::issue();
+        let msg = DataMessage {
+            label: IDENTITY_CHANNEL_LABEL.into(),
+            data: challenge.encode(),
+            unordered: false,
+        };
+        self.peer.send_data(msg)?;
+        self.pending_dc_challenge = Some(challenge);
+        Ok(())
+    }
+
+    /// Poll transport and process identity / input DataChannel messages.
+    pub fn poll_inbound(&mut self) -> Result<InboundStats> {
+        self.peer.poll()?;
+        let messages = self.cb.take_data();
+        let mut stats = InboundStats::default();
+        for msg in messages {
+            if msg.label == IDENTITY_CHANNEL_LABEL {
+                self.handle_identity_data(&msg.data)?;
+                stats.identity_messages = stats.identity_messages.saturating_add(1);
+            } else if msg.label == INPUT_CHANNEL_LABEL {
+                if self.try_accept_input(msg) {
+                    stats.input_accepted = stats.input_accepted.saturating_add(1);
+                } else {
+                    stats.input_rejected = stats.input_rejected.saturating_add(1);
+                }
+            }
+            // Other labels ignored at this layer.
+        }
+        Ok(stats)
+    }
+
+    /// Accept a single input message if the identity gate is open.
+    ///
+    /// Returns `true` when accepted, `false` when rejected (and counted).
+    pub fn try_accept_input(&mut self, msg: DataMessage) -> bool {
+        if self.identity.input_allowed() {
+            self.accepted_input.push(msg);
+            true
+        } else {
+            self.rejected_input_count = self.rejected_input_count.saturating_add(1);
+            false
+        }
+    }
+
+    /// Explicit gate: return error unless input is allowed.
+    pub fn ensure_input_allowed(&self) -> Result<()> {
+        if self.identity.input_allowed() {
+            Ok(())
+        } else {
+            Err(SessionError::Auth(self.identity.input_gate_error()))
+        }
+    }
+
+    fn handle_identity_data(&mut self, data: &[u8]) -> Result<()> {
+        let parsed = DcIdentityMessage::parse(data)?;
+        match parsed {
+            DcIdentityMessage::Response(response) => {
+                let challenge = self.pending_dc_challenge.take().ok_or_else(|| {
+                    SessionError::Auth(AuthError::IdentityBind(
+                        "dc response without pending challenge".into(),
+                    ))
+                })?;
+                let bind_key = self.bind_key.as_ref().ok_or_else(|| {
+                    SessionError::InvalidState("missing bind key for dc verify".into())
+                })?;
+                let fp_host = self.peer.local_fingerprint()?.as_sign_material();
+                let fp_viewer = self
+                    .peer
+                    .remote_fingerprint()?
+                    .ok_or_else(|| SessionError::InvalidState("remote fingerprint unknown".into()))?
+                    .as_sign_material();
+                complete_dc_bind(
+                    &mut self.identity,
+                    bind_key,
+                    &challenge,
+                    &response,
+                    &fp_host,
+                    &fp_viewer,
+                )?;
+                Ok(())
+            }
+            DcIdentityMessage::Challenge(_) => Err(SessionError::Auth(AuthError::IdentityBind(
+                "host does not expect dc_challenge".into(),
+            ))),
+        }
     }
 
     /// Currently attached session id, if any.
@@ -289,12 +543,22 @@ impl SessionManager {
     }
 
     /// Create local SDP offer, set it, queue offer + ICE for service hop.
+    ///
+    /// When a device signing key is installed, `fingerprint_sig` is the hex
+    /// ed25519 signature over `session_id` + local DTLS fingerprint sign material.
     pub fn create_local_offer_and_queue(&mut self, session_id: &str) -> Result<()> {
         let offer = self.peer.create_offer()?;
         self.peer.set_local_description(offer.clone())?;
+        let fingerprint_sig = match &self.device_signing_key {
+            Some(sk) => {
+                let fp = self.peer.local_fingerprint()?.as_sign_material();
+                Some(sign_session_fingerprint(sk, session_id, &fp))
+            }
+            None => Some(String::new()),
+        };
         let payload = serde_json::to_string(&SdpPayload {
             sdp: offer.sdp,
-            fingerprint_sig: Some(String::new()),
+            fingerprint_sig,
         })
         .map_err(|e| SessionError::Signaling(e.to_string()))?;
         self.outbound_signals.push(SignalForward {
@@ -468,33 +732,26 @@ pub fn parse_ice_payload(payload: &str) -> Result<TransportIceCandidate> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use remotelink_net::{IncomingTrackData, MockPeerPair, SharedRecording};
+    use remotelink_auth::{
+        generate_device_keypair, mint_otp_record, mode_b_viewer_response, respond_dc_challenge,
+        verify_session_fingerprint, HostSecret,
+    };
+    use remotelink_net::{IncomingTrackData, MockPeerPair, PeerTransport, SharedRecording};
     use remotelink_platform_windows::ipc::message::FORBIDDEN_MEDIA_METHODS;
 
-    #[test]
-    fn start_media_offer_and_pump_to_mock_viewer() {
-        let mut pair = MockPeerPair::new();
-        let rec = SharedRecording::new();
-        pair.peer_b.set_callbacks(Box::new(rec.clone()));
-
-        let MockPeerPair { peer_a, mut peer_b } = pair;
-        let mut mgr = SessionManager::with_peer(Box::new(peer_a));
-        mgr.attach("sess-av");
+    fn handshake_mgr_with_viewer(
+        mgr: &mut SessionManager,
+        peer_b: &mut MockPeerTransport,
+    ) -> SdpPayload {
         mgr.start_media().unwrap();
-
         let out = mgr.take_outbound_signals();
-        assert!(
-            out.iter().any(|s| s.kind == signal_kind::SESSION_OFFER),
-            "expected session_offer, got {out:?}"
-        );
         let offer = out
             .iter()
             .find(|s| s.kind == signal_kind::SESSION_OFFER)
-            .unwrap();
+            .expect("session_offer");
         let sdp = parse_sdp_payload(&offer.payload).unwrap();
-
         peer_b
-            .set_remote_description(SessionDescription::offer(sdp.sdp))
+            .set_remote_description(SessionDescription::offer(sdp.sdp.clone()))
             .unwrap();
         let answer = peer_b.create_answer().unwrap();
         peer_b.set_local_description(answer.clone()).unwrap();
@@ -507,7 +764,6 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-
         for sig in mgr.take_outbound_signals() {
             if sig.kind == signal_kind::ICE_CANDIDATE {
                 let c = parse_ice_payload(&sig.payload).unwrap();
@@ -521,9 +777,20 @@ mod tests {
             )
             .unwrap();
         }
-
         assert_eq!(mgr.connection_state(), ConnectionState::Connected);
-        assert_eq!(peer_b.connection_state(), ConnectionState::Connected);
+        sdp
+    }
+
+    #[test]
+    fn start_media_offer_and_pump_to_mock_viewer() {
+        let mut pair = MockPeerPair::new();
+        let rec = SharedRecording::new();
+        pair.peer_b.set_callbacks(Box::new(rec.clone()));
+
+        let MockPeerPair { peer_a, mut peer_b } = pair;
+        let mut mgr = SessionManager::with_peer(Box::new(peer_a));
+        mgr.attach("sess-av");
+        let _ = handshake_mgr_with_viewer(&mut mgr, &mut peer_b);
 
         let stats = mgr.pump_media(3).unwrap();
         assert_eq!(stats.video_sent, 3);
@@ -592,5 +859,212 @@ mod tests {
         assert_eq!(mgr.peer_mut().connection_state(), ConnectionState::New);
         mgr.shutdown().unwrap();
         assert_eq!(mgr.connection_state(), ConnectionState::Closed);
+    }
+
+    #[test]
+    fn bind_success_accepts_input() {
+        let (sk, vk) = generate_device_keypair();
+        let pepper = b"host-otp-pepper-xx!";
+        let (otp, mut rec) = mint_otp_record(6, pepper, u64::MAX).unwrap();
+
+        let pair = MockPeerPair::new();
+        let MockPeerPair { peer_a, mut peer_b } = pair;
+        let mut mgr = SessionManager::with_peer(Box::new(peer_a));
+        mgr.set_device_signing_key(sk);
+        mgr.attach("sess-bind-ok");
+        mgr.authorize_mode_a(&mut rec, otp.as_str(), pepper, 0)
+            .unwrap();
+        assert!(mgr.identity().session_authorized);
+        assert!(!mgr.input_allowed());
+
+        let sdp = handshake_mgr_with_viewer(&mut mgr, &mut peer_b);
+        let sig = sdp.fingerprint_sig.expect("fingerprint_sig present");
+        assert!(!sig.is_empty());
+        let host_fp = mgr
+            .peer_mut()
+            .local_fingerprint()
+            .unwrap()
+            .as_sign_material();
+        verify_session_fingerprint(&vk, "sess-bind-ok", &host_fp, &sig).unwrap();
+
+        // Viewer bind key + respond to DC challenge.
+        let bind_key =
+            remotelink_auth::SessionBindKey::from_mode_a_otp(otp.as_str(), pepper).unwrap();
+        let rec = SharedRecording::new();
+        peer_b.set_callbacks(Box::new(rec.clone()));
+        mgr.start_identity_challenge().unwrap();
+        peer_b.poll().unwrap();
+        let snap = rec.snapshot();
+        let chal_msg = snap
+            .data
+            .iter()
+            .find(|d| d.label == IDENTITY_CHANNEL_LABEL)
+            .expect("dc challenge");
+        let chal = match DcIdentityMessage::parse(&chal_msg.data).unwrap() {
+            DcIdentityMessage::Challenge(c) => c,
+            _ => panic!("expected challenge"),
+        };
+        let fp_host = peer_b
+            .remote_fingerprint()
+            .unwrap()
+            .unwrap()
+            .as_sign_material();
+        let fp_viewer = peer_b.local_fingerprint().unwrap().as_sign_material();
+        let resp = respond_dc_challenge(&bind_key, "sess-bind-ok", &chal, &fp_host, &fp_viewer);
+        peer_b
+            .send_data(DataMessage {
+                label: IDENTITY_CHANNEL_LABEL.into(),
+                data: resp.encode(),
+                unordered: false,
+            })
+            .unwrap();
+        let stats = mgr.poll_inbound().unwrap();
+        assert_eq!(stats.identity_messages, 1);
+        assert!(mgr.input_allowed());
+
+        // Input accepted after bind.
+        peer_b
+            .send_data(DataMessage {
+                label: INPUT_CHANNEL_LABEL.into(),
+                data: b"{\"type\":\"mouse_move\"}".to_vec(),
+                unordered: true,
+            })
+            .unwrap();
+        let stats = mgr.poll_inbound().unwrap();
+        assert_eq!(stats.input_accepted, 1);
+        assert_eq!(stats.input_rejected, 0);
+        assert_eq!(mgr.take_accepted_input().len(), 1);
+    }
+
+    #[test]
+    fn no_input_before_bind() {
+        let mut pair = MockPeerPair::new();
+        pair.handshake().unwrap();
+        let MockPeerPair { peer_a, mut peer_b } = pair;
+        let mut mgr = SessionManager::with_peer(Box::new(peer_a));
+        mgr.attach("sess-early");
+        assert!(!mgr.input_allowed());
+        mgr.ensure_input_allowed().unwrap_err();
+
+        peer_b
+            .send_data(DataMessage {
+                label: INPUT_CHANNEL_LABEL.into(),
+                data: b"{}".to_vec(),
+                unordered: false,
+            })
+            .unwrap();
+        let stats = mgr.poll_inbound().unwrap();
+        assert_eq!(stats.input_rejected, 1);
+        assert_eq!(stats.input_accepted, 0);
+        assert_eq!(mgr.rejected_input_count(), 1);
+        assert!(mgr.take_accepted_input().is_empty());
+    }
+
+    #[test]
+    fn bind_fail_rejects_input() {
+        let pepper = b"pepper-for-bind-fail!";
+        let (otp, mut rec) = mint_otp_record(6, pepper, u64::MAX).unwrap();
+        let pair = MockPeerPair::new();
+        let MockPeerPair { peer_a, mut peer_b } = pair;
+        let mut mgr = SessionManager::with_peer(Box::new(peer_a));
+        mgr.attach("sess-fail");
+        mgr.authorize_mode_a(&mut rec, otp.as_str(), pepper, 0)
+            .unwrap();
+        let _ = handshake_mgr_with_viewer(&mut mgr, &mut peer_b);
+
+        let bad_key = remotelink_auth::SessionBindKey::try_new(b"wrong-bind-key!!!!").unwrap();
+
+        // Viewer responds with wrong key material.
+        let rec = SharedRecording::new();
+        peer_b.set_callbacks(Box::new(rec.clone()));
+        mgr.start_identity_challenge().unwrap();
+        peer_b.poll().unwrap();
+        let chal_msg = rec
+            .snapshot()
+            .data
+            .into_iter()
+            .find(|d| d.label == IDENTITY_CHANNEL_LABEL)
+            .unwrap();
+        let chal = match DcIdentityMessage::parse(&chal_msg.data).unwrap() {
+            DcIdentityMessage::Challenge(c) => c,
+            _ => panic!("challenge"),
+        };
+        let fp_host = peer_b
+            .remote_fingerprint()
+            .unwrap()
+            .unwrap()
+            .as_sign_material();
+        let fp_viewer = peer_b.local_fingerprint().unwrap().as_sign_material();
+        let resp = respond_dc_challenge(&bad_key, "sess-fail", &chal, &fp_host, &fp_viewer);
+        peer_b
+            .send_data(DataMessage {
+                label: IDENTITY_CHANNEL_LABEL.into(),
+                data: resp.encode(),
+                unordered: false,
+            })
+            .unwrap();
+        let err = mgr.poll_inbound().unwrap_err();
+        assert!(matches!(err, SessionError::Auth(_)));
+        assert!(!mgr.input_allowed());
+
+        peer_b
+            .send_data(DataMessage {
+                label: INPUT_CHANNEL_LABEL.into(),
+                data: b"{}".to_vec(),
+                unordered: false,
+            })
+            .unwrap();
+        let stats = mgr.poll_inbound().unwrap();
+        assert_eq!(stats.input_rejected, 1);
+    }
+
+    #[test]
+    fn wrong_fingerprint_sig_fails_verify() {
+        let (sk, vk) = generate_device_keypair();
+        let pair = MockPeerPair::new();
+        let MockPeerPair { peer_a, mut peer_b } = pair;
+        let mut mgr = SessionManager::with_peer(Box::new(peer_a));
+        mgr.set_device_signing_key(sk);
+        mgr.attach("sess-fp");
+        let sdp = handshake_mgr_with_viewer(&mut mgr, &mut peer_b);
+        let sig = sdp.fingerprint_sig.unwrap();
+        let host_fp = mgr
+            .peer_mut()
+            .local_fingerprint()
+            .unwrap()
+            .as_sign_material();
+        // Tampered fingerprint material.
+        let bad_fp = host_fp.replace('A', "B");
+        assert!(verify_session_fingerprint(&vk, "sess-fp", &bad_fp, &sig).is_err());
+        // Wrong session id.
+        assert!(verify_session_fingerprint(&vk, "other", &host_fp, &sig).is_err());
+        // Correct verifies.
+        verify_session_fingerprint(&vk, "sess-fp", &host_fp, &sig).unwrap();
+        let _ = peer_b;
+    }
+
+    #[test]
+    fn mode_b_mac_verify_on_host() {
+        let secret = HostSecret::try_new(b"unattended-host-secret!".to_vec()).unwrap();
+        let challenge = AuthChallenge::issue();
+        let mut pair = MockPeerPair::new();
+        pair.handshake().unwrap();
+        let MockPeerPair { peer_a, .. } = pair;
+        let mut mgr = SessionManager::with_peer(Box::new(peer_a));
+        mgr.attach("sess-mode-b");
+        let mac =
+            mode_b_viewer_response(&secret, "sess-mode-b", challenge.nonce.as_bytes(), b"", b"");
+        mgr.authorize_mode_b(&secret, &challenge, b"", b"", &mac)
+            .unwrap();
+        assert!(mgr.identity().session_authorized);
+        assert!(!mgr.identity().identity_bound);
+
+        // Wrong MAC rejected.
+        let mut mgr2 = SessionManager::new_mock();
+        mgr2.attach("sess-mode-b");
+        let bad = [0u8; 32];
+        assert!(mgr2
+            .authorize_mode_b(&secret, &challenge, b"", b"", &bad)
+            .is_err());
     }
 }

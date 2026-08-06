@@ -3158,6 +3158,7 @@ version = "0.1.0"
 name = "remotelink-host"
 version = "0.1.0"
 dependencies = [
+ "ed25519-dalek",
  "remotelink-auth",
  "remotelink-common",
  "remotelink-media",
@@ -3243,6 +3244,8 @@ dependencies = [
 name = "remotelink-viewer-core"
 version = "0.1.0"
 dependencies = [
+ "ed25519-dalek",
+ "remotelink-auth",
  "remotelink-media",
  "remotelink-net",
  "remotelink-protocol",
