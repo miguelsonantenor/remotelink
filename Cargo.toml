@@ -12,7 +12,7 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "RemoteLink: low-latency remote desktop with system audio"
-repository = "https://github.com/remotelink/remotelink"
+# repository = omitted until the real remote URL is known
 
 [workspace.dependencies]
 remotelink-common = { path = "packages/common", version = "0.1.0" }
