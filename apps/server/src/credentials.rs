@@ -68,12 +68,17 @@ pub fn refresh_expires_at(now: DateTime<Utc>) -> DateTime<Utc> {
     now + REFRESH_TOKEN_TTL
 }
 
-fn random_token(prefix: &str) -> String {
+/// URL-safe random token body (no prefix), for minting opaque credentials.
+pub fn random_token_body() -> String {
     let mut bytes = [0u8; TOKEN_BYTES];
     OsRng.fill_bytes(&mut bytes);
     let encoded = base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, bytes);
     bytes.zeroize();
-    format!("{prefix}{encoded}")
+    encoded
+}
+
+fn random_token(prefix: &str) -> String {
+    format!("{prefix}{}", random_token_body())
 }
 
 #[cfg(test)]

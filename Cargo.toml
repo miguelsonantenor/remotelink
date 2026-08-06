@@ -31,9 +31,10 @@ subtle = "2"
 thiserror = "2"
 zeroize = { version = "1", features = ["derive"] }
 async-trait = "0.1"
-axum = { version = "0.8", features = ["json", "macros"] }
+axum = { version = "0.8", features = ["json", "macros", "ws"] }
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
+futures-util = "0.3"
 hex = "0.4"
 sqlx = { version = "0.8", default-features = false, features = [
     "runtime-tokio",
@@ -43,7 +44,8 @@ sqlx = { version = "0.8", default-features = false, features = [
     "migrate",
     "macros",
 ] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time"] }
+tokio-tungstenite = { version = "0.26", features = ["connect"] }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 tracing = "0.1"
