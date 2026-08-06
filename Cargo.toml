@@ -1,4 +1,4 @@
-﻿[workspace]
+[workspace]
 resolver = "2"
 members = [
     "packages/common",
@@ -19,17 +19,37 @@ description = "RemoteLink: low-latency remote desktop with system audio"
 
 [workspace.dependencies]
 remotelink-common = { path = "packages/common", version = "0.1.0" }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-thiserror = "2"
 remotelink-protocol = { path = "packages/protocol", version = "0.1.0" }
 remotelink-auth = { path = "packages/auth", version = "0.1.0" }
 remotelink-media = { path = "packages/media", version = "0.1.0" }
 remotelink-net = { path = "packages/net", version = "0.1.0" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 argon2 = { version = "0.5", features = ["std"] }
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 hmac = "0.12"
 rand = "0.8"
 sha2 = "0.10"
 subtle = "2"
+thiserror = "2"
 zeroize = { version = "1", features = ["derive"] }
+async-trait = "0.1"
+axum = { version = "0.8", features = ["json", "macros", "ws"] }
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+futures-util = "0.3"
+hex = "0.4"
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio",
+    "tls-rustls-ring-webpki",
+    "postgres",
+    "chrono",
+    "migrate",
+    "macros",
+] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time"] }
+tokio-tungstenite = { version = "0.26", features = ["connect"] }
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
