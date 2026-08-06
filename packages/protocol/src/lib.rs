@@ -1,0 +1,453 @@
+//! RemoteLink signaling and input protocol schemas.
+//!
+//! Wire encoding is JSON via `serde_json`. See `DESIGN.md` WebSocket (`/v1/ws`)
+//! and input path (v1 freeze) sections.
+
+mod input;
+mod limits;
+mod message;
+
+pub use input::{
+    modifiers, InputEvent, InputPayload, KeyEvent, MouseButton, MouseButtonKind, MouseMove,
+    MouseWheel,
+};
+pub use limits::{
+    MAX_FINGERPRINT_SIG_BYTES, MAX_ICE_CANDIDATE_BYTES, MAX_OPAQUE_PAYLOAD_BYTES, MAX_SDP_BYTES,
+};
+pub use message::{HelloAuth, IceCandidate, RejectReason, Role, SessionMode, SignalMessage};
+
+/// Current protocol version for `hello.protocol_version`.
+pub const PROTOCOL_VERSION: u32 = 1;
+
+/// Encode a value as a compact JSON string.
+pub fn encode_json<T: serde::Serialize>(value: &T) -> Result<String, serde_json::Error> {
+    serde_json::to_string(value)
+}
+
+/// Encode a value as pretty-printed JSON (tests / debugging).
+pub fn encode_json_pretty<T: serde::Serialize>(value: &T) -> Result<String, serde_json::Error> {
+    serde_json::to_string_pretty(value)
+}
+
+/// Decode a value from a JSON string slice.
+pub fn decode_json<'a, T: serde::Deserialize<'a>>(s: &'a str) -> Result<T, serde_json::Error> {
+    serde_json::from_str(s)
+}
+
+/// Encode a signaling message.
+pub fn encode_message(msg: &SignalMessage) -> Result<String, serde_json::Error> {
+    encode_json(msg)
+}
+
+/// Decode a signaling message.
+pub fn decode_message(s: &str) -> Result<SignalMessage, serde_json::Error> {
+    decode_json(s)
+}
+
+/// Encode an input event.
+pub fn encode_input(event: &InputEvent) -> Result<String, serde_json::Error> {
+    encode_json(event)
+}
+
+/// Decode an input event.
+pub fn decode_input(s: &str) -> Result<InputEvent, serde_json::Error> {
+    decode_json(s)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn assert_signal_roundtrip(msg: SignalMessage, golden: &str) {
+        let encoded = encode_message(&msg).expect("encode");
+        assert_eq!(encoded, golden, "golden encode mismatch for {msg:?}");
+        let decoded = decode_message(&encoded).expect("decode");
+        assert_eq!(decoded, msg, "roundtrip mismatch for {msg:?}");
+        let from_golden = decode_message(golden).expect("decode golden");
+        assert_eq!(from_golden, msg, "golden decode mismatch for {msg:?}");
+    }
+
+    fn assert_input_roundtrip(event: InputEvent, golden: &str) {
+        let encoded = encode_input(&event).expect("encode");
+        assert_eq!(encoded, golden, "golden encode mismatch for {event:?}");
+        let decoded = decode_input(&encoded).expect("decode");
+        assert_eq!(decoded, event, "roundtrip mismatch for {event:?}");
+        let from_golden = decode_input(golden).expect("decode golden");
+        assert_eq!(from_golden, event, "golden decode mismatch for {event:?}");
+    }
+
+    #[test]
+    fn protocol_version_is_one() {
+        assert_eq!(PROTOCOL_VERSION, 1);
+    }
+
+    #[test]
+    fn limits_are_positive() {
+        assert!(MAX_SDP_BYTES > 0);
+        assert!(MAX_ICE_CANDIDATE_BYTES > 0);
+        assert!(MAX_FINGERPRINT_SIG_BYTES > 0);
+        assert!(MAX_OPAQUE_PAYLOAD_BYTES > 0);
+    }
+
+    #[test]
+    fn golden_hello() {
+        assert_signal_roundtrip(
+            SignalMessage::Hello {
+                role: Role::Host,
+                protocol_version: PROTOCOL_VERSION,
+                auth: HelloAuth {
+                    device_token: "tok-abc".into(),
+                },
+            },
+            r#"{"type":"hello","role":"host","protocol_version":1,"auth":{"device_token":"tok-abc"}}"#,
+        );
+    }
+
+    #[test]
+    fn golden_hello_viewer() {
+        assert_signal_roundtrip(
+            SignalMessage::Hello {
+                role: Role::Viewer,
+                protocol_version: PROTOCOL_VERSION,
+                auth: HelloAuth {
+                    device_token: "viewer-tok".into(),
+                },
+            },
+            r#"{"type":"hello","role":"viewer","protocol_version":1,"auth":{"device_token":"viewer-tok"}}"#,
+        );
+    }
+
+    #[test]
+    fn golden_hello_ok() {
+        assert_signal_roundtrip(
+            SignalMessage::HelloOk {
+                server_time: "2026-01-01T00:00:00Z".into(),
+                feature_flags: json!({"force_relay": false}),
+            },
+            r#"{"type":"hello_ok","server_time":"2026-01-01T00:00:00Z","feature_flags":{"force_relay":false}}"#,
+        );
+    }
+
+    #[test]
+    fn golden_session_intent() {
+        assert_signal_roundtrip(
+            SignalMessage::SessionIntent {
+                session_id: "sess-1".into(),
+                host_public_id: "host-pub".into(),
+                mode: SessionMode::Otp,
+                prefilter: json!({"otp": "123456"}),
+            },
+            r#"{"type":"session_intent","session_id":"sess-1","host_public_id":"host-pub","mode":"otp","prefilter":{"otp":"123456"}}"#,
+        );
+    }
+
+    #[test]
+    fn golden_session_intent_modes() {
+        for (mode, wire) in [
+            (SessionMode::Otp, "otp"),
+            (SessionMode::Unattended, "unattended"),
+            (SessionMode::Password, "password"),
+        ] {
+            let msg = SignalMessage::SessionIntent {
+                session_id: "s".into(),
+                host_public_id: "h".into(),
+                mode,
+                prefilter: json!({}),
+            };
+            let encoded = encode_message(&msg).unwrap();
+            assert!(
+                encoded.contains(&format!(r#""mode":"{wire}""#)),
+                "expected mode {wire} in {encoded}"
+            );
+            assert_eq!(decode_message(&encoded).unwrap(), msg);
+        }
+    }
+
+    #[test]
+    fn golden_session_incoming() {
+        assert_signal_roundtrip(
+            SignalMessage::SessionIncoming {
+                session_id: "sess-1".into(),
+                viewer_info: json!({"display_name": "alice"}),
+            },
+            r#"{"type":"session_incoming","session_id":"sess-1","viewer_info":{"display_name":"alice"}}"#,
+        );
+    }
+
+    #[test]
+    fn golden_auth_challenge() {
+        assert_signal_roundtrip(
+            SignalMessage::AuthChallenge {
+                session_id: "sess-1".into(),
+                payload: json!({"nonce": "n1"}),
+            },
+            r#"{"type":"auth_challenge","session_id":"sess-1","payload":{"nonce":"n1"}}"#,
+        );
+    }
+
+    #[test]
+    fn golden_auth_response() {
+        assert_signal_roundtrip(
+            SignalMessage::AuthResponse {
+                session_id: "sess-1".into(),
+                payload: json!({"mac": "deadbeef"}),
+            },
+            r#"{"type":"auth_response","session_id":"sess-1","payload":{"mac":"deadbeef"}}"#,
+        );
+    }
+
+    #[test]
+    fn golden_session_accept() {
+        assert_signal_roundtrip(
+            SignalMessage::SessionAccept {
+                session_id: "sess-1".into(),
+            },
+            r#"{"type":"session_accept","session_id":"sess-1"}"#,
+        );
+    }
+
+    #[test]
+    fn golden_session_reject() {
+        assert_signal_roundtrip(
+            SignalMessage::SessionReject {
+                session_id: "sess-1".into(),
+                reason: RejectReason::Busy,
+            },
+            r#"{"type":"session_reject","session_id":"sess-1","reason":"busy"}"#,
+        );
+    }
+
+    #[test]
+    fn golden_session_reject_reasons() {
+        for (reason, wire) in [
+            (RejectReason::Busy, "busy"),
+            (RejectReason::Auth, "auth"),
+            (RejectReason::Policy, "policy"),
+        ] {
+            let msg = SignalMessage::SessionReject {
+                session_id: "s".into(),
+                reason,
+            };
+            let encoded = encode_message(&msg).unwrap();
+            assert!(encoded.contains(&format!(r#""reason":"{wire}""#)));
+            assert_eq!(decode_message(&encoded).unwrap(), msg);
+        }
+    }
+
+    #[test]
+    fn golden_session_offer() {
+        assert_signal_roundtrip(
+            SignalMessage::SessionOffer {
+                session_id: "sess-1".into(),
+                sdp: "v=0\r\no=- 0 0 IN IP4 0.0.0.0\r\n".into(),
+                fingerprint_sig: "sig-bytes".into(),
+            },
+            r#"{"type":"session_offer","session_id":"sess-1","sdp":"v=0\r\no=- 0 0 IN IP4 0.0.0.0\r\n","fingerprint_sig":"sig-bytes"}"#,
+        );
+    }
+
+    #[test]
+    fn golden_session_answer() {
+        assert_signal_roundtrip(
+            SignalMessage::SessionAnswer {
+                session_id: "sess-1".into(),
+                sdp: "v=0\r\n".into(),
+            },
+            r#"{"type":"session_answer","session_id":"sess-1","sdp":"v=0\r\n"}"#,
+        );
+    }
+
+    #[test]
+    fn golden_ice_candidate() {
+        assert_signal_roundtrip(
+            SignalMessage::IceCandidate {
+                session_id: "sess-1".into(),
+                candidate: IceCandidate {
+                    candidate: "candidate:1 1 UDP 2122252543 192.0.2.1 54321 typ host".into(),
+                    sdp_mid: Some("0".into()),
+                    sdp_m_line_index: Some(0),
+                    username_fragment: None,
+                },
+            },
+            r#"{"type":"ice_candidate","session_id":"sess-1","candidate":{"candidate":"candidate:1 1 UDP 2122252543 192.0.2.1 54321 typ host","sdp_mid":"0","sdp_m_line_index":0}}"#,
+        );
+    }
+
+    #[test]
+    fn golden_media_restart() {
+        assert_signal_roundtrip(
+            SignalMessage::MediaRestart {
+                session_id: "sess-1".into(),
+            },
+            r#"{"type":"media_restart","session_id":"sess-1"}"#,
+        );
+    }
+
+    #[test]
+    fn golden_renegotiate() {
+        assert_signal_roundtrip(
+            SignalMessage::Renegotiate {
+                session_id: "sess-1".into(),
+            },
+            r#"{"type":"renegotiate","session_id":"sess-1"}"#,
+        );
+    }
+
+    #[test]
+    fn golden_session_end() {
+        assert_signal_roundtrip(
+            SignalMessage::SessionEnd {
+                session_id: "sess-1".into(),
+                reason: "user_hangup".into(),
+            },
+            r#"{"type":"session_end","session_id":"sess-1","reason":"user_hangup"}"#,
+        );
+    }
+
+    #[test]
+    fn golden_stats() {
+        assert_signal_roundtrip(
+            SignalMessage::Stats {
+                session_id: "sess-1".into(),
+                payload: json!({"rtt_ms": 12.5, "bitrate_kbps": 8000}),
+            },
+            r#"{"type":"stats","session_id":"sess-1","payload":{"bitrate_kbps":8000,"rtt_ms":12.5}}"#,
+        );
+    }
+
+    #[test]
+    fn golden_error() {
+        assert_signal_roundtrip(
+            SignalMessage::Error {
+                code: "protocol_version".into(),
+                message: "unsupported protocol_version".into(),
+            },
+            r#"{"type":"error","code":"protocol_version","message":"unsupported protocol_version"}"#,
+        );
+    }
+
+    #[test]
+    fn golden_input_mouse_move() {
+        assert_input_roundtrip(
+            InputEvent {
+                client_ts_us: 1_700_000_000_000_000,
+                seq: 1,
+                payload: InputPayload::MouseMove(MouseMove {
+                    x: 0.5,
+                    y: 0.25,
+                    display_id: 0,
+                }),
+            },
+            r#"{"client_ts_us":1700000000000000,"seq":1,"payload":{"kind":"mouse_move","x":0.5,"y":0.25,"display_id":0}}"#,
+        );
+    }
+
+    #[test]
+    fn golden_input_mouse_button() {
+        assert_input_roundtrip(
+            InputEvent {
+                client_ts_us: 100,
+                seq: 2,
+                payload: InputPayload::MouseButton(MouseButton {
+                    button: MouseButtonKind::Left,
+                    pressed: true,
+                    x: 0.1,
+                    y: 0.2,
+                    display_id: 0,
+                }),
+            },
+            r#"{"client_ts_us":100,"seq":2,"payload":{"kind":"mouse_button","button":"left","pressed":true,"x":0.1,"y":0.2,"display_id":0}}"#,
+        );
+    }
+
+    #[test]
+    fn golden_input_mouse_buttons_all() {
+        for kind in [
+            MouseButtonKind::Left,
+            MouseButtonKind::Right,
+            MouseButtonKind::Middle,
+            MouseButtonKind::X1,
+            MouseButtonKind::X2,
+        ] {
+            let event = InputEvent {
+                client_ts_us: 1,
+                seq: 1,
+                payload: InputPayload::MouseButton(MouseButton {
+                    button: kind,
+                    pressed: false,
+                    x: 0.0,
+                    y: 0.0,
+                    display_id: 0,
+                }),
+            };
+            let encoded = encode_input(&event).unwrap();
+            assert_eq!(decode_input(&encoded).unwrap(), event);
+        }
+    }
+
+    #[test]
+    fn golden_input_mouse_wheel() {
+        assert_input_roundtrip(
+            InputEvent {
+                client_ts_us: 200,
+                seq: 3,
+                payload: InputPayload::MouseWheel(MouseWheel {
+                    delta_x: 0.0,
+                    delta_y: -1.0,
+                    precise: false,
+                    x: 0.5,
+                    y: 0.5,
+                    display_id: 0,
+                }),
+            },
+            r#"{"client_ts_us":200,"seq":3,"payload":{"kind":"mouse_wheel","delta_x":0.0,"delta_y":-1.0,"precise":false,"x":0.5,"y":0.5,"display_id":0}}"#,
+        );
+    }
+
+    #[test]
+    fn golden_input_key_event() {
+        assert_input_roundtrip(
+            InputEvent {
+                client_ts_us: 300,
+                seq: 4,
+                payload: InputPayload::Key(KeyEvent {
+                    scancode: 0x1C,
+                    extended: false,
+                    pressed: true,
+                    modifiers: modifiers::CTRL | modifiers::SHIFT,
+                }),
+            },
+            r#"{"client_ts_us":300,"seq":4,"payload":{"kind":"key","scancode":28,"extended":false,"pressed":true,"modifiers":5}}"#,
+        );
+    }
+
+    #[test]
+    fn golden_input_key_extended() {
+        assert_input_roundtrip(
+            InputEvent {
+                client_ts_us: 400,
+                seq: 5,
+                payload: InputPayload::Key(KeyEvent {
+                    scancode: 0x48,
+                    extended: true,
+                    pressed: false,
+                    modifiers: 0,
+                }),
+            },
+            r#"{"client_ts_us":400,"seq":5,"payload":{"kind":"key","scancode":72,"extended":true,"pressed":false,"modifiers":0}}"#,
+        );
+    }
+
+    #[test]
+    fn reject_unknown_message_type() {
+        let err = decode_message(r#"{"type":"not_a_real_type"}"#).unwrap_err();
+        assert!(err.to_string().contains("unknown variant") || err.is_data());
+    }
+
+    #[test]
+    fn reject_malformed_json() {
+        assert!(decode_message("{").is_err());
+        assert!(decode_input("null").is_err());
+    }
+}

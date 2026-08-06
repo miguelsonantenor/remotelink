@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "packages/common",
+    "packages/protocol",
     "apps/host",
     "apps/viewer",
     "apps/server",
@@ -16,3 +17,6 @@ description = "RemoteLink: low-latency remote desktop with system audio"
 
 [workspace.dependencies]
 remotelink-common = { path = "packages/common", version = "0.1.0" }
+remotelink-protocol = { path = "packages/protocol", version = "0.1.0" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
