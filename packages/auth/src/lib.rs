@@ -23,6 +23,7 @@ pub mod password;
 pub use challenge::{
     compute_challenge_mac, respond_to_challenge, verify_challenge_mac, AuthChallenge,
     ChallengeNonce, ChallengeTranscript, HostSecret, CHALLENGE_MAC_LEN, CHALLENGE_NONCE_LEN,
+    HOST_SECRET_MIN_LEN,
 };
 pub use device_id::{
     luhn_check_digit, validate_luhn, DevicePublicId, DEVICE_ID_BODY_DIGITS, DEVICE_ID_TOTAL_DIGITS,
@@ -33,9 +34,9 @@ pub use fingerprint::{
     signing_key_from_bytes, verify_fingerprint_binding, verifying_key_from_bytes,
 };
 pub use otp::{
-    generate_otp, generate_otp_default, generate_otp_with_rng, hash_otp, mint_otp, mint_otp_record,
-    validate_otp_format, verify_otp, OtpCode, OtpHash, OtpRecord, OTP_DEFAULT_DIGITS,
-    OTP_MAX_DIGITS, OTP_MIN_DIGITS,
+    generate_otp, generate_otp_default, generate_otp_with_rng, hash_otp, hash_otp_unkeyed,
+    hash_otp_with_salt, mint_otp, mint_otp_record, validate_otp_format, verify_otp, OtpCode,
+    OtpHash, OtpRecord, OTP_DEFAULT_DIGITS, OTP_MAX_DIGITS, OTP_MIN_DIGITS, OTP_SALT_LEN,
 };
 pub use password::{hash_password, password_matches, verify_password};
 
@@ -54,13 +55,15 @@ mod tests {
 
     #[test]
     fn end_to_end_auth_sketch() {
+        let pepper = b"demo-otp-pepper-material!";
+
         // Device ID for call-out
         let public_id = DevicePublicId::generate();
         assert!(DevicePublicId::is_valid(public_id.as_str()));
 
-        // Mode A OTP mint
-        let (otp, mut rec) = mint_otp_record(6, u64::MAX).unwrap();
-        rec.verify_and_consume(otp.as_str(), 0).unwrap();
+        // Mode A OTP mint (keyed)
+        let (otp, mut rec) = mint_otp_record(6, pepper, u64::MAX).unwrap();
+        rec.verify_and_consume(otp.as_str(), pepper, 0).unwrap();
 
         // Mode B challenge-response
         let secret = HostSecret::generate();
@@ -77,6 +80,7 @@ mod tests {
 
         // Mode C password prefilter
         let hash = hash_password(b"enterprise-pw").unwrap();
+        assert!(hash.starts_with("$argon2id$"));
         assert!(password_matches(b"enterprise-pw", &hash));
 
         // Fingerprint binding

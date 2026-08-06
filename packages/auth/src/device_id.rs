@@ -9,6 +9,7 @@
 //! - total 10 digits; optional display groups of 3-3-4
 
 use crate::error::{AuthError, Result};
+use rand::rngs::OsRng;
 use rand::Rng;
 
 /// Number of random body digits before the check digit.
@@ -27,8 +28,7 @@ pub struct DevicePublicId {
 impl DevicePublicId {
     /// Generate a new random public device ID with a valid Luhn check digit.
     pub fn generate() -> Self {
-        let mut rng = rand::thread_rng();
-        Self::generate_with_rng(&mut rng)
+        Self::generate_with_rng(&mut OsRng)
     }
 
     /// Generate using a provided RNG (testable).
@@ -42,7 +42,8 @@ impl DevicePublicId {
                 body.push(char::from(b'0' + rng.gen_range(0..10)));
             }
         }
-        let check = luhn_check_digit(&body);
+        // Body is always ASCII digits by construction.
+        let check = luhn_check_digit(&body).expect("body digits are numeric");
         let mut digits = body;
         digits.push(char::from(b'0' + check));
         Self { digits }
@@ -110,13 +111,23 @@ impl std::str::FromStr for DevicePublicId {
 
 /// Compute Luhn check digit for a string of body digits (no check digit yet).
 ///
-/// Returns 0–9.
-pub fn luhn_check_digit(body_digits: &str) -> u8 {
+/// Returns 0–9. Errors if `body_digits` is empty or contains non-ASCII digits.
+pub fn luhn_check_digit(body_digits: &str) -> Result<u8> {
+    if body_digits.is_empty() {
+        return Err(AuthError::InvalidDeviceId(
+            "Luhn body must be non-empty".into(),
+        ));
+    }
+    if !body_digits.chars().all(|c| c.is_ascii_digit()) {
+        return Err(AuthError::InvalidDeviceId(
+            "Luhn body must be numeric digits only".into(),
+        ));
+    }
     // Luhn over body + '0', then check digit is (10 - (sum % 10)) % 10.
     let mut sum: u32 = 0;
     let mut double = true; // position from right: first (check) is not doubled; body last is doubled
     for c in body_digits.chars().rev() {
-        let mut d = c.to_digit(10).expect("body digits must be numeric");
+        let mut d = c.to_digit(10).expect("checked ascii digit");
         if double {
             d *= 2;
             if d > 9 {
@@ -126,7 +137,7 @@ pub fn luhn_check_digit(body_digits: &str) -> u8 {
         sum += d;
         double = !double;
     }
-    ((10 - (sum % 10)) % 10) as u8
+    Ok(((10 - (sum % 10)) % 10) as u8)
 }
 
 /// Validate full digit string including check digit via Luhn.
@@ -182,15 +193,11 @@ mod tests {
         let grouped = id.display_grouped();
         assert_eq!(DevicePublicId::parse(&plain).unwrap().as_str(), plain);
         assert_eq!(DevicePublicId::parse(&grouped).unwrap().as_str(), plain);
-        assert_eq!(
-            DevicePublicId::parse(&plain.replace("", "").to_string())
-                .unwrap()
-                .as_str(),
-            plain
-        );
-        // dashes
+        // dashes / underscores as separators
         let dashed = format!("{}-{}-{}", &plain[0..3], &plain[3..6], &plain[6..10]);
         assert_eq!(DevicePublicId::parse(&dashed).unwrap().as_str(), plain);
+        let underscored = format!("{}_{}_{}", &plain[0..3], &plain[3..6], &plain[6..10]);
+        assert_eq!(DevicePublicId::parse(&underscored).unwrap().as_str(), plain);
     }
 
     #[test]
@@ -245,9 +252,9 @@ mod tests {
 
     #[test]
     fn known_luhn_vector() {
-        assert_eq!(luhn_check_digit("123456789"), 7);
+        assert_eq!(luhn_check_digit("123456789").unwrap(), 7);
         assert!(validate_luhn("1234567897"));
-        assert_eq!(luhn_check_digit("799273987"), 5);
+        assert_eq!(luhn_check_digit("799273987").unwrap(), 5);
         assert!(validate_luhn("7992739875"));
         let id: DevicePublicId = "1234567897".parse().unwrap();
         assert_eq!(id.as_str(), "1234567897");
@@ -255,10 +262,16 @@ mod tests {
     }
 
     #[test]
+    fn luhn_check_digit_rejects_non_numeric() {
+        assert!(luhn_check_digit("").is_err());
+        assert!(luhn_check_digit("12a").is_err());
+        assert!(luhn_check_digit("12 3").is_err());
+    }
+
+    #[test]
     fn luhn_check_digit_zero_case() {
-        // Find a body whose check digit is 0, or construct via formula.
         // body "000000000" → sum path; check digit for all zeros body.
-        let check = luhn_check_digit("000000000");
+        let check = luhn_check_digit("000000000").unwrap();
         let mut full = String::from("000000000");
         full.push(char::from(b'0' + check));
         assert!(validate_luhn(&full));

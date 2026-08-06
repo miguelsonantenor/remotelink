@@ -7,6 +7,7 @@
 
 use crate::error::{AuthError, Result};
 use hmac::{Hmac, Mac};
+use rand::rngs::OsRng;
 use rand::RngCore;
 use sha2::Sha256;
 use subtle::ConstantTimeEq;
@@ -20,6 +21,10 @@ pub const CHALLENGE_NONCE_LEN: usize = 32;
 /// Length of the MAC tag (SHA-256).
 pub const CHALLENGE_MAC_LEN: usize = 32;
 
+/// Minimum accepted host secret length (bytes). Callers must supply
+/// high-entropy material for the non-PAKE MAC path.
+pub const HOST_SECRET_MIN_LEN: usize = 16;
+
 /// Domain separator for the MAC message.
 const MAC_DOMAIN: &[u8] = b"remotelink-mode-b-mac-v1";
 
@@ -30,17 +35,24 @@ pub struct HostSecret {
 }
 
 impl HostSecret {
-    /// Wrap raw secret bytes.
-    pub fn new(bytes: impl Into<Vec<u8>>) -> Self {
-        Self {
-            bytes: bytes.into(),
+    /// Wrap raw secret bytes; rejects empty/short material.
+    ///
+    /// Prefer [`HostSecret::generate`] for fresh high-entropy secrets.
+    pub fn try_new(bytes: impl Into<Vec<u8>>) -> Result<Self> {
+        let bytes = bytes.into();
+        if bytes.len() < HOST_SECRET_MIN_LEN {
+            return Err(AuthError::Crypto(format!(
+                "host secret must be at least {HOST_SECRET_MIN_LEN} bytes, got {}",
+                bytes.len()
+            )));
         }
+        Ok(Self { bytes })
     }
 
-    /// Generate a random 32-byte secret.
+    /// Generate a random 32-byte secret from the OS CSPRNG.
     pub fn generate() -> Self {
         let mut bytes = vec![0u8; 32];
-        rand::thread_rng().fill_bytes(&mut bytes);
+        OsRng.fill_bytes(&mut bytes);
         Self { bytes }
     }
 
@@ -64,10 +76,10 @@ pub struct ChallengeNonce {
 }
 
 impl ChallengeNonce {
-    /// Generate a [`CHALLENGE_NONCE_LEN`]-byte nonce.
+    /// Generate a [`CHALLENGE_NONCE_LEN`]-byte nonce from the OS CSPRNG.
     pub fn generate() -> Self {
         let mut bytes = vec![0u8; CHALLENGE_NONCE_LEN];
-        rand::thread_rng().fill_bytes(&mut bytes);
+        OsRng.fill_bytes(&mut bytes);
         Self { bytes }
     }
 
@@ -262,8 +274,21 @@ mod tests {
     }
 
     #[test]
+    fn host_secret_generate_is_32_bytes() {
+        let s = HostSecret::generate();
+        assert_eq!(s.as_bytes().len(), 32);
+    }
+
+    #[test]
+    fn host_secret_try_new_rejects_short() {
+        assert!(HostSecret::try_new(vec![]).is_err());
+        assert!(HostSecret::try_new(vec![0u8; HOST_SECRET_MIN_LEN - 1]).is_err());
+        assert!(HostSecret::try_new(vec![0u8; HOST_SECRET_MIN_LEN]).is_ok());
+    }
+
+    #[test]
     fn mac_roundtrip() {
-        let secret = HostSecret::new(b"host-local-secret-material!!".to_vec());
+        let secret = HostSecret::try_new(b"host-local-secret-material!!".to_vec()).unwrap();
         let challenge = AuthChallenge::issue();
         let session = b"session-uuid-1234";
         let fp_h = b"sha256 fp host";
@@ -278,8 +303,8 @@ mod tests {
 
     #[test]
     fn mac_mismatch_wrong_secret() {
-        let secret = HostSecret::new(b"correct-secret".to_vec());
-        let wrong = HostSecret::new(b"wrong-secret!!".to_vec());
+        let secret = HostSecret::try_new(b"correct-secret!!".to_vec()).unwrap();
+        let wrong = HostSecret::try_new(b"wrong-secret!!!!".to_vec()).unwrap();
         let nonce = ChallengeNonce::from_bytes(vec![9; 32]).unwrap();
         let t = ChallengeTranscript {
             session_id: b"s",
@@ -334,9 +359,9 @@ mod tests {
 
     #[test]
     fn host_secret_debug_redacts() {
-        let s = HostSecret::new(b"sekret".to_vec());
+        let s = HostSecret::try_new(b"sekret-material!!".to_vec()).unwrap();
         assert!(format!("{s:?}").contains("redacted"));
-        assert_eq!(s.as_bytes(), b"sekret");
+        assert_eq!(s.as_bytes(), b"sekret-material!!");
     }
 
     #[test]
