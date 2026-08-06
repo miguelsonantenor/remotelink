@@ -53,6 +53,9 @@ pub struct DeviceCredential {
     pub device_id: i64,
     pub token_hash: String,
     pub refresh_token_hash: String,
+    /// When the access token stops being accepted for bearer authz.
+    pub access_expires_at: DateTime<Utc>,
+    /// When the refresh token / credential row expires.
     pub expires_at: DateTime<Utc>,
     pub revoked_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
@@ -73,6 +76,7 @@ pub struct NewCredential {
     pub device_id: i64,
     pub token_hash: String,
     pub refresh_token_hash: String,
+    pub access_expires_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
 }
 
@@ -81,5 +85,6 @@ pub struct NewCredential {
 pub struct IssuedTokens {
     pub access_token: String,
     pub refresh_token: String,
+    /// Access-token expiry (matches `access_expires_at` stored server-side).
     pub expires_at: DateTime<Utc>,
 }

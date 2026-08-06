@@ -6,22 +6,37 @@ use rand::RngCore;
 use sha2::{Digest, Sha256};
 use zeroize::Zeroize;
 
-use crate::models::IssuedTokens;
+use crate::models::{IssuedTokens, NewCredential};
 
-/// Access token lifetime.
+/// Access token lifetime (enforced via `access_expires_at`).
 pub const ACCESS_TOKEN_TTL: Duration = Duration::hours(24);
 
-/// Refresh token lifetime (also used as credential `expires_at`).
+/// Refresh token lifetime (enforced via credential `expires_at`).
 pub const REFRESH_TOKEN_TTL: Duration = Duration::days(30);
 
 const TOKEN_BYTES: usize = 32;
 
-/// Mint a random access + refresh token pair with expiry.
+/// Mint a random access + refresh token pair with access expiry.
 pub fn mint_tokens(now: DateTime<Utc>) -> IssuedTokens {
     IssuedTokens {
         access_token: random_token("rl_at_"),
         refresh_token: random_token("rl_rt_"),
-        expires_at: now + ACCESS_TOKEN_TTL,
+        expires_at: access_expires_at(now),
+    }
+}
+
+/// Build insertable credential hashes from issued tokens.
+pub fn new_credential_from_issued(
+    device_id: i64,
+    issued: &IssuedTokens,
+    now: DateTime<Utc>,
+) -> NewCredential {
+    NewCredential {
+        device_id,
+        token_hash: hash_token(&issued.access_token),
+        refresh_token_hash: hash_token(&issued.refresh_token),
+        access_expires_at: issued.expires_at,
+        expires_at: refresh_expires_at(now),
     }
 }
 
@@ -43,7 +58,12 @@ pub fn token_hash_eq(a: &str, b: &str) -> bool {
     diff == 0
 }
 
-/// Credential row expiry uses the longer refresh window.
+/// Access token expiry timestamp.
+pub fn access_expires_at(now: DateTime<Utc>) -> DateTime<Utc> {
+    now + ACCESS_TOKEN_TTL
+}
+
+/// Refresh / credential-row expiry timestamp.
 pub fn refresh_expires_at(now: DateTime<Utc>) -> DateTime<Utc> {
     now + REFRESH_TOKEN_TTL
 }
@@ -76,6 +96,10 @@ mod tests {
         assert!(t.access_token.starts_with("rl_at_"));
         assert!(t.refresh_token.starts_with("rl_rt_"));
         assert_eq!(t.expires_at, now + ACCESS_TOKEN_TTL);
+        let nc = new_credential_from_issued(1, &t, now);
+        assert_eq!(nc.access_expires_at, t.expires_at);
+        assert_eq!(nc.expires_at, now + REFRESH_TOKEN_TTL);
+        assert_ne!(nc.access_expires_at, nc.expires_at);
     }
 
     #[test]

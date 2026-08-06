@@ -88,6 +88,9 @@ impl PostgresDeviceRepo {
             refresh_token_hash: row
                 .try_get("refresh_token_hash")
                 .map_err(|e| RepoError::Internal(e.to_string()))?,
+            access_expires_at: row
+                .try_get("access_expires_at")
+                .map_err(|e| RepoError::Internal(e.to_string()))?,
             expires_at: row
                 .try_get("expires_at")
                 .map_err(|e| RepoError::Internal(e.to_string()))?,
@@ -180,7 +183,6 @@ impl DeviceRepository for PostgresDeviceRepo {
         if result.rows_affected() > 0 {
             return Ok(true);
         }
-        // Already deleted or missing
         Ok(self.get_by_public_id(public_id).await?.is_some())
     }
 
@@ -188,15 +190,16 @@ impl DeviceRepository for PostgresDeviceRepo {
         let row = sqlx::query(
             r#"
             INSERT INTO device_credentials
-                (device_id, token_hash, refresh_token_hash, expires_at)
-            VALUES ($1, $2, $3, $4)
+                (device_id, token_hash, refresh_token_hash, access_expires_at, expires_at)
+            VALUES ($1, $2, $3, $4, $5)
             RETURNING id, device_id, token_hash, refresh_token_hash,
-                      expires_at, revoked_at, created_at
+                      access_expires_at, expires_at, revoked_at, created_at
             "#,
         )
         .bind(new.device_id)
         .bind(&new.token_hash)
         .bind(&new.refresh_token_hash)
+        .bind(new.access_expires_at)
         .bind(new.expires_at)
         .fetch_one(&self.pool)
         .await
@@ -216,7 +219,7 @@ impl DeviceRepository for PostgresDeviceRepo {
                 d.protocol_version_last, d.created_at AS d_created_at, d.last_seen_at,
                 d.status, d.deleted_at,
                 c.id AS c_id, c.device_id, c.token_hash, c.refresh_token_hash,
-                c.expires_at, c.revoked_at, c.created_at AS c_created_at
+                c.access_expires_at, c.expires_at, c.revoked_at, c.created_at AS c_created_at
             FROM device_credentials c
             JOIN devices d ON d.id = c.device_id
             WHERE c.token_hash = $1 AND c.revoked_at IS NULL
@@ -241,7 +244,7 @@ impl DeviceRepository for PostgresDeviceRepo {
                 d.protocol_version_last, d.created_at AS d_created_at, d.last_seen_at,
                 d.status, d.deleted_at,
                 c.id AS c_id, c.device_id, c.token_hash, c.refresh_token_hash,
-                c.expires_at, c.revoked_at, c.created_at AS c_created_at
+                c.access_expires_at, c.expires_at, c.revoked_at, c.created_at AS c_created_at
             FROM device_credentials c
             JOIN devices d ON d.id = c.device_id
             WHERE c.refresh_token_hash = $1 AND c.revoked_at IS NULL
@@ -253,6 +256,101 @@ impl DeviceRepository for PostgresDeviceRepo {
         .map_err(|e| RepoError::Internal(e.to_string()))?;
 
         row.map(|r| join_row_to_pair(&r)).transpose()
+    }
+
+    async fn rotate_refresh(
+        &self,
+        refresh_token_hash: &str,
+        new: NewCredential,
+        now: DateTime<Utc>,
+    ) -> Result<(Device, DeviceCredential), RepoError> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| RepoError::Internal(e.to_string()))?;
+
+        let row = sqlx::query(
+            r#"
+            SELECT
+                d.id AS d_id, d.public_id, d.display_name, d.public_key, d.password_hash,
+                d.protocol_version_last, d.created_at AS d_created_at, d.last_seen_at,
+                d.status, d.deleted_at,
+                c.id AS c_id, c.device_id, c.token_hash, c.refresh_token_hash,
+                c.access_expires_at, c.expires_at, c.revoked_at, c.created_at AS c_created_at
+            FROM device_credentials c
+            JOIN devices d ON d.id = c.device_id
+            WHERE c.refresh_token_hash = $1 AND c.revoked_at IS NULL
+            FOR UPDATE OF c
+            "#,
+        )
+        .bind(refresh_token_hash)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| RepoError::Internal(e.to_string()))?;
+
+        let Some(row) = row else {
+            return Err(RepoError::StaleCredential);
+        };
+        let (device, old_cred) = join_row_to_pair(&row)?;
+        if old_cred.expires_at < now {
+            return Err(RepoError::StaleCredential);
+        }
+        if device.status != DeviceStatus::Active {
+            return Err(RepoError::StaleCredential);
+        }
+        if new.device_id != device.id {
+            return Err(RepoError::Internal(
+                "rotate_refresh device_id mismatch".into(),
+            ));
+        }
+
+        let revoked = sqlx::query(
+            r#"
+            UPDATE device_credentials SET revoked_at = $2
+            WHERE id = $1 AND revoked_at IS NULL
+            "#,
+        )
+        .bind(old_cred.id)
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RepoError::Internal(e.to_string()))?;
+
+        if revoked.rows_affected() == 0 {
+            return Err(RepoError::StaleCredential);
+        }
+
+        let inserted = sqlx::query(
+            r#"
+            INSERT INTO device_credentials
+                (device_id, token_hash, refresh_token_hash, access_expires_at, expires_at)
+            VALUES ($1, $2, $3, $4, $5)
+            RETURNING id, device_id, token_hash, refresh_token_hash,
+                      access_expires_at, expires_at, revoked_at, created_at
+            "#,
+        )
+        .bind(new.device_id)
+        .bind(&new.token_hash)
+        .bind(&new.refresh_token_hash)
+        .bind(new.access_expires_at)
+        .bind(new.expires_at)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| RepoError::Internal(e.to_string()))?;
+
+        sqlx::query("UPDATE devices SET last_seen_at = $2 WHERE id = $1")
+            .bind(device.id)
+            .bind(now)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| RepoError::Internal(e.to_string()))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| RepoError::Internal(e.to_string()))?;
+
+        Ok((device, Self::map_credential(&inserted)?))
     }
 
     async fn revoke_credential(
@@ -374,6 +472,9 @@ fn join_row_to_pair(row: &sqlx::postgres::PgRow) -> Result<(Device, DeviceCreden
             .map_err(|e| RepoError::Internal(e.to_string()))?,
         refresh_token_hash: row
             .try_get("refresh_token_hash")
+            .map_err(|e| RepoError::Internal(e.to_string()))?,
+        access_expires_at: row
+            .try_get("access_expires_at")
             .map_err(|e| RepoError::Internal(e.to_string()))?,
         expires_at: row
             .try_get("expires_at")

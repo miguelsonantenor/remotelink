@@ -22,6 +22,9 @@ CREATE TABLE IF NOT EXISTS device_credentials (
     device_id               BIGINT NOT NULL REFERENCES devices (id) ON DELETE CASCADE,
     token_hash              TEXT NOT NULL,
     refresh_token_hash      TEXT NOT NULL,
+    -- Access token validity (advertised as TokenResponse.expires_at, default 24h).
+    access_expires_at       TIMESTAMPTZ NOT NULL,
+    -- Refresh token / credential row validity (default 30d).
     expires_at              TIMESTAMPTZ NOT NULL,
     revoked_at              TIMESTAMPTZ,
     created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW()

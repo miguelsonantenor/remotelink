@@ -18,6 +18,9 @@ pub enum RepoError {
     NotFound,
     #[error("conflict: {0}")]
     Conflict(String),
+    /// Refresh already used, revoked, expired, or unknown — map to HTTP 401.
+    #[error("stale or invalid credential")]
+    StaleCredential,
     #[error("internal: {0}")]
     Internal(String),
 }
@@ -40,19 +43,33 @@ pub trait DeviceRepository: Send + Sync {
     /// Insert credential hashes for a device.
     async fn insert_credential(&self, new: NewCredential) -> Result<DeviceCredential, RepoError>;
 
-    /// Find non-revoked credential by access token hash.
+    /// Find non-revoked credential by access token hash (does not filter expiry).
     async fn find_by_access_hash(
         &self,
         token_hash: &str,
     ) -> Result<Option<(Device, DeviceCredential)>, RepoError>;
 
-    /// Find non-revoked credential by refresh token hash.
+    /// Find non-revoked credential by refresh token hash (does not filter expiry).
     async fn find_by_refresh_hash(
         &self,
         refresh_token_hash: &str,
     ) -> Result<Option<(Device, DeviceCredential)>, RepoError>;
 
-    /// Revoke a single credential by id.
+    /// Atomically consume a refresh credential and insert a replacement pair.
+    ///
+    /// Holds the storage lock / DB transaction for the whole rotate so concurrent
+    /// refreshes with the same token cannot mint two live pairs.
+    ///
+    /// Returns [`RepoError::StaleCredential`] if the refresh is missing, already
+    /// revoked, or past `expires_at`.
+    async fn rotate_refresh(
+        &self,
+        refresh_token_hash: &str,
+        new: NewCredential,
+        now: DateTime<Utc>,
+    ) -> Result<(Device, DeviceCredential), RepoError>;
+
+    /// Revoke a single credential by id (no-op failure if already revoked → NotFound).
     async fn revoke_credential(
         &self,
         credential_id: i64,
