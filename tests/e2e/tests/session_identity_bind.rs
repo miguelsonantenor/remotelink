@@ -9,9 +9,34 @@ use remotelink_auth::{
     generate_device_keypair, mode_b_viewer_response, AuthChallenge, HostSecret, SessionBindKey,
 };
 use remotelink_e2e::{handshake_host_viewer, take_pair_peers};
-use remotelink_host::{HostAuthService, HostLocalConfig, SessionManager, INPUT_CHANNEL_LABEL};
-use remotelink_net::{ConnectionState, DataMessage};
+use remotelink_host::{
+    parse_sdp_payload, signal_kind, HostAuthService, HostLocalConfig, SessionManager,
+    INPUT_CHANNEL_LABEL,
+};
+use remotelink_net::{ConnectionState, SessionDescription};
+use remotelink_protocol::{decode_input, InputPayload};
 use remotelink_viewer_core::{ConnectRequest, ViewerPhase, ViewerSession};
+
+/// Inject input over the mock wire (viewer peer → host `poll_inbound`).
+///
+/// Temporarily lowers the viewer's local `require_identity_for_input` gate so a
+/// non-compliant peer can put input-labeled DataChannel bytes on the transport;
+/// the **host** identity gate is what under test.
+fn inject_input_on_wire(viewer: &mut ViewerSession, host: &mut SessionManager) {
+    viewer.set_require_identity_for_input(false);
+    viewer
+        .send_mouse_move(0.01, 0.02)
+        .expect("viewer wire inject (gate lowered; need Connected phase)");
+    viewer.set_require_identity_for_input(true);
+    let inbound = host.poll_inbound().expect("host poll pre-bind wire input");
+    assert!(
+        inbound.input_rejected >= 1,
+        "host must reject wire input before bind: {inbound:?}"
+    );
+    assert_eq!(inbound.input_accepted, 0);
+    assert!(!host.input_allowed());
+    assert!(host.take_accepted_input().is_empty());
+}
 
 /// Full Mode A path: OTP authorize, fingerprint_sig, DC bind, input gate, synthetic A/V.
 #[test]
@@ -63,7 +88,7 @@ fn mode_a_identity_bind_input_and_synthetic_av() {
     assert!(!viewer.identity_bound());
     assert!(!host.input_allowed());
 
-    // Viewer refuses to send input while identity not bound.
+    // Viewer refuses to send input while identity not bound (local gate).
     let err = viewer
         .send_mouse_move(0.25, 0.5)
         .expect_err("viewer input blocked pre-bind");
@@ -72,20 +97,10 @@ fn mode_a_identity_bind_input_and_synthetic_av() {
         "unexpected err: {err}"
     );
 
-    // Host rejects inbound input before DC bind (raw DataChannel).
-    {
-        // Re-acquire path: use peer via host poll after injecting from viewer transport.
-        // Viewer cannot send_mouse_move; inject via a direct send is blocked on viewer side.
-        // Simulate malicious/pre-bind input by sending through viewer only after we
-        // temporarily lower the gate — instead send raw bytes on the wire from a
-        // temporary path: host try_accept without poll proves gate, then full path.
-        assert!(!host.try_accept_input(DataMessage {
-            label: INPUT_CHANNEL_LABEL.into(),
-            data: b"{\"type\":\"mouse_move\"}".to_vec(),
-            unordered: true,
-        }));
-        assert_eq!(host.rejected_input_count(), 1);
-    }
+    // Wire-level reject: non-compliant peer sends input label → host.poll_inbound.
+    let rejected_before = host.rejected_input_count();
+    inject_input_on_wire(&mut viewer, &mut host);
+    assert!(host.rejected_input_count() > rejected_before);
 
     // Post-DTLS DC identity challenge (host → viewer → host).
     host.start_identity_challenge()
@@ -114,8 +129,36 @@ fn mode_a_identity_bind_input_and_synthetic_av() {
     let inbound = host.poll_inbound().expect("poll input");
     assert_eq!(inbound.input_accepted, 2);
     assert_eq!(inbound.input_rejected, 0);
-    assert_eq!(host.take_accepted_input().len(), 2);
+    let accepted = host.take_accepted_input();
+    assert_eq!(accepted.len(), 2);
     assert!(viewer.stats().input_events >= 2);
+
+    // Decode accepted payloads (real InputEvent wire, not just counters).
+    for msg in &accepted {
+        assert_eq!(msg.label, INPUT_CHANNEL_LABEL);
+    }
+    let move_json = std::str::from_utf8(&accepted[0].data).expect("utf8 mouse");
+    let move_ev = decode_input(move_json).expect("decode mouse");
+    match &move_ev.payload {
+        InputPayload::MouseMove(m) => {
+            assert!((m.x - 0.4).abs() < 1e-5, "x={}", m.x);
+            assert!((m.y - 0.6).abs() < 1e-5, "y={}", m.y);
+            assert_eq!(m.display_id, 0);
+        }
+        other => panic!("expected MouseMove, got {other:?}"),
+    }
+    let key_json = std::str::from_utf8(&accepted[1].data).expect("utf8 key");
+    let key_ev = decode_input(key_json).expect("decode key");
+    match &key_ev.payload {
+        InputPayload::Key(k) => {
+            assert_eq!(k.scancode, 0x1E);
+            assert!(!k.extended);
+            assert!(k.pressed);
+            assert_eq!(k.modifiers, 0);
+        }
+        other => panic!("expected Key, got {other:?}"),
+    }
+    assert_eq!(move_ev.seq + 1, key_ev.seq);
 
     // Synthetic A/V: host pump → viewer receive.
     let pump = host.pump_media(4).expect("pump_media");
@@ -196,13 +239,9 @@ fn mode_b_identity_bind_input_and_synthetic_av() {
         "fingerprint_sig required"
     );
 
-    // Input rejected before bind.
+    // Input rejected before bind: local gate + wire → host.poll_inbound.
     assert!(viewer.send_mouse_move(0.1, 0.1).is_err());
-    assert!(!host.try_accept_input(DataMessage {
-        label: INPUT_CHANNEL_LABEL.into(),
-        data: b"{}".to_vec(),
-        unordered: false,
-    }));
+    inject_input_on_wire(&mut viewer, &mut host);
 
     host.start_identity_challenge().expect("dc challenge");
     viewer.poll().expect("viewer dc response");
@@ -214,6 +253,17 @@ fn mode_b_identity_bind_input_and_synthetic_av() {
     let inbound = host.poll_inbound().expect("accept input");
     assert_eq!(inbound.input_accepted, 1);
     assert_eq!(inbound.input_rejected, 0);
+    let accepted = host.take_accepted_input();
+    assert_eq!(accepted.len(), 1);
+    assert_eq!(accepted[0].label, INPUT_CHANNEL_LABEL);
+    let ev = decode_input(std::str::from_utf8(&accepted[0].data).unwrap()).unwrap();
+    match ev.payload {
+        InputPayload::MouseMove(m) => {
+            assert!((m.x - 0.9).abs() < 1e-5);
+            assert!((m.y - 0.1).abs() < 1e-5);
+        }
+        other => panic!("expected MouseMove, got {other:?}"),
+    }
 
     let pump = host.pump_media(2).expect("pump");
     assert_eq!(pump.video_sent, 2);
@@ -221,6 +271,127 @@ fn mode_b_identity_bind_input_and_synthetic_av() {
     viewer.poll().expect("media");
     assert!(viewer.stats().video_frames >= 2);
     assert!(viewer.stats().audio_packets >= 6);
+}
+
+/// Wrong viewer bind key → DC MAC fails → host input stays closed.
+#[test]
+fn mode_a_wrong_bind_key_keeps_input_closed() {
+    let (sk, vk) = generate_device_keypair();
+    let mut policy = HostAuthService::default();
+    let otp = policy.mint_otp().expect("mint otp");
+    let otp_str = otp.as_str().to_string();
+    let pepper = policy.otp_pepper().to_vec();
+    // Host derives the correct bind key via authorize; viewer gets a wrong one.
+    let wrong_key = SessionBindKey::try_new(b"wrong-e2e-bind-key!!!!!!").expect("wrong key");
+
+    let (peer_a, peer_b) = take_pair_peers();
+    let mut host = SessionManager::with_peer(Box::new(peer_a));
+    host.set_device_signing_key(sk);
+
+    let mut viewer = ViewerSession::new();
+    viewer.set_host_verifying_key(vk);
+    viewer.set_bind_key(wrong_key);
+    viewer.set_require_identity_for_input(true);
+
+    let stub = viewer
+        .begin_connect(&ConnectRequest::otp("e2e-host-bad-bind", &otp_str))
+        .expect("begin_connect");
+    let session_id = stub.session_id.clone();
+    host.attach(&session_id);
+    policy
+        .authorize_session_mode_a(&mut host, &otp_str, 0)
+        .expect("authorize mode a");
+    // Correct key material exists only on host; prove pepper-derived key differs.
+    let _correct = SessionBindKey::from_mode_a_otp(&otp_str, &pepper).unwrap();
+    viewer.mark_session_authorized();
+    viewer.attach_transport(Box::new(peer_b));
+
+    handshake_host_viewer(&mut host, &mut viewer).expect("handshake");
+    assert!(host.identity().session_authorized);
+    assert!(!host.input_allowed());
+
+    host.start_identity_challenge().expect("dc challenge");
+    // Viewer answers with wrong bind key MAC.
+    viewer.poll().expect("viewer still sends a response");
+    assert!(
+        viewer.identity_bound(),
+        "viewer locally marks bound after answering (host must independently verify)"
+    );
+
+    let err = host
+        .poll_inbound()
+        .expect_err("host must reject wrong DC MAC");
+    assert!(
+        format!("{err}").to_lowercase().contains("auth")
+            || format!("{err}").to_lowercase().contains("bind")
+            || format!("{err}").to_lowercase().contains("mac")
+            || format!("{err}").to_lowercase().contains("identity"),
+        "err={err}"
+    );
+    assert!(!host.identity().identity_bound);
+    assert!(!host.input_allowed());
+
+    // Subsequent wire input still rejected.
+    inject_input_on_wire(&mut viewer, &mut host);
+    assert!(!host.input_allowed());
+}
+
+/// Corrupt `fingerprint_sig` on offer → viewer refuses to answer (MITM strip/swap).
+#[test]
+fn corrupt_fingerprint_sig_rejected_before_answer() {
+    let (sk, vk) = generate_device_keypair();
+    let mut policy = HostAuthService::default();
+    let otp = policy.mint_otp().expect("mint otp");
+    let otp_str = otp.as_str().to_string();
+    let pepper = policy.otp_pepper().to_vec();
+    let bind_key = SessionBindKey::from_mode_a_otp(&otp_str, &pepper).unwrap();
+
+    let (peer_a, peer_b) = take_pair_peers();
+    let mut host = SessionManager::with_peer(Box::new(peer_a));
+    host.set_device_signing_key(sk);
+
+    let mut viewer = ViewerSession::new();
+    viewer.set_host_verifying_key(vk);
+    viewer.set_bind_key(bind_key);
+    viewer.set_require_identity_for_input(true);
+
+    let stub = viewer
+        .begin_connect(&ConnectRequest::otp("e2e-host-bad-fp", &otp_str))
+        .expect("begin_connect");
+    host.attach(&stub.session_id);
+    policy
+        .authorize_session_mode_a(&mut host, &otp_str, 0)
+        .expect("authorize");
+    viewer.mark_session_authorized();
+    viewer.attach_transport(Box::new(peer_b));
+
+    host.start_media().expect("start_media");
+    let outbound = host.take_outbound_signals();
+    let offer_sig = outbound
+        .iter()
+        .find(|s| s.kind == signal_kind::SESSION_OFFER)
+        .expect("session_offer");
+    let sdp = parse_sdp_payload(&offer_sig.payload).expect("parse offer");
+    let real_sig = sdp.fingerprint_sig.filter(|s| !s.is_empty()).expect("sig");
+    // Flip last hex nibble so verify fails while remaining plausible hex length.
+    let mut bad = real_sig.clone();
+    let last = bad.pop().expect("nonempty");
+    bad.push(if last == '0' { '1' } else { '0' });
+
+    let err = viewer
+        .accept_offer_with_sig(SessionDescription::offer(sdp.sdp), Some(&bad))
+        .expect_err("corrupt fingerprint_sig must fail");
+    assert!(
+        format!("{err}").to_lowercase().contains("fingerprint")
+            || format!("{err}").to_lowercase().contains("signature")
+            || format!("{err}").to_lowercase().contains("auth")
+            || format!("{err}").to_lowercase().contains("verify"),
+        "err={err}"
+    );
+    assert!(!host.input_allowed());
+    assert!(!viewer.identity_bound());
+    // Host never reached Connected via this viewer answer path.
+    assert_ne!(host.connection_state(), ConnectionState::Connected);
 }
 
 /// Policy: Mode B rejected when unattended is disabled (no bind path).

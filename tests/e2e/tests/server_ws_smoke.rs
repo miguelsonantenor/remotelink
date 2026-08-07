@@ -11,13 +11,12 @@ use chrono::Utc;
 use futures_util::{SinkExt, StreamExt};
 use remotelink_auth::DevicePublicId;
 use remotelink_protocol::{
-    decode_message, encode_message, HelloAuth, Role, SessionMode, SignalMessage, PROTOCOL_VERSION,
+    decode_message, encode_message, HelloAuth, Role, SignalMessage, PROTOCOL_VERSION,
 };
 use remotelink_server::credentials::{mint_tokens, new_credential_from_issued};
 use remotelink_server::{
     router, AppState, DeviceRepository, MemoryDeviceRepo, NewDevice, SessionRegistry,
 };
-use serde_json::json;
 use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
@@ -131,25 +130,26 @@ async fn session_intent_accept_smoke() {
         SignalMessage::HelloOk { .. }
     ));
 
-    // Viewer-core session_intent builder still matches protocol wire authority.
+    // Viewer-core session_intent builder is the wire authority — send it directly.
     let intent_req = remotelink_viewer_core::ConnectRequest::otp(&host_public_id, "123456");
     let session_id = "e2e-ws-sess-1";
     let intent = intent_req
         .session_intent_message(session_id, 1)
         .expect("session_intent_message");
-    // Override mode/prefilter already correct for OTP; send as-built or explicit.
-    let _ = intent;
-    send_msg(
-        &mut viewer,
-        &SignalMessage::SessionIntent {
-            session_id: session_id.into(),
-            signal_seq: 1,
-            host_public_id: host_public_id.clone(),
-            mode: SessionMode::Otp,
-            prefilter: json!({ "otp": "123456" }),
-        },
-    )
-    .await;
+    match &intent {
+        SignalMessage::SessionIntent {
+            session_id: sid,
+            host_public_id: hid,
+            mode,
+            ..
+        } => {
+            assert_eq!(sid, session_id);
+            assert_eq!(hid, &host_public_id);
+            assert_eq!(*mode, remotelink_protocol::SessionMode::Otp);
+        }
+        other => panic!("builder must produce SessionIntent, got {other:?}"),
+    }
+    send_msg(&mut viewer, &intent).await;
 
     match recv_msg(&mut host).await {
         SignalMessage::SessionIncoming {
