@@ -3,6 +3,7 @@
 mod blocklist;
 mod devices;
 mod health;
+mod metrics;
 mod ws;
 
 use std::sync::Arc;
@@ -22,6 +23,7 @@ pub use devices::{
     RegisterRequest, RegisterResponse, TokenResponse,
 };
 pub use health::{healthz, readyz};
+pub use metrics::metrics;
 pub use ws::ws_handler;
 
 /// Build the full HTTP router.
@@ -29,6 +31,7 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
+        .route("/metrics", get(metrics))
         .route("/v1/devices/register", post(register_device))
         .route("/v1/devices/{id}/token/refresh", post(refresh_token))
         .route("/v1/devices/{id}/otp", post(mint_otp))

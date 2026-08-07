@@ -24,11 +24,16 @@ fn main() {
         return;
     }
 
+    let dump_metrics = args.iter().any(|a| a == "--metrics");
+
     #[cfg(feature = "gui")]
     if args.iter().any(|a| a == "--gui") {
         if let Err(e) = gui::run() {
             eprintln!("gui error: {e}");
             std::process::exit(1);
+        }
+        if dump_metrics {
+            print!("{}", remotelink_common::encode_process_metrics());
         }
         return;
     }
@@ -42,9 +47,30 @@ fn main() {
         std::process::exit(2);
     }
 
+    // Metrics-only dump (no media loop).
+    if dump_metrics
+        && !args.iter().any(|a| {
+            matches!(
+                a.as_str(),
+                "--synthetic" | "--mock-codec" | "--connect-stub" | "--inject-input" | "--gui"
+            ) || a.starts_with("--host")
+                || a.starts_with("--otp")
+                || a.starts_with("--password")
+                || a.starts_with("--unattended")
+        })
+        && args.iter().all(|a| a == "--metrics")
+    {
+        print!("{}", remotelink_common::encode_process_metrics());
+        return;
+    }
+
     if let Err(e) = run_cli(&args) {
         eprintln!("error: {e}");
         std::process::exit(1);
+    }
+
+    if dump_metrics {
+        print!("{}", remotelink_common::encode_process_metrics());
     }
 }
 
@@ -66,6 +92,8 @@ fn print_usage() {
          --hud-interval N   print stats every N video frames (default 1 for mock-codec,\n\
                             0 = only final snapshot)\n  \
          --hud-block        print multi-line HUD block instead of one line\n\n\
+         Observability (PR 21):\n  \
+         --metrics          dump Prometheus text registry to stdout (alone or after run)\n\n\
          Defaults:\n  \
          --synthetic   run mock host→viewer media loopback and print stats\n  \
          --mock-codec  MH264 + MOPU roundtrip with skew HUD (PR 17)\n  \
@@ -192,6 +220,14 @@ fn run_cli(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             stats.input_events
         );
         print_hud(&stats, hud_block);
+
+        // Export G3 skew + ICE placeholder into the process metrics registry.
+        let reg = remotelink_common::process_registry();
+        reg.set_skew_ms(stats.skew_ms);
+        reg.inc_ice_path(remotelink_common::IcePath::Host);
+        for _ in 0..stats.input_events {
+            reg.inc_input_event();
+        }
 
         if session.phase() != &ViewerPhase::Streaming {
             return Err(format!("expected streaming, got {}", session.phase().as_str()).into());

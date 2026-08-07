@@ -11,6 +11,7 @@
 //! - `GET /v1/devices/{id}/audit` — host owner audit list
 //! - `GET /v1/ws` — signaling WebSocket (`hello`, `session_intent`, accept/reject)
 //! - `GET /healthz` / `GET /readyz` — probes
+//! - `GET /metrics` — Prometheus text exposition
 //!
 //! Storage is abstracted via [`repo::DeviceRepository`] with in-memory and
 //! Postgres implementations. Session presence/busy-lock lives in

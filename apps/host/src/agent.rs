@@ -351,6 +351,9 @@ pub fn run() {
     match run_agent_only_synthetic("agent-synthetic-session") {
         Ok(summary) => {
             println!("agent: {summary}");
+            let reg = remotelink_common::process_registry();
+            reg.inc_sessions(remotelink_common::SessionResult::Accept);
+            reg.inc_ice_path(remotelink_common::IcePath::Host);
             println!("agent: idle exit (named pipe client loop later)");
         }
         Err(e) => {

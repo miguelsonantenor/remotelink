@@ -23,6 +23,7 @@ use remotelink_auth::{
     AuthError, DcIdentityChallenge, DcIdentityMessage, HostSecret, IdentityBindState, OtpRecord,
     SessionBindKey, IDENTITY_CHANNEL_LABEL,
 };
+use remotelink_common::process_registry;
 use remotelink_media::{
     AudioSource, MockOpusEncoder, OpusEncoder, RtpEpoch, SyntheticAudioTone, SyntheticVideoBars,
     VideoSource,
@@ -38,6 +39,9 @@ use serde::{Deserialize, Serialize};
 
 /// DataChannel label for viewer → host input events.
 pub const INPUT_CHANNEL_LABEL: &str = "input";
+
+/// DESIGN.md host input cap: max events accepted per second; excess dropped with metric.
+pub const MAX_INPUT_EVENTS_PER_SEC: u32 = 200;
 
 /// Signaling kinds carried on control IPC [`SignalForward::kind`].
 pub mod signal_kind {
@@ -201,6 +205,10 @@ pub struct SessionManager {
     accepted_input: Vec<DataMessage>,
     /// Count of rejected input messages.
     rejected_input_count: u64,
+    /// Rate-limit window: accepted events in the current second.
+    input_rate_count: u32,
+    /// Unix second of [`Self::input_rate_count`].
+    input_rate_sec: u64,
 }
 
 impl SessionManager {
@@ -231,6 +239,8 @@ impl SessionManager {
             pending_dc_challenge: None,
             accepted_input: Vec::new(),
             rejected_input_count: 0,
+            input_rate_count: 0,
+            input_rate_sec: 0,
         }
     }
 
@@ -265,11 +275,14 @@ impl SessionManager {
         self.session_id = Some(sid.clone());
         self.media = None;
         self.outbound_signals.clear();
-        self.identity = IdentityBindState::new(sid);
+        self.identity = IdentityBindState::new(sid.clone());
         self.bind_key = None;
         self.pending_dc_challenge = None;
         self.accepted_input.clear();
         self.rejected_input_count = 0;
+        // Sync path: EnteredSpan is fine (host agent is not multi-threaded async).
+        let _span = remotelink_common::session_span("attach_session", &sid).entered();
+        tracing::info!(session_id = %sid, "session attached");
     }
 
     /// Clear session binding and stop media.
@@ -379,14 +392,29 @@ impl SessionManager {
     /// Accept a single input message if the identity gate is open.
     ///
     /// Returns `true` when accepted, `false` when rejected (and counted).
+    /// Enforces [`MAX_INPUT_EVENTS_PER_SEC`]; excess counts as input drops
+    /// (`remotelink_input_drops_total` / `remotelink_input_drop_rate`).
     pub fn try_accept_input(&mut self, msg: DataMessage) -> bool {
-        if self.identity.input_allowed() {
-            self.accepted_input.push(msg);
-            true
-        } else {
+        if !self.identity.input_allowed() {
             self.rejected_input_count = self.rejected_input_count.saturating_add(1);
-            false
+            return false;
         }
+        let now_sec = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        if self.input_rate_sec != now_sec {
+            self.input_rate_sec = now_sec;
+            self.input_rate_count = 0;
+        }
+        if self.input_rate_count >= MAX_INPUT_EVENTS_PER_SEC {
+            process_registry().inc_input_drop();
+            return false;
+        }
+        self.input_rate_count = self.input_rate_count.saturating_add(1);
+        self.accepted_input.push(msg);
+        process_registry().inc_input_event();
+        true
     }
 
     /// Explicit gate: return error unless input is allowed.

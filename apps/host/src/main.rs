@@ -29,6 +29,27 @@ fn main() {
         return;
     }
 
+    let dump_metrics = args.iter().any(|a| a == "--metrics");
+    // Metrics-only: print process registry and exit (CI / scrape smoke).
+    if dump_metrics
+        && !args.iter().any(|a| {
+            a == "--role"
+                || a.starts_with("--role=")
+                || a == "--mint-otp"
+                || a == "--confirm-sessions"
+                || a == "--unattended-enabled"
+                || a == "--test-mode-b"
+                || a == "--test-mode-b-disabled"
+                || a.starts_with("--test-authorize-otp")
+                || a.starts_with("--unattended-secret")
+        })
+    {
+        // Seed placeholder series so dumps show expected shape.
+        seed_host_placeholder_metrics();
+        print!("{}", remotelink_common::encode_process_metrics());
+        return;
+    }
+
     // Policy / OTP stubs run for any role when flags present (service default).
     if let Err(e) = run_policy_cli(&args) {
         eprintln!("error: {e}");
@@ -37,6 +58,9 @@ fn main() {
 
     // Pure policy demo exits without starting the role skeleton when only policy flags.
     if policy_only_exit(&args) {
+        if dump_metrics {
+            print!("{}", remotelink_common::encode_process_metrics());
+        }
         return;
     }
 
@@ -50,7 +74,14 @@ fn main() {
                 remotelink_common::VERSION
             );
             match service::run_colocate_synthetic("colocate-cli-session") {
-                Ok(summary) => println!("colocate: {summary}"),
+                Ok(summary) => {
+                    println!("colocate: {summary}");
+                    // Synthetic sessions use mock host ICE path.
+                    remotelink_common::process_registry()
+                        .inc_ice_path(remotelink_common::IcePath::Host);
+                    remotelink_common::process_registry()
+                        .inc_sessions(remotelink_common::SessionResult::Accept);
+                }
                 Err(e) => {
                     eprintln!("colocate: failed: {e}");
                     std::process::exit(1);
@@ -59,6 +90,18 @@ fn main() {
         }
         HostRole::Help => print_usage(),
     }
+
+    if dump_metrics {
+        print!("{}", remotelink_common::encode_process_metrics());
+    }
+}
+
+/// Ensure placeholder series appear in a bare `--metrics` dump.
+fn seed_host_placeholder_metrics() {
+    let reg = remotelink_common::process_registry();
+    reg.set_skew_ms(0.0);
+    // Touch histograms so TYPE/HELP and zero-count series encode.
+    let _ = reg.encode_prometheus();
 }
 
 /// Build host auth service from CLI flags and run mint / authorize demos.
@@ -287,7 +330,8 @@ fn print_usage() {
     eprintln!(
         "remotelink-host {} — Windows host service / session agent\n\n\
          Usage:\n  \
-         remotelink-host [--role=service|agent|colocate]\n  \
+         remotelink-host [--role=service|agent|colocate] [--metrics]\n  \
+         remotelink-host --metrics\n  \
          remotelink-host --mint-otp [--otp-ttl=300]\n  \
          remotelink-host --unattended-enabled [--unattended-secret=BYTES]\n  \
          remotelink-host --confirm-sessions\n  \
@@ -297,6 +341,8 @@ fn print_usage() {
          service   Enrollment, signaling, policy, kill-switch (default)\n  \
          agent     Session manager + mock PeerTransport synthetic A/V\n  \
          colocate  CI/test: in-process service control + agent synthetic session\n\n\
+         Observability (PR 21):\n  \
+         --metrics               Dump Prometheus text registry to stdout\n\n\
          Policy (PR 14):\n  \
          --mint-otp              Mint Mode A OTP; print code to CLI (v1 tray)\n  \
          --unattended-enabled    Allow Mode B challenge-response\n  \

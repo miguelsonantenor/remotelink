@@ -10,6 +10,8 @@ use remotelink_protocol::PROTOCOL_VERSION;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use remotelink_common::process_registry;
+
 use crate::credentials::{hash_token, mint_tokens, new_credential_from_issued};
 use crate::error::{AppError, AppResult};
 use crate::models::DeviceStatus;
@@ -437,6 +439,7 @@ async fn record_auth_failure(
     for key in &keys {
         state.auth_attempts.record_failure_now(key);
     }
+    process_registry().inc_auth_fail();
 
     // Resolve device_id for audit when possible (path id is public_id).
     let device_id = match state.repo.get_by_public_id(public_id).await {
@@ -913,6 +916,40 @@ mod tests {
         assert_eq!(res.status(), StatusCode::OK);
         let body = body_json(res).await;
         assert_eq!(body["status"], "ready");
+    }
+
+    #[tokio::test]
+    async fn metrics_endpoint_prometheus_text() {
+        use http_body_util::BodyExt;
+
+        let app = test_app();
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/metrics")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let ctype = res
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(
+            ctype.contains("text/plain"),
+            "expected prometheus content-type, got {ctype}"
+        );
+        let bytes = res.into_body().collect().await.unwrap().to_bytes();
+        let text = String::from_utf8(bytes.to_vec()).unwrap();
+        assert!(text.contains("# TYPE remotelink_sessions_total counter"));
+        assert!(text.contains("# TYPE remotelink_auth_fail_total counter"));
+        assert!(text.contains("remotelink_skew_ms"));
+        assert!(text.contains("remotelink_ice_path_total"));
+        assert!(text.contains("# TYPE remotelink_glass_to_glass_ms histogram"));
+        assert!(text.contains("remotelink_input_drop_rate"));
     }
 
     #[tokio::test]
