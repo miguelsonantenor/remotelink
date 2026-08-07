@@ -1,11 +1,9 @@
 # RemoteLink — Resume handoff
 
-**Saved:** 2026-08-07 (updated after PR 17–19)  
+**Saved:** 2026-08-07  
 **Plan ID:** `35709e22`  
 **Repo:** `C:\Users\Linked\Documents\remotelink`  
-**Design:** `DESIGN.md` (full architecture + PR plan)
-
-This document is the checkpoint so work can continue later without losing context.
+**Design:** `DESIGN.md`
 
 ---
 
@@ -13,210 +11,108 @@ This document is the checkpoint so work can continue later without losing contex
 
 | Metric | Value |
 |--------|--------|
-| **PR plan progress** | **~25 / ~30 (~80–85%)** implemented + reviewed |
-| **Usable as AnyDesk-like product** | **No** (~40–50% product readiness — mock codec path + input gates; not real WebRTC) |
-| **`main` branch** | Scaffold + handoff docs (README + DESIGN + RESUME) |
-| **Real code** | Feature branches + worktrees (see below) |
-| **Remote / GitHub** | None configured — all local |
+| **PR plan progress** | **~30 / ~30 plan PRs done** (~95%+ of planned list; **PR 8b optional** skipped) |
+| **Usable as AnyDesk-like product** | **No** — mock PeerTransport/codec; **real WebRTC not integrated** (~50–60% product readiness) |
+| **`main` branch** | Handoff docs + DESIGN only |
+| **Real code** | Feature branches + worktrees |
+| **Remote / GitHub** | None |
 
 ---
 
-## Environment (required to build)
+## Environment
 
 ```powershell
 $env:Path = "C:\Users\Linked\tools\mingw64\bin;$env:USERPROFILE\.cargo\bin;" + $env:Path
 $env:RUSTUP_TOOLCHAIN = "stable-x86_64-pc-windows-gnu"
 ```
 
-- Rust: stable via rustup  
-- MinGW: `C:\Users\Linked\tools\mingw64`  
-- Prefer **GNU** toolchain (`stable-x86_64-pc-windows-gnu`) for linking on this machine  
-
 ---
 
-## How to resume later
-
-### Option A — Continue the plan with Grok
-
-Say:
+## How to resume
 
 ```text
-Continue RemoteLink plan 35709e22 from RESUME.md
-```
-
-or:
-
-```text
-/execute-plan --resume 35709e22
-```
-
-Point at design: `C:\Users\Linked\Documents\remotelink\DESIGN.md`
-
-### Option B — Manual continue
-
-1. Read `DESIGN.md` § PR Plan  
-2. Next PRs (not done): **21, 22, 24, 26, 27** (8b optional) + real **libwebrtc**  
-3. Check out a tip branch (below) or worktree and build on it  
-
-### Recommended “richest” tips to start from
-
-| Goal | Branch or worktree |
-|------|---------------------|
-| Viewer decode + skew HUD | `progress/decode` or `remotelink-wt-pr-17` |
-| Host input injection | `progress/inject` or `remotelink-wt-pr-18` |
-| Viewer input capture/send | `progress/viewer-input` or `remotelink-wt-pr-19` |
-| E2E synthetic tests | `progress/e2e` or `remotelink-wt-pr-15` |
-| Identity + host bind | `progress/identity` or `remotelink-wt-pr-13` |
-| OTP / unattended | `progress/otp` or `remotelink-wt-pr-14` |
-| Session chrome / kill-switch | `progress/chrome` or `remotelink-wt-pr-20` |
-| H.264 encode path | `progress/encode` or `remotelink-wt-pr-16b` |
-| Server signaling path | `progress/server-path` or `remotelink-wt-pr-5b` |
-
-```powershell
-cd C:\Users\Linked\Documents\remotelink
-git checkout progress/e2e
-# or work in worktree:
-cd C:\Users\Linked\Documents\remotelink-wt-pr-15
-cargo test -p remotelink-e2e
+Resume RemoteLink from C:\Users\Linked\Documents\remotelink\RESUME.md
+Continue with real WebRTC (libwebrtc PeerTransport) or merge all branches to main.
 ```
 
 ---
 
 ## Completed PRs (tips)
 
-Each tip is the reviewed tip of that PR branch (full SHA prefix).
-
-| PR | Short SHA | Subject |
-|----|-----------|---------|
-| 1 | `034c0af` | Cargo workspace skeleton + CI |
-| 2 | `1364ea0` | Protocol schemas + golden tests |
-| 3 | `597a46e` | Auth: IDs, OTP, challenge-response |
-| 4 | `508db88` | Server registration / credentials |
-| 5a | `cec26c6` | WSS hello / session_intent / accept |
-| 5b | `52d1146` | SDP / ICE relay |
-| 6 | `8015bbe` | Rate limits, audit, blocklist |
-| 7 | `122b0f3` | Session-scoped TURN credentials |
-| 8 | `3f4d5f9` | PeerTransport spike (mock + Plan B libwebrtc) |
-| 9 | `b375372` | Media: jitter, skew, synthetic A/V |
-| 10 | `eef587a` | Host service/agent control IPC |
-| 11 | `0f0f1c2` | Host session manager + synthetic A/V |
-| 12 | `c5f33bb` | Viewer-core + CLI/egui shell |
-| 13 | `a3e8006` | Identity binding (no input until bound) |
-| 14 | `09b64bd` | OTP UX + unattended Mode B policy |
-| 15 | `87eae18` | E2E identity + synthetic A/V + input mock |
+| PR | Short | Subject |
+|----|-------|---------|
+| 1 | `034c0af` | Workspace + CI |
+| 2 | `1364ea0` | Protocol |
+| 3 | `597a46e` | Auth |
+| 4 | `508db88` | Server registry |
+| 5a | `cec26c6` | WSS sessions |
+| 5b | `52d1146` | SDP/ICE relay |
+| 6 | `8015bbe` | Rate limits / audit / blocklist |
+| 7 | `122b0f3` | TURN credentials |
+| 8 | `3f4d5f9` | PeerTransport mock + spike GO libwebrtc |
+| 9 | `b375372` | Media core |
+| 10 | `eef587a` | Host IPC |
+| 11 | `0f0f1c2` | Host synthetic session |
+| 12 | `c5f33bb` | Viewer-core shell |
+| 13 | `a3e8006` | Identity bind |
+| 14 | `09b64bd` | OTP + unattended |
+| 15 | `87eae18` | E2E synthetic |
 | 16a | `cb38ffb` | DXGI capture |
-| 16b | `7f9db21` | H.264 encode into PeerTransport |
-| 16c | `27dff33` | WASAPI loopback → Opus path |
+| 16b | `7f9db21` | H.264 encode |
+| 16c | `27dff33` | WASAPI loopback |
+| 17 | `fab8061` | Viewer decode + skew HUD |
+| 18 | `c7e1539` | Host input injection |
+| 19 | `0f52a14` | Viewer input send |
 | 20 | `e913afe` | Session chrome + kill-switch |
-| 23 | `a161b63` | Unit-test agent inventory |
-| 25 | `03a988e` | Coverage / test-presence gates |
-| 17 | `fab8061` | Viewer H.264 mock decode, Opus playout, skew HUD |
-| 18 | `c7e1539` | Host input injection after identity bind |
-| 19 | `0f52a14` | Viewer input capture → DataChannel |
+| 21 | `84239a7` | Prometheus metrics + tracing |
+| 22 | `4671fc6` | Linux host platform (mock CI) |
+| 23 | `a161b63` | Unit-test agent |
+| 24 | `3e7778e` | Bug-hunt / chaos agent |
+| 25 | `03a988e` | Coverage gates |
+| 26 | `913ee07` | Packaging outline + force-disconnect |
+| 27 | `3075be7` | Runbook + threat model + limitations |
 
-**Branch naming pattern:**
+Worktrees: `C:\Users\Linked\Documents\remotelink-wt-pr-*`  
+Branches: `execute-plan/35709e22-pr-*` and `progress/*`
 
-```text
-execute-plan/35709e22-pr-<N>-<slug>
-```
+### Progress pointers
 
-**Worktree paths:**
-
-```text
-C:\Users\Linked\Documents\remotelink-wt-pr-<N>
-```
-
-(Exceptions: `remotelink-wt-pr1` for PR1.)
+`progress/server-path`, `security`, `turn`, `net`, `media`, `host-ipc`, `host-session`, `viewer`, `identity`, `otp`, `e2e`, `dxgi`, `encode`, `wasapi`, `decode`, `inject`, `viewer-input`, `chrome`, `metrics`, `linux`, `agents`, `chaos`, `coverage`, `packaging`, `docs`
 
 ---
 
-## Progress pointer branches (local)
+## Remaining for a real product
 
-| Branch | Points at |
-|--------|-----------|
-| `progress/server-path` | PR 5b tip |
-| `progress/security` | PR 6 |
-| `progress/turn` | PR 7 |
-| `progress/net` | PR 8 |
-| `progress/media` | PR 9 |
-| `progress/host-ipc` | PR 10 |
-| `progress/host-session` | PR 11 |
-| `progress/viewer` | PR 12 |
-| `progress/identity` | PR 13 |
-| `progress/otp` | PR 14 |
-| `progress/e2e` | PR 15 |
-| `progress/dxgi` | PR 16a |
-| `progress/encode` | PR 16b |
-| `progress/wasapi` | PR 16c |
-| `progress/chrome` | PR 20 |
-| `progress/agents` | PR 23 |
-| `progress/coverage` | PR 25 |
-| `progress/decode` | PR 17 |
-| `progress/inject` | PR 18 |
-| `progress/viewer-input` | PR 19 |
+1. **Real WebRTC** (libwebrtc behind `PeerTransport`) — largest gap  
+2. Merge all PR tips into one linear stack / `main`  
+3. Add git remote and push  
+4. Real MSI/codesign (outline only today)  
+5. Optional PR **8b** if pure-Rust WebRTC is chosen instead  
 
 ---
 
-## Not done (pick up here)
-
-Priority order for a usable product:
-
-1. **Real WebRTC** — libwebrtc (Plan B from PR 8), not only mock PeerTransport  
-2. **PR 21** — Prometheus metrics / tracing  
-3. **PR 22** — Linux host (secondary)  
-4. **PR 24** — Bug-hunt agent + chaos  
-5. **PR 26** — Packaging (MSI) + force-disconnect  
-6. **PR 27** — Runbooks + threat model docs  
-7. **PR 8b** — only if pure-Rust WebRTC is chosen later (currently optional)
-
-Also remaining: merge all tips into one linear stack / `main`, add `origin` remote, full stack assembly.
-
----
-
-## What works today (demos)
+## Demos
 
 ```powershell
 $env:Path = "C:\Users\Linked\tools\mingw64\bin;$env:USERPROFILE\.cargo\bin;" + $env:Path
 $env:RUSTUP_TOOLCHAIN = "stable-x86_64-pc-windows-gnu"
 
-# E2E synthetic (identity + A/V + input gate)
 cd C:\Users\Linked\Documents\remotelink-wt-pr-15
 cargo test -p remotelink-e2e
 
-# Host synthetic agent
-cd C:\Users\Linked\Documents\remotelink-wt-pr-11
-cargo run -p remotelink-host -- --role=agent
-
-# Viewer synthetic / mock codec + HUD
 cd C:\Users\Linked\Documents\remotelink-wt-pr-17
 cargo run -p remotelink-viewer -- --mock-codec --hud-block
-cargo run -p remotelink-viewer -- --synthetic --inject-input
+
+cd C:\Users\Linked\Documents\remotelink-wt-pr-24
+cargo run -p bug-hunt-agent -- nightly --out target/chaos
 ```
 
 ---
 
-## Orchestrator state (scratch)
+## Docs for operators
 
-```text
-C:\Users\Linked\AppData\Local\Temp\grok-S-1-5-21-2837964814-3470935208-3283404530-1001\grok-exec-plan-35709e22.json
-```
+On tip `progress/docs` / worktree `remotelink-wt-pr-27`:
 
-May be cleaned by the OS; **this RESUME.md is the durable source of truth**.
-
----
-
-## Important notes
-
-- Branches are **not merged into `main`**. Code lives on PR branches / worktrees.  
-- There is **no remote push** yet — back up this folder if the machine is wiped.  
-- Diamond merges of packages were sometimes done by **copy + workspace fix** when git merge conflicted.  
-- Do **not** delete worktrees or `execute-plan/35709e22-*` branches until code is merged or pushed.  
-
----
-
-## Suggested next message to the agent
-
-```text
-Resume RemoteLink from C:\Users\Linked\Documents\remotelink\RESUME.md
-Continue execute-plan 35709e22 starting with PR 21 (metrics) or real WebRTC.
-```
+- `docs/runbook.md`
+- `docs/threat-model.md`
+- `docs/platform-limitations.md`

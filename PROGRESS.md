@@ -5,18 +5,22 @@ See **RESUME.md** for full handoff.
 
 ## Summary
 
-- **Design:** complete (`DESIGN.md`)
-- **Implementation:** ~25 of ~30 PRs done (~80–85% of plan)
-- **Product readiness:** ~40–50% (mock codec + input path; not real WebRTC product)
+- **Design:** complete
+- **Implementation:** **all planned PRs 1–27** (except optional 8b) ~**95%+ of PR list**
+- **Product readiness:** ~**50–60%** — full mock path + server + security; **not** real WebRTC remote desktop yet
 
-## Done vs remaining
+## Done
 
-### Done
-Workspace, protocol, auth, server (HTTP/WSS/SDP-ICE/security/TURN/OTP), media core, PeerTransport mock, host IPC, synthetic host A/V, viewer-core, identity bind, OTP/unattended, e2e synthetic, DXGI/WASAPI/encode stubs, **viewer decode+skew HUD (17)**, **host input inject (18)**, **viewer input send (19)**, unit-test agent, coverage gates, session chrome/kill-switch.
+Protocol, auth, full server signaling/security/TURN/OTP/admin, media, mock PeerTransport, host IPC + synthetic A/V + encode/capture stubs, viewer decode/HUD/input, identity bind, e2e, Linux platform stubs, metrics, packaging outline, force-disconnect, unit-test + bug-hunt agents, coverage gates, runbooks/threat model.
 
-### Remaining
-Metrics (21), Linux host (22), bug-hunt agent (24), packaging (26), runbooks (27), **real libwebrtc**.
+## Remaining for real product
 
-## Quick resume
+1. **libwebrtc** (real PeerTransport)
+2. Merge branches → `main`
+3. Push remote + real installer signing
 
-Read `RESUME.md` → use plan id `35709e22` → start at **PR 21** or WebRTC.
+## Resume
+
+```text
+Resume from RESUME.md — implement real WebRTC or merge stack to main.
+```
