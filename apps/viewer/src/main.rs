@@ -5,13 +5,16 @@
 //!
 //! Beta HUD (G3): prints required skew stats every N frames (`--hud-interval`).
 //!
+//! Input (PR 19): `--inject-input` sends a demo burst on the mock DataChannel;
+//! `--always-capture` enables input while unfocused (default for headless).
+//!
 //! Optional egui shell: build with `--features gui` and pass `--gui`.
 
 use std::env;
 
 use remotelink_viewer_core::{
-    connect_stub, run_mock_codec_loopback, run_synthetic_loopback, ConnectRequest, SessionStats,
-    ViewerPhase, ViewerSession,
+    connect_stub, run_mock_codec_loopback_ex, run_synthetic_loopback_ex, ConnectRequest,
+    SessionStats, ViewerPhase, ViewerSession,
 };
 
 fn main() {
@@ -53,6 +56,11 @@ fn print_usage() {
          [--password PW | --otp CODE | --unattended SECRET]\n  \
          remotelink-viewer --connect-stub --host ID --otp CODE\n  \
          remotelink-viewer --gui          (requires --features gui)\n\n\
+         Input (PR 19):\n  \
+         --inject-input     after synthetic/mock media, send demo mouse/key events\n\
+                            on DataChannel \"input\" (capture + scancode path)\n  \
+         --always-capture   send input even when the window is unfocused\n\
+                            (default for CLI/headless; GUI starts focused-only)\n\n\
          Beta HUD (G3 required skew stats):\n  \
          --hud-interval N   print stats every N video frames (default 1 for mock-codec,\n\
                             0 = only final snapshot)\n  \
@@ -74,6 +82,8 @@ fn run_cli(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let connect_stub_only = args.iter().any(|a| a == "--connect-stub");
     let want_synthetic = args.iter().any(|a| a == "--synthetic");
     let want_mock_codec = args.iter().any(|a| a == "--mock-codec");
+    let inject_input = args.iter().any(|a| a == "--inject-input");
+    let always_capture = args.iter().any(|a| a == "--always-capture");
     let hud_block = args.iter().any(|a| a == "--hud-block");
     let hud_interval = flag_value(args, "--hud-interval")
         .and_then(|s| s.parse::<u64>().ok())
@@ -134,21 +144,19 @@ fn run_cli(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 
         let video_n = 5usize;
         let audio_n = 4usize;
-        let (session, stats) = if want_mock_codec {
-            // For HUD interval demo we still use the batch helper; interval is
-            // applied to the final stats print cadence description.
-            let (s, st) = run_mock_codec_loopback(video_n, audio_n)?;
+        // Inject demo input while the host mock peer is still live (before pair drop).
+        let (session, stats, demo_sent) = if want_mock_codec {
+            let (s, st, n) = run_mock_codec_loopback_ex(video_n, audio_n, inject_input)?;
             if hud_interval > 0 {
-                // Print per-frame style lines from final snapshot (batch path).
                 for i in 1..=st.video_frames {
                     if i % hud_interval == 0 || i == st.video_frames {
                         println!("[hud frame {i}/{}] {}", st.video_frames, st.hud_line());
                     }
                 }
             }
-            (s, st)
+            (s, st, n)
         } else {
-            let (s, st) = run_synthetic_loopback(video_n, audio_n)?;
+            let (s, st, n) = run_synthetic_loopback_ex(video_n, audio_n, inject_input)?;
             if hud_interval > 0 {
                 for i in 1..=st.video_frames {
                     if i % hud_interval == 0 || i == st.video_frames {
@@ -156,18 +164,29 @@ fn run_cli(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             }
-            (s, st)
+            (s, st, n)
         };
 
+        if always_capture {
+            println!("input: always_capture requested (applied on next live session)");
+        }
+        if inject_input {
+            println!(
+                "input: injected {demo_sent} demo events via capture path (input_events={})",
+                stats.input_events
+            );
+        }
+
         println!(
-            "phase={} video_frames={} audio_packets={} mock_h264={} mopu={} recorded_nalus={} recorded_audio={}",
+            "phase={} video_frames={} audio_packets={} mock_h264={} mopu={} recorded_nalus={} recorded_audio={} input_events={}",
             session.phase().as_str(),
             stats.video_frames,
             stats.audio_packets,
             stats.mock_h264_frames,
             stats.mock_opus_packets,
             session.recorded_video_nalus().len(),
-            session.recorded_audio_packets().len()
+            session.recorded_audio_packets().len(),
+            stats.input_events
         );
         print_hud(&stats, hud_block);
 
@@ -228,7 +247,8 @@ fn flag_value(args: &[String], name: &str) -> Option<String> {
 mod gui {
     use eframe::egui;
     use remotelink_viewer_core::{
-        connect_stub, run_mock_codec_loopback, run_synthetic_loopback, ConnectRequest, ViewerPhase,
+        connect_stub, run_mock_codec_loopback_ex, run_synthetic_loopback_ex, ConnectRequest,
+        ViewerPhase,
     };
 
     pub fn run() -> eframe::Result<()> {
@@ -255,10 +275,18 @@ mod gui {
         /// Beta HUD overlay text (G3 skew stats).
         hud_text: String,
         show_hud: bool,
+        /// When true, input is sent even if the viewport is unfocused.
+        always_capture: bool,
+        /// Last demo input event count from synthetic/mock inject.
+        last_input_events: u64,
     }
 
     impl eframe::App for ConnectApp {
         fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+            // Focus policy for optional live capture wiring (PR 19).
+            let focused = ctx.input(|i| i.focused);
+            let _ = focused; // reserved for a long-lived ViewerSession in later PRs
+
             egui::CentralPanel::default().show(ctx, |ui| {
                 ui.heading("RemoteLink — Connect");
                 ui.add_space(8.0);
@@ -288,10 +316,23 @@ mod gui {
                     }
                 });
                 ui.checkbox(&mut self.show_hud, "Show beta HUD (G3 skew)");
+                ui.checkbox(
+                    &mut self.always_capture,
+                    "Always capture input (even unfocused)",
+                );
+                if self.always_capture {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(200, 140, 40),
+                        "Warning: input may leave the app while unfocused",
+                    );
+                }
                 ui.separator();
                 ui.label(&self.status);
                 if !self.last_phase.is_empty() {
                     ui.label(format!("phase: {}", self.last_phase));
+                }
+                if self.last_input_events > 0 {
+                    ui.label(format!("demo input_events: {}", self.last_input_events));
                 }
                 if self.show_hud && !self.hud_text.is_empty() {
                     ui.separator();
@@ -314,6 +355,7 @@ mod gui {
                     self.status = format!("session {}", stub.session_id);
                     self.last_phase = ViewerPhase::Connecting.as_str().into();
                     self.hud_text.clear();
+                    self.last_input_events = 0;
                 }
                 Err(e) => {
                     self.status = format!("error: {e}");
@@ -323,14 +365,16 @@ mod gui {
         }
 
         fn do_synthetic(&mut self) {
-            match run_synthetic_loopback(3, 2) {
-                Ok((session, stats)) => {
+            match run_synthetic_loopback_ex(3, 2, true) {
+                Ok((session, stats, n)) => {
+                    let _ = self.always_capture; // applied on a long-lived session later
+                    self.last_input_events = session.stats().input_events;
                     self.status = format!(
-                        "synthetic ok: video={} audio={} skew_ms={:.2}",
+                        "synthetic ok: video={} audio={} skew_ms={:.2} input={n}",
                         stats.video_frames, stats.audio_packets, stats.skew_ms
                     );
                     self.last_phase = session.phase().as_str().into();
-                    self.hud_text = stats.hud_block();
+                    self.hud_text = session.stats().hud_block();
                     self.show_hud = true;
                 }
                 Err(e) => {
@@ -340,14 +384,16 @@ mod gui {
         }
 
         fn do_mock_codec(&mut self) {
-            match run_mock_codec_loopback(5, 4) {
-                Ok((session, stats)) => {
+            match run_mock_codec_loopback_ex(5, 4, true) {
+                Ok((session, stats, n)) => {
+                    let _ = self.always_capture;
+                    self.last_input_events = session.stats().input_events;
                     self.status = format!(
-                        "mock-codec ok: h264={} mopu={} skew_ms={:.2}",
+                        "mock-codec ok: h264={} mopu={} skew_ms={:.2} input={n}",
                         stats.mock_h264_frames, stats.mock_opus_packets, stats.skew_ms
                     );
                     self.last_phase = session.phase().as_str().into();
-                    self.hud_text = stats.hud_block();
+                    self.hud_text = session.stats().hud_block();
                     self.show_hud = true;
                 }
                 Err(e) => {
@@ -393,10 +439,18 @@ mod tests {
 
     #[test]
     fn mock_codec_loopback_exports_skew_hud() {
-        let (_s, stats) = run_mock_codec_loopback(2, 2).unwrap();
+        let (_s, stats, _) = run_mock_codec_loopback_ex(2, 2, false).unwrap();
         assert!(stats.has_required_skew_metric());
         let line = stats.hud_line();
         assert!(line.contains("skew_ms="), "{line}");
         assert!(line.contains("bind="), "{line}");
+    }
+
+    #[test]
+    fn inject_demo_input_during_synthetic() {
+        let (session, stats, n) = run_synthetic_loopback_ex(1, 1, true).unwrap();
+        assert_eq!(n, 6);
+        assert_eq!(session.stats().input_events, 6);
+        assert_eq!(stats.input_events, 6);
     }
 }

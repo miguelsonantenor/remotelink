@@ -35,7 +35,9 @@ use crate::audio::{AudioPlayoutQueue, AudioPlayoutSink, MockAudioPlayoutSink, Pl
 use crate::connect::{connect_stub, ConnectRequest, ConnectStubResult};
 use crate::decode::{DecodedVideoFrame, MockOrSyntheticDecoder, VideoDecodeHook};
 use crate::error::{Result, ViewerError};
-use crate::input::InputEmitter;
+use crate::input::{
+    CaptureRect, CapturedInput, InputCapture, InputCaptureConfig, InputEmitter, RawInput,
+};
 use crate::state::{ConnectionMachine, ViewerPhase};
 use crate::stats::{BindStatus, SessionStats};
 
@@ -110,6 +112,8 @@ pub struct ViewerSession {
     /// Playout sink (mock by default for CI).
     playout_sink: Box<dyn AudioPlayoutSink>,
     input: InputEmitter,
+    /// Focus / coalesce / normalize capture stage (toolkit feeds [`RawInput`]).
+    capture: InputCapture,
     /// Local ICE candidates waiting for the signaling path to forward.
     pending_local_ice: Vec<IceCandidate>,
     /// Active / last stub session id.
@@ -171,6 +175,13 @@ impl ViewerSession {
             audio: AudioPlayoutQueue::new(64),
             playout_sink: Box::new(MockAudioPlayoutSink::new()),
             input: InputEmitter::new(),
+            // Synthetic/CLI paths often inject without a real window focus
+            // event; default always_capture so headless demos work. GUI shells
+            // should call set_always_capture(false) and drive set_focused.
+            capture: InputCapture::new(InputCaptureConfig {
+                always_capture: true,
+                ..InputCaptureConfig::default()
+            }),
             pending_local_ice: Vec::new(),
             session_id: None,
             stats,
@@ -333,6 +344,9 @@ impl ViewerSession {
         self.video_out.clear();
         self.audio = AudioPlayoutQueue::new(64);
         self.input = InputEmitter::new();
+        // Preserve always_capture / coalesce rate across reconnect; reset focus.
+        let cfg = *self.capture.config();
+        self.capture = InputCapture::new(cfg);
         self.skew.reset();
         self.last_video_present_ms = None;
         self.last_audio_playout_ms = None;
@@ -444,7 +458,71 @@ impl ViewerSession {
         Ok(())
     }
 
-    /// Emit a normalized mouse-move input event to the host.
+    /// Input capture stage (focus policy, coalesce, normalize).
+    pub fn capture(&self) -> &InputCapture {
+        &self.capture
+    }
+
+    /// Mutable capture stage (tests / toolkit wiring).
+    pub fn capture_mut(&mut self) -> &mut InputCapture {
+        &mut self.capture
+    }
+
+    /// Set window focus for the input focus policy.
+    pub fn set_focused(&mut self, focused: bool) {
+        self.capture.set_focused(focused);
+    }
+
+    /// When true, send input even if unfocused (CLI: `--always-capture`).
+    pub fn set_always_capture(&mut self, always: bool) {
+        self.capture.set_always_capture(always);
+    }
+
+    /// Whether always-capture is enabled.
+    pub fn always_capture(&self) -> bool {
+        self.capture.always_capture()
+    }
+
+    /// Update the rectangle used to normalize pointer coordinates.
+    pub fn set_capture_rect(&mut self, rect: CaptureRect) {
+        self.capture.set_rect(rect);
+    }
+
+    /// Feed a raw platform sample through capture → encode → DataChannel.
+    ///
+    /// Returns the number of wire events sent (0 when focus policy blocks).
+    pub fn push_raw_input(&mut self, raw: RawInput) -> Result<usize> {
+        self.ensure_can_send_input()?;
+        let now = std::time::Instant::now();
+        let captured = self.capture.push(raw, now);
+        let mut sent = 0usize;
+        for c in captured {
+            self.send_captured(&c)?;
+            sent = sent.saturating_add(1);
+        }
+        Ok(sent)
+    }
+
+    /// Poll coalesced mouse moves that became due since the last push.
+    pub fn poll_input_capture(&mut self) -> Result<usize> {
+        if !self.machine.phase().can_send_input() {
+            return Ok(0);
+        }
+        if self.require_identity_for_input && !self.identity.identity_bound {
+            return Ok(0);
+        }
+        let now = std::time::Instant::now();
+        let mut sent = 0usize;
+        while let Some(c) = self.capture.poll(now) {
+            self.send_captured(&c)?;
+            sent = sent.saturating_add(1);
+        }
+        Ok(sent)
+    }
+
+    /// Emit a normalized mouse-move input event to the host (bypass capture coalesce).
+    ///
+    /// Prefer [`Self::push_raw_input`] from UI paths so coalesce/focus apply.
     pub fn send_mouse_move(&mut self, x: f32, y: f32) -> Result<()> {
         self.ensure_can_send_input()?;
         let (_ev, msg) = self.input.mouse_move(x, y)?;
@@ -453,7 +531,7 @@ impl ViewerSession {
         Ok(())
     }
 
-    /// Emit a mouse button event.
+    /// Emit a mouse button event (bypass capture coalesce).
     pub fn send_mouse_button(
         &mut self,
         button: remotelink_protocol::MouseButtonKind,
@@ -468,7 +546,23 @@ impl ViewerSession {
         Ok(())
     }
 
-    /// Emit a key event.
+    /// Emit a mouse wheel event (bypass capture coalesce).
+    pub fn send_mouse_wheel(
+        &mut self,
+        delta_x: f32,
+        delta_y: f32,
+        precise: bool,
+        x: f32,
+        y: f32,
+    ) -> Result<()> {
+        self.ensure_can_send_input()?;
+        let (_ev, msg) = self.input.mouse_wheel(delta_x, delta_y, precise, x, y)?;
+        self.send_data(msg)?;
+        self.stats.input_events = self.input.emitted();
+        Ok(())
+    }
+
+    /// Emit a key event (bypass capture coalesce).
     pub fn send_key(
         &mut self,
         scancode: u32,
@@ -478,6 +572,27 @@ impl ViewerSession {
     ) -> Result<()> {
         self.ensure_can_send_input()?;
         let (_ev, msg) = self.input.key(scancode, extended, pressed, modifiers)?;
+        self.send_data(msg)?;
+        self.stats.input_events = self.input.emitted();
+        Ok(())
+    }
+
+    /// Emit a named key via the shared scan-set-1 table.
+    pub fn send_key_named(
+        &mut self,
+        key: remotelink_protocol::NamedKey,
+        pressed: bool,
+        modifiers: u32,
+    ) -> Result<()> {
+        self.ensure_can_send_input()?;
+        let (_ev, msg) = self.input.key_named(key, pressed, modifiers)?;
+        self.send_data(msg)?;
+        self.stats.input_events = self.input.emitted();
+        Ok(())
+    }
+
+    fn send_captured(&mut self, captured: &CapturedInput) -> Result<()> {
+        let (_ev, msg) = self.input.encode_captured(captured)?;
         self.send_data(msg)?;
         self.stats.input_events = self.input.emitted();
         Ok(())
@@ -742,6 +857,20 @@ pub fn run_synthetic_loopback(
     video_frames: usize,
     audio_packets: usize,
 ) -> Result<(ViewerSession, SessionStats)> {
+    let (session, stats, _) = run_synthetic_loopback_ex(video_frames, audio_packets, false)?;
+    Ok((session, stats))
+}
+
+/// Synthetic loopback with optional demo input inject while the host peer is live.
+///
+/// Returns `(session, stats, demo_input_events_sent)`. Input must be injected
+/// before the host side of the mock pair is dropped, or `send_data` fails with
+/// a closed channel.
+pub fn run_synthetic_loopback_ex(
+    video_frames: usize,
+    audio_packets: usize,
+    inject_demo: bool,
+) -> Result<(ViewerSession, SessionStats, usize)> {
     use remotelink_net::{MockPeerPair, NaluFormat};
 
     let mut pair = MockPeerPair::new();
@@ -804,8 +933,15 @@ pub fn run_synthetic_loopback(
 
     session.poll()?;
 
+    let mut demo_sent = 0usize;
+    if inject_demo {
+        demo_sent = inject_demo_input(&mut session, true)?;
+        // Drain host so DataChannel delivery is exercised before drop.
+        pair.peer_a.poll()?;
+    }
+
     let stats = session.stats().clone();
-    Ok((session, stats))
+    Ok((session, stats, demo_sent))
 }
 
 /// Loopback using mock MH264 + mock Opus (MOPU) for PR 17 acceptance.
@@ -813,6 +949,16 @@ pub fn run_mock_codec_loopback(
     video_frames: usize,
     audio_packets: usize,
 ) -> Result<(ViewerSession, SessionStats)> {
+    let (session, stats, _) = run_mock_codec_loopback_ex(video_frames, audio_packets, false)?;
+    Ok((session, stats))
+}
+
+/// Mock-codec loopback with optional demo input inject while the host peer is live.
+pub fn run_mock_codec_loopback_ex(
+    video_frames: usize,
+    audio_packets: usize,
+    inject_demo: bool,
+) -> Result<(ViewerSession, SessionStats, usize)> {
     use remotelink_media::{
         AudioSource, H264Encoder, H264EncoderConfig, MockOpusEncoder, MockSoftwareEncoder,
         OpusEncoder, PixelFormat, RtpEpoch, SyntheticAudioTone, VideoFrame,
@@ -901,8 +1047,15 @@ pub fn run_mock_codec_loopback(
     }
 
     session.poll()?;
+
+    let mut demo_sent = 0usize;
+    if inject_demo {
+        demo_sent = inject_demo_input(&mut session, true)?;
+        pair.peer_a.poll()?;
+    }
+
     let stats = session.stats().clone();
-    Ok((session, stats))
+    Ok((session, stats, demo_sent))
 }
 
 fn assert_connected(session: &ViewerSession) -> Result<()> {
@@ -912,6 +1065,60 @@ fn assert_connected(session: &ViewerSession) -> Result<()> {
             expected: "connected",
             actual: format!("{other:?}"),
         }),
+    }
+}
+
+/// Inject a small fixed set of test input events (mouse move/button/wheel + key).
+///
+/// Used by the CLI synthetic/mock path (`--inject-input`) and unit tests.
+/// Events go through the capture stage when `via_capture` is true; otherwise
+/// they use the direct `send_*` APIs (normalized 0..1 coords).
+pub fn inject_demo_input(session: &mut ViewerSession, via_capture: bool) -> Result<usize> {
+    use remotelink_protocol::{MouseButtonKind, NamedKey};
+
+    if via_capture {
+        // Ensure focus policy allows capture for the demo burst.
+        session.set_focused(true);
+        let mut n = 0usize;
+        n += session.push_raw_input(RawInput::MouseMove { px: 0.5, py: 0.25 })?;
+        n += session.push_raw_input(RawInput::MouseButton {
+            button: MouseButtonKind::Left,
+            pressed: true,
+            px: 0.5,
+            py: 0.25,
+        })?;
+        n += session.push_raw_input(RawInput::MouseButton {
+            button: MouseButtonKind::Left,
+            pressed: false,
+            px: 0.5,
+            py: 0.25,
+        })?;
+        n += session.push_raw_input(RawInput::MouseWheel {
+            delta_x: 0.0,
+            delta_y: -1.0,
+            precise: false,
+            px: 0.5,
+            py: 0.25,
+        })?;
+        n += session.push_raw_input(RawInput::KeyNamed {
+            key: NamedKey::A,
+            pressed: true,
+            modifiers: 0,
+        })?;
+        n += session.push_raw_input(RawInput::KeyNamed {
+            key: NamedKey::A,
+            pressed: false,
+            modifiers: 0,
+        })?;
+        Ok(n)
+    } else {
+        session.send_mouse_move(0.5, 0.25)?;
+        session.send_mouse_button(MouseButtonKind::Left, true, 0.5, 0.25)?;
+        session.send_mouse_button(MouseButtonKind::Left, false, 0.5, 0.25)?;
+        session.send_mouse_wheel(0.0, -1.0, false, 0.5, 0.25)?;
+        session.send_key_named(NamedKey::A, true, 0)?;
+        session.send_key_named(NamedKey::A, false, 0)?;
+        Ok(6)
     }
 }
 
@@ -1026,6 +1233,153 @@ mod tests {
         assert_eq!(snap.data.len(), 3);
         assert!(snap.data.iter().all(|d| d.label == "input"));
         assert_eq!(session.stats().input_events, 3);
+    }
+
+    #[test]
+    fn capture_path_encode_send_on_mock_transport() {
+        use remotelink_protocol::{decode_input, InputPayload, NamedKey};
+
+        let mut pair = MockPeerPair::new();
+        let rec = SharedRecording::new();
+        pair.peer_a.set_callbacks(Box::new(rec.clone()));
+
+        let mut session = ViewerSession::new();
+        session.set_always_capture(false);
+        session.set_capture_rect(CaptureRect::new(0.0, 0.0, 100.0, 100.0));
+        session
+            .begin_connect(&ConnectRequest::otp("h", "123456"))
+            .unwrap();
+        // begin_connect resets focus; re-apply policy after connect.
+        session.set_focused(true);
+        session.set_always_capture(false);
+
+        let viewer = std::mem::replace(
+            &mut pair.peer_b,
+            remotelink_net::MockPeerTransport::new(Default::default()),
+        );
+        session.attach_transport(Box::new(viewer));
+        let offer = pair.peer_a.create_offer().unwrap();
+        pair.peer_a.set_local_description(offer.clone()).unwrap();
+        let answer = session.accept_offer(offer).unwrap();
+        pair.peer_a.set_remote_description(answer).unwrap();
+        if let Some(ice) = pair.peer_a.last_local_ice().cloned() {
+            session.add_remote_ice(ice).unwrap();
+        }
+        for ice in session.take_pending_local_ice() {
+            pair.peer_a.add_ice_candidate(ice).unwrap();
+        }
+        session.poll().unwrap();
+
+        let sent = session
+            .push_raw_input(RawInput::MouseMove { px: 50.0, py: 25.0 })
+            .unwrap();
+        assert_eq!(sent, 1);
+        let sent = session
+            .push_raw_input(RawInput::KeyNamed {
+                key: NamedKey::A,
+                pressed: true,
+                modifiers: 0,
+            })
+            .unwrap();
+        assert_eq!(sent, 1);
+
+        pair.peer_a.poll().unwrap();
+        let snap = rec.snapshot();
+        assert_eq!(snap.data.len(), 2);
+        let move_ev = decode_input(std::str::from_utf8(&snap.data[0].data).unwrap()).unwrap();
+        match move_ev.payload {
+            InputPayload::MouseMove(m) => {
+                assert!((m.x - 0.5).abs() < 1e-5, "x={}", m.x);
+                assert!((m.y - 0.25).abs() < 1e-5, "y={}", m.y);
+            }
+            other => panic!("expected move, got {other:?}"),
+        }
+        let key_ev = decode_input(std::str::from_utf8(&snap.data[1].data).unwrap()).unwrap();
+        match key_ev.payload {
+            InputPayload::Key(k) => {
+                assert_eq!(k.scancode, 0x1E);
+                assert!(k.pressed);
+            }
+            other => panic!("expected key, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn focus_policy_blocks_unfocused_raw_input() {
+        let mut pair = MockPeerPair::new();
+        let rec = SharedRecording::new();
+        pair.peer_a.set_callbacks(Box::new(rec.clone()));
+
+        let mut session = ViewerSession::new();
+        session.set_always_capture(false);
+        session.set_focused(false);
+        session
+            .begin_connect(&ConnectRequest::otp("h", "123456"))
+            .unwrap();
+        let viewer = std::mem::replace(
+            &mut pair.peer_b,
+            remotelink_net::MockPeerTransport::new(Default::default()),
+        );
+        session.attach_transport(Box::new(viewer));
+        let offer = pair.peer_a.create_offer().unwrap();
+        pair.peer_a.set_local_description(offer.clone()).unwrap();
+        let answer = session.accept_offer(offer).unwrap();
+        pair.peer_a.set_remote_description(answer).unwrap();
+        if let Some(ice) = pair.peer_a.last_local_ice().cloned() {
+            session.add_remote_ice(ice).unwrap();
+        }
+        for ice in session.take_pending_local_ice() {
+            pair.peer_a.add_ice_candidate(ice).unwrap();
+        }
+        session.poll().unwrap();
+
+        let sent = session
+            .push_raw_input(RawInput::MouseMove { px: 0.5, py: 0.5 })
+            .unwrap();
+        assert_eq!(sent, 0);
+        assert!(session.capture().blocked_unfocused() >= 1);
+
+        pair.peer_a.poll().unwrap();
+        assert!(rec.snapshot().data.is_empty());
+
+        // Direct send_* still works (API path for tests that skip focus).
+        session.send_mouse_move(0.1, 0.1).unwrap();
+        pair.peer_a.poll().unwrap();
+        assert_eq!(rec.snapshot().data.len(), 1);
+    }
+
+    #[test]
+    fn inject_demo_input_sends_six_events() {
+        let mut pair = MockPeerPair::new();
+        let rec = SharedRecording::new();
+        pair.peer_a.set_callbacks(Box::new(rec.clone()));
+
+        let mut session = ViewerSession::new();
+        session
+            .begin_connect(&ConnectRequest::otp("h", "123456"))
+            .unwrap();
+        let viewer = std::mem::replace(
+            &mut pair.peer_b,
+            remotelink_net::MockPeerTransport::new(Default::default()),
+        );
+        session.attach_transport(Box::new(viewer));
+        let offer = pair.peer_a.create_offer().unwrap();
+        pair.peer_a.set_local_description(offer.clone()).unwrap();
+        let answer = session.accept_offer(offer).unwrap();
+        pair.peer_a.set_remote_description(answer).unwrap();
+        if let Some(ice) = pair.peer_a.last_local_ice().cloned() {
+            session.add_remote_ice(ice).unwrap();
+        }
+        for ice in session.take_pending_local_ice() {
+            pair.peer_a.add_ice_candidate(ice).unwrap();
+        }
+        session.poll().unwrap();
+
+        let n = inject_demo_input(&mut session, true).unwrap();
+        assert_eq!(n, 6);
+        pair.peer_a.poll().unwrap();
+        assert_eq!(rec.snapshot().data.len(), 6);
+        assert_eq!(session.stats().input_events, 6);
     }
 
     #[test]

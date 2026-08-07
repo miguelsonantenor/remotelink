@@ -13,12 +13,14 @@
 //!
 //! [`InputEvent`] / [`MouseWheel`] etc. in this crate are the v1 field authority.
 //! Wheel JSON is `{delta_x, delta_y, precise, x, y, display_id}` (not
-//! `precise_delta`).
+//! `precise_delta`). Keys use Windows scan-set-1 scancodes via
+//! [`lookup_scancode`] / [`NamedKey`] (not Unicode).
 
 mod error;
 mod input;
 mod limits;
 mod message;
+mod scancode;
 
 pub use error::ProtocolError;
 pub use input::{
@@ -30,6 +32,7 @@ pub use limits::{
     MAX_OPAQUE_PAYLOAD_BYTES, MAX_SDP_BYTES,
 };
 pub use message::{HelloAuth, IceCandidate, RejectReason, Role, SessionMode, SignalMessage};
+pub use scancode::{lookup_scancode, named_key_from_char, scancode_of, NamedKey, ScanCode};
 
 /// Current protocol version for `hello.protocol_version`.
 pub const PROTOCOL_VERSION: u32 = 1;
@@ -101,10 +104,12 @@ mod tests {
 
     #[test]
     fn limits_are_positive() {
-        assert!(MAX_SDP_BYTES > 0);
-        assert!(MAX_ICE_CANDIDATE_BYTES > 0);
-        assert!(MAX_FINGERPRINT_SIG_BYTES > 0);
-        assert!(MAX_OPAQUE_PAYLOAD_BYTES > 0);
+        const {
+            assert!(MAX_SDP_BYTES > 0);
+            assert!(MAX_ICE_CANDIDATE_BYTES > 0);
+            assert!(MAX_FINGERPRINT_SIG_BYTES > 0);
+            assert!(MAX_OPAQUE_PAYLOAD_BYTES > 0);
+        }
     }
 
     #[test]

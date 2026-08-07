@@ -7,7 +7,7 @@
 //! - H.264 / synthetic video decode hooks ([`decode`])
 //! - Opus playout queue + sink trait ([`audio`])
 //! - Exportable beta stats with required A/V skew ([`stats`])
-//! - Input event emitter ([`input`])
+//! - Input capture, coalesce, and DataChannel emitter ([`input`])
 //! - Session driver over [`remotelink_net::PeerTransport`] answerer ([`session`])
 //!
 //! GUI toolkits (egui) and CLI shells live in `apps/viewer` and depend on this
@@ -33,8 +33,14 @@ pub use decode::{
     SyntheticVideoDecoder, VideoDecodeHook,
 };
 pub use error::{Result, ViewerError};
-pub use input::{InputEmitter, INPUT_CHANNEL_LABEL};
-pub use session::{run_mock_codec_loopback, run_synthetic_loopback, ViewerSession};
+pub use input::{
+    CaptureRect, CapturedInput, InputCapture, InputCaptureConfig, InputEmitter, MouseMoveCoalescer,
+    RawInput, DEFAULT_COALESCE_HZ, INPUT_CHANNEL_LABEL, MAX_COALESCE_HZ, MIN_COALESCE_HZ,
+};
+pub use session::{
+    inject_demo_input, run_mock_codec_loopback, run_mock_codec_loopback_ex, run_synthetic_loopback,
+    run_synthetic_loopback_ex, ViewerSession,
+};
 pub use state::{ConnectionMachine, ViewerPhase};
 pub use stats::{BindStatus, SessionStats};
 
