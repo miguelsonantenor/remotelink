@@ -1,6 +1,6 @@
 # RemoteLink — Resume handoff
 
-**Saved:** 2026-08-06  
+**Saved:** 2026-08-07 (updated after PR 17–19)  
 **Plan ID:** `35709e22`  
 **Repo:** `C:\Users\Linked\Documents\remotelink`  
 **Design:** `DESIGN.md` (full architecture + PR plan)
@@ -13,9 +13,9 @@ This document is the checkpoint so work can continue later without losing contex
 
 | Metric | Value |
 |--------|--------|
-| **PR plan progress** | **~22 / ~30 (~70–75%)** implemented + reviewed |
-| **Usable as AnyDesk-like product** | **No** (~25–35% product readiness) |
-| **`main` branch** | Scaffold only (README + DESIGN + this handoff) |
+| **PR plan progress** | **~25 / ~30 (~80–85%)** implemented + reviewed |
+| **Usable as AnyDesk-like product** | **No** (~40–50% product readiness — mock codec path + input gates; not real WebRTC) |
+| **`main` branch** | Scaffold + handoff docs (README + DESIGN + RESUME) |
 | **Real code** | Feature branches + worktrees (see below) |
 | **Remote / GitHub** | None configured — all local |
 
@@ -55,16 +55,19 @@ Point at design: `C:\Users\Linked\Documents\remotelink\DESIGN.md`
 ### Option B — Manual continue
 
 1. Read `DESIGN.md` § PR Plan  
-2. Next PRs (not done): **17, 18, 19, 21, 22, 24, 26, 27** (8b optional)  
+2. Next PRs (not done): **21, 22, 24, 26, 27** (8b optional) + real **libwebrtc**  
 3. Check out a tip branch (below) or worktree and build on it  
 
 ### Recommended “richest” tips to start from
 
 | Goal | Branch or worktree |
 |------|---------------------|
+| Viewer decode + skew HUD | `progress/decode` or `remotelink-wt-pr-17` |
+| Host input injection | `progress/inject` or `remotelink-wt-pr-18` |
+| Viewer input capture/send | `progress/viewer-input` or `remotelink-wt-pr-19` |
+| E2E synthetic tests | `progress/e2e` or `remotelink-wt-pr-15` |
 | Identity + host bind | `progress/identity` or `remotelink-wt-pr-13` |
 | OTP / unattended | `progress/otp` or `remotelink-wt-pr-14` |
-| E2E synthetic tests | `progress/e2e` or `remotelink-wt-pr-15` |
 | Session chrome / kill-switch | `progress/chrome` or `remotelink-wt-pr-20` |
 | H.264 encode path | `progress/encode` or `remotelink-wt-pr-16b` |
 | Server signaling path | `progress/server-path` or `remotelink-wt-pr-5b` |
@@ -107,6 +110,9 @@ Each tip is the reviewed tip of that PR branch (full SHA prefix).
 | 20 | `e913afe` | Session chrome + kill-switch |
 | 23 | `a161b63` | Unit-test agent inventory |
 | 25 | `03a988e` | Coverage / test-presence gates |
+| 17 | `fab8061` | Viewer H.264 mock decode, Opus playout, skew HUD |
+| 18 | `c7e1539` | Host input injection after identity bind |
+| 19 | `0f52a14` | Viewer input capture → DataChannel |
 
 **Branch naming pattern:**
 
@@ -145,6 +151,9 @@ C:\Users\Linked\Documents\remotelink-wt-pr-<N>
 | `progress/chrome` | PR 20 |
 | `progress/agents` | PR 23 |
 | `progress/coverage` | PR 25 |
+| `progress/decode` | PR 17 |
+| `progress/inject` | PR 18 |
+| `progress/viewer-input` | PR 19 |
 
 ---
 
@@ -152,16 +161,13 @@ C:\Users\Linked\Documents\remotelink-wt-pr-<N>
 
 Priority order for a usable product:
 
-1. **PR 17** — Viewer real H.264 decode + Opus playout + skew HUD  
-2. **PR 18** — Windows input injection (after identity bind)  
-3. **PR 19** — Viewer input capture → DataChannel  
-4. **Real WebRTC** — libwebrtc (Plan B from PR 8), not only mock  
-5. **PR 21** — Prometheus metrics / tracing  
-6. **PR 22** — Linux host (secondary)  
-7. **PR 24** — Bug-hunt agent + chaos  
-8. **PR 26** — Packaging (MSI) + force-disconnect  
-9. **PR 27** — Runbooks + threat model docs  
-10. **PR 8b** — only if pure-Rust WebRTC is chosen later (currently optional)
+1. **Real WebRTC** — libwebrtc (Plan B from PR 8), not only mock PeerTransport  
+2. **PR 21** — Prometheus metrics / tracing  
+3. **PR 22** — Linux host (secondary)  
+4. **PR 24** — Bug-hunt agent + chaos  
+5. **PR 26** — Packaging (MSI) + force-disconnect  
+6. **PR 27** — Runbooks + threat model docs  
+7. **PR 8b** — only if pure-Rust WebRTC is chosen later (currently optional)
 
 Also remaining: merge all tips into one linear stack / `main`, add `origin` remote, full stack assembly.
 
@@ -181,9 +187,10 @@ cargo test -p remotelink-e2e
 cd C:\Users\Linked\Documents\remotelink-wt-pr-11
 cargo run -p remotelink-host -- --role=agent
 
-# Viewer synthetic
-cd C:\Users\Linked\Documents\remotelink-wt-pr-12
-cargo run -p remotelink-viewer -- --synthetic
+# Viewer synthetic / mock codec + HUD
+cd C:\Users\Linked\Documents\remotelink-wt-pr-17
+cargo run -p remotelink-viewer -- --mock-codec --hud-block
+cargo run -p remotelink-viewer -- --synthetic --inject-input
 ```
 
 ---
@@ -211,5 +218,5 @@ May be cleaned by the OS; **this RESUME.md is the durable source of truth**.
 
 ```text
 Resume RemoteLink from C:\Users\Linked\Documents\remotelink\RESUME.md
-Continue execute-plan 35709e22 starting with PR 17 (viewer decode).
+Continue execute-plan 35709e22 starting with PR 21 (metrics) or real WebRTC.
 ```
