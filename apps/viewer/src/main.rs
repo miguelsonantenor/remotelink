@@ -59,8 +59,9 @@ fn print_usage() {
          Input (PR 19):\n  \
          --inject-input     after synthetic/mock media, send demo mouse/key events\n\
                             on DataChannel \"input\" (capture + scancode path)\n  \
-         --always-capture   send input even when the window is unfocused\n\
-                            (default for CLI/headless; GUI starts focused-only)\n\n\
+         --always-capture   opt-in: send input even when the window is unfocused\n\
+                            (default is focused-only per DESIGN; demos set focus)\n\
+                            Continuous pointer streams need poll_input_capture each frame\n\n\
          Beta HUD (G3 required skew stats):\n  \
          --hud-interval N   print stats every N video frames (default 1 for mock-codec,\n\
                             0 = only final snapshot)\n  \
@@ -168,7 +169,9 @@ fn run_cli(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         };
 
         if always_capture {
-            println!("input: always_capture requested (applied on next live session)");
+            // Demo loopbacks apply focus for inject; always_capture is the DESIGN
+            // opt-in for a long-lived GUI session (focused-only is the default).
+            println!("input: always_capture=true (opt-in; session default is focused-only)");
         }
         if inject_input {
             println!(
@@ -283,9 +286,10 @@ mod gui {
 
     impl eframe::App for ConnectApp {
         fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-            // Focus policy for optional live capture wiring (PR 19).
-            let focused = ctx.input(|i| i.focused);
-            let _ = focused; // reserved for a long-lived ViewerSession in later PRs
+            // When a long-lived ViewerSession is held here: drive
+            // set_focused(ctx.input(|i| i.focused)), set_always_capture(self.always_capture),
+            // push_raw_input(...), and poll_input_capture() every frame for continuous moves.
+            let _focused = ctx.input(|i| i.focused);
 
             egui::CentralPanel::default().show(ctx, |ui| {
                 ui.heading("RemoteLink — Connect");
@@ -367,7 +371,9 @@ mod gui {
         fn do_synthetic(&mut self) {
             match run_synthetic_loopback_ex(3, 2, true) {
                 Ok((session, stats, n)) => {
-                    let _ = self.always_capture; // applied on a long-lived session later
+                    // Batch demo uses inject_demo_input (sets focus). always_capture
+                    // applies when a long-lived ViewerSession is wired to the frame loop.
+                    let _ = self.always_capture;
                     self.last_input_events = session.stats().input_events;
                     self.status = format!(
                         "synthetic ok: video={} audio={} skew_ms={:.2} input={n}",

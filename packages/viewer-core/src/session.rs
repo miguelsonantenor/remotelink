@@ -175,13 +175,10 @@ impl ViewerSession {
             audio: AudioPlayoutQueue::new(64),
             playout_sink: Box::new(MockAudioPlayoutSink::new()),
             input: InputEmitter::new(),
-            // Synthetic/CLI paths often inject without a real window focus
-            // event; default always_capture so headless demos work. GUI shells
-            // should call set_always_capture(false) and drive set_focused.
-            capture: InputCapture::new(InputCaptureConfig {
-                always_capture: true,
-                ..InputCaptureConfig::default()
-            }),
+            // DESIGN: input only when focused by default. Headless demos call
+            // `set_focused(true)` (see `inject_demo_input`) or
+            // `set_always_capture(true)` for CLI `--always-capture`.
+            capture: InputCapture::new(InputCaptureConfig::default()),
             pending_local_ice: Vec::new(),
             session_id: None,
             stats,
@@ -469,11 +466,17 @@ impl ViewerSession {
     }
 
     /// Set window focus for the input focus policy.
+    ///
+    /// Losing focus (when not always-capture) **discards** any coalesced pending
+    /// mouse move so a stale position is not sent after re-focus.
     pub fn set_focused(&mut self, focused: bool) {
         self.capture.set_focused(focused);
     }
 
     /// When true, send input even if unfocused (CLI: `--always-capture`).
+    ///
+    /// Default is **false** (DESIGN: focused-only). Enabling this is an explicit
+    /// product choice and should surface a UI warning.
     pub fn set_always_capture(&mut self, always: bool) {
         self.capture.set_always_capture(always);
     }
@@ -488,9 +491,24 @@ impl ViewerSession {
         self.capture.set_rect(rect);
     }
 
+    /// Earliest instant at which a deferred coalesced move may emit, if any.
+    ///
+    /// UI frame loops can schedule the next [`Self::poll_input_capture`] from this
+    /// (or simply poll every frame).
+    pub fn input_next_poll_deadline(&self) -> Option<std::time::Instant> {
+        self.capture.next_poll_deadline()
+    }
+
     /// Feed a raw platform sample through capture → encode → DataChannel.
     ///
     /// Returns the number of wire events sent (0 when focus policy blocks).
+    ///
+    /// # Continuous mouse moves
+    ///
+    /// After the first move in a coalesce window, further moves only update
+    /// pending state. Call [`Self::poll_input_capture`] on each UI frame (or at
+    /// ~`coalesce_hz`) so deferred moves are delivered. Button/key/wheel events
+    /// flush pending automatically and do not require a separate poll.
     pub fn push_raw_input(&mut self, raw: RawInput) -> Result<usize> {
         self.ensure_can_send_input()?;
         let now = std::time::Instant::now();
@@ -504,13 +522,17 @@ impl ViewerSession {
     }
 
     /// Poll coalesced mouse moves that became due since the last push.
+    ///
+    /// **Required for continuous pointer streams:** without this (or a
+    /// button/key/wheel flush), only the first move in each coalesce interval is
+    /// sent from [`Self::push_raw_input`]. Call from the UI frame loop or a timer
+    /// near [`Self::input_next_poll_deadline`].
+    ///
+    /// Uses the same phase/identity gate as [`Self::push_raw_input`] (hard `Err`
+    /// when not connected / identity not bound), so frame loops can distinguish
+    /// “not allowed” from “nothing due” (`Ok(0)`).
     pub fn poll_input_capture(&mut self) -> Result<usize> {
-        if !self.machine.phase().can_send_input() {
-            return Ok(0);
-        }
-        if self.require_identity_for_input && !self.identity.identity_bound {
-            return Ok(0);
-        }
+        self.ensure_can_send_input()?;
         let now = std::time::Instant::now();
         let mut sent = 0usize;
         while let Some(c) = self.capture.poll(now) {
@@ -520,9 +542,11 @@ impl ViewerSession {
         Ok(sent)
     }
 
-    /// Emit a normalized mouse-move input event to the host (bypass capture coalesce).
+    /// Force-send a normalized mouse-move, **bypassing** focus policy and coalesce.
     ///
-    /// Prefer [`Self::push_raw_input`] from UI paths so coalesce/focus apply.
+    /// Prefer [`Self::push_raw_input`] from UI paths. This API is for tests,
+    /// harnesses, and synthetic demos that intentionally skip capture policy.
+    /// DESIGN “focused-only” is enforced only on the capture path.
     pub fn send_mouse_move(&mut self, x: f32, y: f32) -> Result<()> {
         self.ensure_can_send_input()?;
         let (_ev, msg) = self.input.mouse_move(x, y)?;
@@ -531,7 +555,10 @@ impl ViewerSession {
         Ok(())
     }
 
-    /// Emit a mouse button event (bypass capture coalesce).
+    /// Force-send a mouse button event (**bypasses** focus policy and coalesce).
+    ///
+    /// See [`Self::send_mouse_move`] for policy notes; UI should use
+    /// [`Self::push_raw_input`].
     pub fn send_mouse_button(
         &mut self,
         button: remotelink_protocol::MouseButtonKind,
@@ -546,7 +573,10 @@ impl ViewerSession {
         Ok(())
     }
 
-    /// Emit a mouse wheel event (bypass capture coalesce).
+    /// Force-send a mouse wheel event (**bypasses** focus policy and coalesce).
+    ///
+    /// See [`Self::send_mouse_move`] for policy notes; UI should use
+    /// [`Self::push_raw_input`].
     pub fn send_mouse_wheel(
         &mut self,
         delta_x: f32,
@@ -562,7 +592,10 @@ impl ViewerSession {
         Ok(())
     }
 
-    /// Emit a key event (bypass capture coalesce).
+    /// Force-send a key event (**bypasses** focus policy and coalesce).
+    ///
+    /// See [`Self::send_mouse_move`] for policy notes; UI should use
+    /// [`Self::push_raw_input`].
     pub fn send_key(
         &mut self,
         scancode: u32,
@@ -577,7 +610,10 @@ impl ViewerSession {
         Ok(())
     }
 
-    /// Emit a named key via the shared scan-set-1 table.
+    /// Force-send a named key via the scan-set-1 table (**bypasses** focus policy).
+    ///
+    /// See [`Self::send_mouse_move`] for policy notes; UI should use
+    /// [`Self::push_raw_input`].
     pub fn send_key_named(
         &mut self,
         key: remotelink_protocol::NamedKey,
@@ -1342,10 +1378,85 @@ mod tests {
         pair.peer_a.poll().unwrap();
         assert!(rec.snapshot().data.is_empty());
 
-        // Direct send_* still works (API path for tests that skip focus).
+        // Direct send_* still works (harness path that intentionally bypasses focus).
         session.send_mouse_move(0.1, 0.1).unwrap();
         pair.peer_a.poll().unwrap();
         assert_eq!(rec.snapshot().data.len(), 1);
+    }
+
+    #[test]
+    fn session_default_always_capture_is_false() {
+        let session = ViewerSession::new();
+        assert!(
+            !session.always_capture(),
+            "DESIGN: focused-only default; demos must set_focused or always_capture"
+        );
+    }
+
+    #[test]
+    fn poll_input_capture_errors_when_not_connected() {
+        let mut session = ViewerSession::new();
+        let err = session.poll_input_capture().unwrap_err();
+        assert!(matches!(err, ViewerError::InvalidState { .. }));
+    }
+
+    #[test]
+    fn poll_input_capture_delivers_coalesced_move() {
+        use std::thread;
+        use std::time::Duration;
+
+        let mut pair = MockPeerPair::new();
+        let rec = SharedRecording::new();
+        pair.peer_a.set_callbacks(Box::new(rec.clone()));
+
+        let mut session = ViewerSession::new();
+        session.set_always_capture(false);
+        session
+            .begin_connect(&ConnectRequest::otp("h", "123456"))
+            .unwrap();
+        session.set_focused(true);
+        // Fast coalesce so the sleep stays short in CI.
+        session.capture_mut().set_always_capture(true);
+        // Rebuild coalescer rate via config: use always_capture path and low interval
+        // by feeding moves then sleeping past default 90 Hz (~11 ms).
+        let viewer = std::mem::replace(
+            &mut pair.peer_b,
+            remotelink_net::MockPeerTransport::new(Default::default()),
+        );
+        session.attach_transport(Box::new(viewer));
+        let offer = pair.peer_a.create_offer().unwrap();
+        pair.peer_a.set_local_description(offer.clone()).unwrap();
+        let answer = session.accept_offer(offer).unwrap();
+        pair.peer_a.set_remote_description(answer).unwrap();
+        if let Some(ice) = pair.peer_a.last_local_ice().cloned() {
+            session.add_remote_ice(ice).unwrap();
+        }
+        for ice in session.take_pending_local_ice() {
+            pair.peer_a.add_ice_candidate(ice).unwrap();
+        }
+        session.poll().unwrap();
+
+        assert_eq!(
+            session
+                .push_raw_input(RawInput::MouseMove { px: 0.1, py: 0.1 })
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            session
+                .push_raw_input(RawInput::MouseMove { px: 0.9, py: 0.9 })
+                .unwrap(),
+            0,
+            "second move pending until poll"
+        );
+        assert!(session.input_next_poll_deadline().is_some());
+
+        thread::sleep(Duration::from_millis(15));
+        let n = session.poll_input_capture().unwrap();
+        assert_eq!(n, 1, "poll should deliver coalesced move");
+
+        pair.peer_a.poll().unwrap();
+        assert_eq!(rec.snapshot().data.len(), 2);
     }
 
     #[test]

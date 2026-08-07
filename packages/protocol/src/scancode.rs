@@ -156,7 +156,7 @@ pub enum NamedKey {
     MetaRight,
     /// Caps Lock.
     CapsLock,
-    /// Num Lock.
+    /// Num Lock (set-1 make code `0x45`).
     NumLock,
     /// Scroll Lock.
     ScrollLock,
@@ -248,8 +248,20 @@ pub enum NamedKey {
     /// Numpad Enter (extended).
     NumpadEnter,
     /// Print Screen (extended).
+    ///
+    /// Approximation: single E0+`0x37` inject. Full multi-scancode PrintScreen
+    /// sequences are not modeled in v1.
     PrintScreen,
-    /// Pause.
+    /// Pause / Break.
+    ///
+    /// # Known v1 gap
+    ///
+    /// Real set-1 Pause is a multi-byte make/break sequence (`E1 1D 45` / …).
+    /// This table maps Pause to the **same** single-byte scancode as
+    /// [`NamedKey::NumLock`] (`0x45`, non-extended) so the wire type stays a
+    /// simple `KeyEvent`. Host inject (PR 18) has **no** Pause special-case, so
+    /// Pause currently injects with NumLock-like behavior. Do not “fix” the
+    /// collision silently without a host multi-make path or a protocol sentinel.
     Pause,
     /// Menu / App key (extended).
     ContextMenu,
@@ -324,6 +336,7 @@ pub fn lookup_scancode(key: NamedKey) -> Option<ScanCode> {
         NamedKey::CapsLock => ScanCode::new(0x3A),
         NamedKey::NumLock => ScanCode::new(0x45),
         NamedKey::ScrollLock => ScanCode::new(0x46),
+        // Pause: see NamedKey::Pause docs — intentional collision with NumLock in v1.
         // Navigation / editing.
         NamedKey::Escape => ScanCode::new(0x01),
         NamedKey::Tab => ScanCode::new(0x0F),
@@ -370,7 +383,9 @@ pub fn lookup_scancode(key: NamedKey) -> Option<ScanCode> {
         NamedKey::NumpadDivide => ScanCode::extended(0x35),
         NamedKey::NumpadEnter => ScanCode::extended(0x1C),
         NamedKey::PrintScreen => ScanCode::extended(0x37),
-        NamedKey::Pause => ScanCode::new(0x45), // set-1 pause is multi-byte; 0x45 used with special handling on host
+        // Known gap: real Pause is multi-byte (E1 1D 45…). Wire value collides
+        // with NumLock until host gains a multi-make inject path.
+        NamedKey::Pause => ScanCode::new(0x45),
         NamedKey::ContextMenu => ScanCode::extended(0x5D),
     })
 }
@@ -594,5 +609,22 @@ mod tests {
         assert_eq!(named_key_from_char('@'), None);
         let sc = scancode_of(named_key_from_char('a').unwrap());
         assert_eq!(sc.code, 0x1E);
+    }
+
+    /// Documents the intentional v1 Pause/NumLock wire collision.
+    ///
+    /// If this assertion fails, either Pause multi-make was implemented (update
+    /// host + docs) or the table was “fixed” without a host path — re-read
+    /// [`NamedKey::Pause`].
+    #[test]
+    fn pause_and_numlock_share_v1_wire_scancode() {
+        let pause = scancode_of(NamedKey::Pause);
+        let numlock = scancode_of(NamedKey::NumLock);
+        assert_eq!(
+            pause, numlock,
+            "v1 known gap: Pause must stay equal to NumLock until multi-make inject exists"
+        );
+        assert_eq!(pause.code, 0x45);
+        assert!(!pause.extended);
     }
 }

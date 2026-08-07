@@ -4,12 +4,32 @@
 //!
 //! 1. **Capture** — toolkit/CLI feeds [`RawInput`] samples (pixel coords + keys).
 //! 2. **Focus policy** — by default only when the window is focused; optional
-//!    [`InputCaptureConfig::always_capture`] (CLI: `--always-capture`).
+//!    [`InputCaptureConfig::always_capture`] (CLI: `--always-capture`). Losing
+//!    focus discards any coalesced pending move (no stale cursor after re-focus).
 //! 3. **Normalize** — mouse coords mapped to `[0.0, 1.0]` over the capture rect.
 //! 4. **Coalesce** — mouse moves limited to [`DEFAULT_COALESCE_HZ`] (60–120 Hz
 //!    band); buttons / keys / wheel are never dropped and flush any pending move.
 //! 5. **Encode** — [`InputEmitter`] builds sequenced [`InputEvent`] JSON on
 //!    DataChannel label [`INPUT_CHANNEL_LABEL`] (`"input"`).
+//!
+//! # Continuous pointer motion
+//!
+//! [`MouseMoveCoalescer`] keeps at most one pending move per interval. After the
+//! first emit in a window, further moves stay pending until:
+//! - the coalesce interval elapses **and** [`InputCapture::poll`] /
+//!   [`crate::ViewerSession::poll_input_capture`] runs, or
+//! - a button / key / wheel event flushes pending.
+//!
+//! UI shells **must** call `poll_input_capture` every frame (or on
+//! [`InputCapture::next_poll_deadline`]) when driving continuous mouse motion.
+//! Batch demos that always follow a move with a click do not need an explicit
+//! poll because flush-on-button covers them.
+//!
+//! # Direct `send_*` vs capture path
+//!
+//! [`crate::ViewerSession::send_mouse_move`] and other `send_*` helpers **bypass**
+//! focus policy and coalesce (tests / harness). Product UI should only use
+//! [`crate::ViewerSession::push_raw_input`].
 
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -217,6 +237,13 @@ impl InputCaptureConfig {
 }
 
 /// Mouse-move coalescer: at most one move per interval; keeps latest position.
+///
+/// # Delivery
+///
+/// `push` may return `None` while a newer position is held pending. Callers that
+/// stream continuous motion **must** call [`Self::poll`] after
+/// [`Self::next_poll_deadline`] (or on every UI frame). Reliable events should
+/// call [`Self::flush`] first so the host sees the latest cursor position.
 #[derive(Debug, Clone)]
 pub struct MouseMoveCoalescer {
     interval: Duration,
@@ -228,6 +255,8 @@ pub struct MouseMoveCoalescer {
     emitted: u64,
     /// Moves dropped because a newer pending position replaced them.
     coalesced_away: u64,
+    /// Pending positions discarded (e.g. focus loss) without emitting.
+    discarded: u64,
 }
 
 impl MouseMoveCoalescer {
@@ -244,6 +273,7 @@ impl MouseMoveCoalescer {
             accepted: 0,
             emitted: 0,
             coalesced_away: 0,
+            discarded: 0,
         }
     }
 
@@ -251,6 +281,11 @@ impl MouseMoveCoalescer {
     pub fn from_hz(hz: f32) -> Self {
         let hz = hz.clamp(MIN_COALESCE_HZ, MAX_COALESCE_HZ);
         Self::new(Duration::from_secs_f64(1.0 / f64::from(hz)))
+    }
+
+    /// Coalesce interval used by this coalescer.
+    pub fn interval(&self) -> Duration {
+        self.interval
     }
 
     /// Number of moves that were replaced by a newer pending position.
@@ -268,15 +303,41 @@ impl MouseMoveCoalescer {
         self.accepted
     }
 
+    /// Pending moves discarded without emit (focus loss / policy).
+    pub fn discarded(&self) -> u64 {
+        self.discarded
+    }
+
     /// Whether a move is waiting to be flushed.
     pub fn has_pending(&self) -> bool {
         self.pending.is_some()
     }
 
+    /// When a pending move may next be emitted via [`Self::poll`], if any.
+    ///
+    /// `None` when there is no pending move. Otherwise `last_emit + interval`
+    /// (or “now” if nothing has been emitted yet).
+    pub fn next_poll_deadline(&self) -> Option<Instant> {
+        let _ = self.pending.as_ref()?;
+        Some(match self.last_emit {
+            Some(t) => t + self.interval,
+            None => Instant::now(),
+        })
+    }
+
+    /// Drop any pending move without emitting (e.g. window lost focus).
+    pub fn discard_pending(&mut self) {
+        if self.pending.take().is_some() {
+            self.discarded = self.discarded.saturating_add(1);
+        }
+    }
+
     /// Note a new normalized mouse position.
     ///
     /// Returns `Some((x,y))` immediately if the coalesce interval has elapsed
-    /// (or this is the first move); otherwise stores as pending.
+    /// (or this is the first move); otherwise stores as pending. Continuous
+    /// streams must still call [`Self::poll`] after the interval to deliver
+    /// that pending position.
     pub fn push(&mut self, x: f32, y: f32, now: Instant) -> Option<(f32, f32)> {
         self.accepted = self.accepted.saturating_add(1);
         if let Some(prev) = self.pending.replace((x, y)) {
@@ -365,7 +426,13 @@ impl InputCapture {
     }
 
     /// Set window focus state.
+    ///
+    /// When losing focus and **not** in always-capture mode, any coalesced
+    /// pending mouse move is **discarded** so it cannot emit after re-focus.
     pub fn set_focused(&mut self, focused: bool) {
+        if self.focused && !focused && !self.config.always_capture {
+            self.coalescer.discard_pending();
+        }
         self.focused = focused;
     }
 
@@ -375,7 +442,13 @@ impl InputCapture {
     }
 
     /// Enable/disable always-capture (ignore focus).
+    ///
+    /// Turning always-capture **off** while unfocused discards pending moves
+    /// (same as focus loss).
     pub fn set_always_capture(&mut self, always: bool) {
+        if self.config.always_capture && !always && !self.focused {
+            self.coalescer.discard_pending();
+        }
         self.config.always_capture = always;
     }
 
@@ -404,10 +477,21 @@ impl InputCapture {
         &self.coalescer
     }
 
+    /// Earliest time a deferred move may emit via [`Self::poll`], if pending.
+    pub fn next_poll_deadline(&self) -> Option<Instant> {
+        if !self.may_capture() {
+            return None;
+        }
+        self.coalescer.next_poll_deadline()
+    }
+
     /// Push a raw sample; returns zero or more captured events ready to send.
     ///
     /// Reliable events (button/key/wheel) flush any pending move first so the
     /// ordered stream still reflects the last pointer position.
+    ///
+    /// Continuous mouse motion also requires periodic [`Self::poll`] after
+    /// [`Self::next_poll_deadline`] (see module docs).
     pub fn push(&mut self, raw: RawInput, now: Instant) -> Vec<CapturedInput> {
         if !self.may_capture() {
             self.blocked_unfocused = self.blocked_unfocused.saturating_add(1);
@@ -504,6 +588,10 @@ impl InputCapture {
     }
 
     /// Poll for a deferred coalesced mouse move.
+    ///
+    /// Returns `None` when unfocused (and not always-capture), when nothing is
+    /// pending, or when the coalesce interval has not elapsed. Does **not**
+    /// clear pending while blocked — use [`Self::set_focused`]`(false)` to discard.
     pub fn poll(&mut self, now: Instant) -> Option<CapturedInput> {
         if !self.may_capture() {
             return None;
@@ -933,5 +1021,66 @@ mod tests {
         let decoded = decode_input(std::str::from_utf8(&msg.data).unwrap()).unwrap();
         assert_eq!(decoded, ev);
         assert!(!msg.unordered);
+    }
+
+    #[test]
+    fn continuous_moves_require_poll_after_interval() {
+        let mut cap = InputCapture::new(InputCaptureConfig {
+            always_capture: true,
+            coalesce_hz: 100.0,
+            rect: CaptureRect::UNIT,
+        });
+        let t0 = Instant::now();
+        assert_eq!(
+            cap.push(RawInput::MouseMove { px: 0.1, py: 0.1 }, t0).len(),
+            1
+        );
+        // Burst within interval: pending only.
+        assert!(cap
+            .push(RawInput::MouseMove { px: 0.9, py: 0.9 }, t0)
+            .is_empty());
+        assert!(cap.coalescer().has_pending());
+        assert!(cap.next_poll_deadline().is_some());
+
+        // Still pending before deadline.
+        assert!(cap.poll(t0 + Duration::from_millis(5)).is_none());
+
+        // After interval, poll delivers the latest position.
+        let late = t0 + Duration::from_millis(11);
+        match cap.poll(late).expect("poll after interval") {
+            CapturedInput::MouseMove { x, y } => {
+                assert!((x - 0.9).abs() < 1e-5);
+                assert!((y - 0.9).abs() < 1e-5);
+            }
+            other => panic!("expected move, got {other:?}"),
+        }
+        assert!(!cap.coalescer().has_pending());
+    }
+
+    #[test]
+    fn unfocus_discards_pending_move() {
+        let mut cap = InputCapture::new(InputCaptureConfig {
+            always_capture: false,
+            coalesce_hz: 60.0,
+            rect: CaptureRect::UNIT,
+        });
+        cap.set_focused(true);
+        let t0 = Instant::now();
+        let _ = cap.push(RawInput::MouseMove { px: 0.1, py: 0.1 }, t0);
+        assert!(cap
+            .push(RawInput::MouseMove { px: 0.8, py: 0.8 }, t0)
+            .is_empty());
+        assert!(cap.coalescer().has_pending());
+
+        cap.set_focused(false);
+        assert!(
+            !cap.coalescer().has_pending(),
+            "pending must be discarded on unfocus"
+        );
+        assert!(cap.coalescer().discarded() >= 1);
+
+        // After re-focus, no stale poll emit.
+        cap.set_focused(true);
+        assert!(cap.poll(t0 + Duration::from_millis(50)).is_none());
     }
 }
