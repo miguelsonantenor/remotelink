@@ -7,12 +7,14 @@
 use std::time::Duration;
 
 /// Pixel layout of a video frame buffer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PixelFormat {
     /// 8-bit RGB, tightly packed (3 bytes/pixel).
     Rgb24,
     /// 8-bit RGBA (4 bytes/pixel).
     Rgba8,
+    /// 8-bit BGRA, tightly packed (4 bytes/pixel). DXGI / mock H.264 native.
+    Bgra8,
     /// Single-plane 8-bit grayscale.
     Gray8,
 }
@@ -22,7 +24,7 @@ impl PixelFormat {
     pub fn bytes_per_pixel(self) -> usize {
         match self {
             PixelFormat::Rgb24 => 3,
-            PixelFormat::Rgba8 => 4,
+            PixelFormat::Rgba8 | PixelFormat::Bgra8 => 4,
             PixelFormat::Gray8 => 1,
         }
     }

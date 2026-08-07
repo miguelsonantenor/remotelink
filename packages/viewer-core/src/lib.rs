@@ -4,8 +4,9 @@
 //!
 //! - Connection state machine ([`state::ConnectionMachine`])
 //! - Connect credentials + session-intent stubs ([`connect`])
-//! - Synthetic video decode hooks ([`decode`])
-//! - Audio playout queue ([`audio`])
+//! - H.264 / synthetic video decode hooks ([`decode`])
+//! - Opus playout queue + sink trait ([`audio`])
+//! - Exportable beta stats with required A/V skew ([`stats`])
 //! - Input event emitter ([`input`])
 //! - Session driver over [`remotelink_net::PeerTransport`] answerer ([`session`])
 //!
@@ -21,14 +22,21 @@ pub mod error;
 pub mod input;
 pub mod session;
 pub mod state;
+pub mod stats;
 
-pub use audio::{AudioPlayoutQueue, PlayoutPacket};
+pub use audio::{
+    AudioPlayoutQueue, AudioPlayoutSink, MockAudioPlayoutSink, NullAudioPlayoutSink, PlayoutPacket,
+};
 pub use connect::{connect_stub, ConnectRequest, ConnectSecret, ConnectStubResult};
-pub use decode::{DecodedVideoFrame, RecordingDecodeHook, SyntheticVideoDecoder, VideoDecodeHook};
+pub use decode::{
+    DecodedVideoFrame, MockH264VideoDecoder, MockOrSyntheticDecoder, RecordingDecodeHook,
+    SyntheticVideoDecoder, VideoDecodeHook,
+};
 pub use error::{Result, ViewerError};
 pub use input::{InputEmitter, INPUT_CHANNEL_LABEL};
-pub use session::{run_synthetic_loopback, SessionStats, ViewerSession};
+pub use session::{run_mock_codec_loopback, run_synthetic_loopback, ViewerSession};
 pub use state::{ConnectionMachine, ViewerPhase};
+pub use stats::{BindStatus, SessionStats};
 
 /// Crate version from `Cargo.toml`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

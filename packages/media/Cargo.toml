@@ -3,7 +3,7 @@ name = "remotelink-media"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "RemoteLink media: capture sources, RTP timing, jitter, skew, Opus"
+description = "RemoteLink media: capture sources, RTP timing, jitter, skew, Opus, mock H.264"
 publish = false
 
 [dependencies]

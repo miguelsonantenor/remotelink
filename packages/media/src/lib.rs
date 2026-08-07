@@ -10,6 +10,7 @@
 #![deny(missing_docs)]
 
 pub mod freeze;
+pub mod h264;
 pub mod jitter;
 pub mod opus;
 pub mod rtp_clock;
@@ -18,6 +19,11 @@ pub mod source;
 pub mod synthetic;
 
 pub use freeze::{AudioOnVideoFreeze, FreezeConfig, FreezePolicy, FreezeState};
+pub use h264::{
+    EncodedAccessUnit, H264Decoder, H264Encoder, H264EncoderConfig, H264Error, H264NaluFormat,
+    MockH264Decoder, MockSliceMeta, MockSoftwareEncoder, DEFAULT_TARGET_BITRATE_BPS,
+    MOCK_H264_MAGIC,
+};
 pub use jitter::{JitterBuffer, JitterConfig, JitterStats};
 pub use opus::{MockOpusDecoder, MockOpusEncoder, OpusDecoder, OpusEncoder, OpusError, OpusFrame};
 pub use rtp_clock::{

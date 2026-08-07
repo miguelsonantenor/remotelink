@@ -1,4 +1,4 @@
-//! Audio playout queue (jitter-ready; headless drain for tests).
+//! Audio playout queue + sink trait (jitter-ready; mock sink for CI).
 
 use std::collections::VecDeque;
 use std::time::Duration;
@@ -19,6 +19,86 @@ pub struct PlayoutPacket {
     pub frame: AudioFrame,
 }
 
+/// Sink that consumes decoded PCM for device playout or test capture.
+///
+/// Real CPAL output is optional and feature-gated in `apps/viewer`; CI and
+/// unit tests use [`MockAudioPlayoutSink`].
+pub trait AudioPlayoutSink: Send {
+    /// Push one decoded packet for playout.
+    fn push(&mut self, packet: &PlayoutPacket) -> Result<()>;
+
+    /// Flush any buffered samples (device underrun / session close).
+    fn flush(&mut self) {}
+
+    /// Human-readable sink name for stats / HUD.
+    fn name(&self) -> &'static str {
+        "unknown"
+    }
+}
+
+/// Records playout packets in memory (headless / CI).
+#[derive(Debug, Default, Clone)]
+pub struct MockAudioPlayoutSink {
+    /// Packets accepted for "playout".
+    pub packets: Vec<PlayoutPacket>,
+    /// Total PCM samples (all channels) accepted.
+    pub samples_played: u64,
+}
+
+impl MockAudioPlayoutSink {
+    /// Create an empty mock sink.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Drain recorded packets.
+    pub fn drain(&mut self) -> Vec<PlayoutPacket> {
+        std::mem::take(&mut self.packets)
+    }
+
+    /// Number of packets accepted.
+    pub fn len(&self) -> usize {
+        self.packets.len()
+    }
+
+    /// True when no packets recorded.
+    pub fn is_empty(&self) -> bool {
+        self.packets.is_empty()
+    }
+}
+
+impl AudioPlayoutSink for MockAudioPlayoutSink {
+    fn push(&mut self, packet: &PlayoutPacket) -> Result<()> {
+        self.samples_played = self
+            .samples_played
+            .saturating_add(packet.frame.pcm_s16.len() as u64);
+        self.packets.push(packet.clone());
+        Ok(())
+    }
+
+    fn flush(&mut self) {
+        // no-op for mock
+    }
+
+    fn name(&self) -> &'static str {
+        "mock"
+    }
+}
+
+/// Discarding sink (no device, no record).
+#[derive(Debug, Default, Clone, Copy)]
+pub struct NullAudioPlayoutSink;
+
+impl AudioPlayoutSink for NullAudioPlayoutSink {
+    fn push(&mut self, _packet: &PlayoutPacket) -> Result<()> {
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        "null"
+    }
+}
+
 /// Bounded queue of decoded audio for playout.
 ///
 /// Uses [`MockOpusDecoder`] when the packet carries the mock MOPU payload;
@@ -32,6 +112,8 @@ pub struct AudioPlayoutQueue {
     dropped: u64,
     /// Packets successfully enqueued after decode.
     enqueued: u64,
+    /// Packets successfully decoded from MOPU.
+    mock_opus_decoded: u64,
 }
 
 impl Default for AudioPlayoutQueue {
@@ -44,11 +126,12 @@ impl AudioPlayoutQueue {
     /// Create a queue that holds at most `capacity` playout packets.
     pub fn new(capacity: usize) -> Self {
         Self {
-            queue: VecDeque::with_capacity(capacity.clamp(1, 16)),
+            queue: VecDeque::with_capacity(capacity.clamp(1, 256)),
             capacity: capacity.max(1),
             decoder: MockOpusDecoder::new(),
             dropped: 0,
             enqueued: 0,
+            mock_opus_decoded: 0,
         }
     }
 
@@ -72,9 +155,17 @@ impl AudioPlayoutQueue {
         self.enqueued
     }
 
+    /// MOPU packets decoded.
+    pub fn mock_opus_decoded(&self) -> u64 {
+        self.mock_opus_decoded
+    }
+
     /// Push an inbound transport audio packet (decode + enqueue).
     pub fn push_packet(&mut self, packet: &AudioPacket) -> Result<()> {
-        let frame = decode_audio_packet(&mut self.decoder, packet)?;
+        let (frame, was_mopu) = decode_audio_packet(&mut self.decoder, packet)?;
+        if was_mopu {
+            self.mock_opus_decoded = self.mock_opus_decoded.saturating_add(1);
+        }
         self.push_frame(frame);
         Ok(())
     }
@@ -107,9 +198,25 @@ impl AudioPlayoutQueue {
     pub fn peek_pts(&self) -> Option<Duration> {
         self.queue.front().map(|p| p.pts_host_mono)
     }
+
+    /// Pop up to `max` packets into `sink`.
+    pub fn pump_to_sink(&mut self, sink: &mut dyn AudioPlayoutSink, max: usize) -> Result<usize> {
+        let mut n = 0;
+        while n < max {
+            let Some(pkt) = self.pop() else {
+                break;
+            };
+            sink.push(&pkt)?;
+            n += 1;
+        }
+        Ok(n)
+    }
 }
 
-fn decode_audio_packet(decoder: &mut MockOpusDecoder, packet: &AudioPacket) -> Result<AudioFrame> {
+fn decode_audio_packet(
+    decoder: &mut MockOpusDecoder,
+    packet: &AudioPacket,
+) -> Result<(AudioFrame, bool)> {
     if packet.data.starts_with(b"MOPU") {
         let opus = OpusFrame {
             pts_host_mono: packet.pts_host_mono,
@@ -118,9 +225,10 @@ fn decode_audio_packet(decoder: &mut MockOpusDecoder, packet: &AudioPacket) -> R
             channels: packet.channels,
             data: packet.data.clone(),
         };
-        decoder
+        let frame = decoder
             .decode(&opus)
-            .map_err(|e| ViewerError::Media(e.to_string()))
+            .map_err(|e| ViewerError::Media(e.to_string()))?;
+        Ok((frame, true))
     } else {
         // Raw i16le PCM passthrough for simple mock AudioPacket payloads.
         if !packet.data.len().is_multiple_of(2) {
@@ -136,17 +244,20 @@ fn decode_audio_packet(decoder: &mut MockOpusDecoder, packet: &AudioPacket) -> R
             pcm.push(i16::from_le_bytes([chunk[0], chunk[1]]));
         }
         let _ = AUDIO_CLOCK_HZ; // document default clock domain
-        Ok(AudioFrame {
-            pts_host_mono: packet.pts_host_mono,
-            sample_rate: if packet.sample_rate == 0 {
-                48_000
-            } else {
-                packet.sample_rate
+        Ok((
+            AudioFrame {
+                pts_host_mono: packet.pts_host_mono,
+                sample_rate: if packet.sample_rate == 0 {
+                    48_000
+                } else {
+                    packet.sample_rate
+                },
+                channels: packet.channels,
+                format: SampleFormat::S16Le,
+                pcm_s16: pcm,
             },
-            channels: packet.channels,
-            format: SampleFormat::S16Le,
-            pcm_s16: pcm,
-        })
+            false,
+        ))
     }
 }
 
@@ -195,6 +306,7 @@ mod tests {
         .unwrap();
         let out = q.pop().unwrap();
         assert_eq!(out.frame.pcm_s16, af.pcm_s16);
+        assert_eq!(q.mock_opus_decoded(), 1);
     }
 
     #[test]
@@ -212,5 +324,21 @@ mod tests {
         assert_eq!(q.len(), 2);
         assert_eq!(q.dropped(), 1);
         assert_eq!(q.pop().unwrap().frame.pcm_s16, vec![1]);
+    }
+
+    #[test]
+    fn mock_sink_receives_pcm() {
+        let mut q = AudioPlayoutQueue::new(4);
+        q.push_frame(AudioFrame::from_s16(
+            Duration::from_millis(5),
+            48_000,
+            1,
+            vec![7i16; 48],
+        ));
+        let mut sink = MockAudioPlayoutSink::new();
+        assert_eq!(q.pump_to_sink(&mut sink, 8).unwrap(), 1);
+        assert_eq!(sink.len(), 1);
+        assert_eq!(sink.samples_played, 48);
+        assert_eq!(sink.name(), "mock");
     }
 }

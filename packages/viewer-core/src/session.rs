@@ -1,4 +1,4 @@
-//! Viewer session: PeerTransport answerer + decode/playout/input.
+//! Viewer session: PeerTransport answerer + decode/playout/input/skew.
 //!
 //! # Identity binding (PR 13 / KD17)
 //!
@@ -7,27 +7,37 @@
 //! `session_id || fp_host || fp_viewer`. [`Self::identity_bound`] tracks
 //! completion. Real DTLS certs come later; mocks use
 //! [`remotelink_net::DtlsFingerprint::sha256`].
+//!
+//! # A/V skew (PR 17 / G3)
+//!
+//! On each media unit the session updates [`remotelink_media::SkewController`]
+//! from last video present PTS and audio playout PTS. Required beta stats
+//! (skew_ms, jitter targets, RTT placeholder, bind status) are exported via
+//! [`crate::SessionStats`].
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use ed25519_dalek::VerifyingKey;
 use remotelink_auth::{
     respond_dc_challenge, verify_session_fingerprint, DcIdentityMessage, IdentityBindState,
     SessionBindKey, IDENTITY_CHANNEL_LABEL,
 };
+use remotelink_media::{JitterConfig, SkewController, SkewSample, AUDIO_CLOCK_HZ, VIDEO_CLOCK_HZ};
 use remotelink_net::{
     AudioPacket, BoxPeerTransport, ConnectionState, DataMessage, IncomingTrackData,
     LocalIceCandidate, PeerTransport, PeerTransportCallbacks, SessionDescription, VideoNalu,
 };
 use remotelink_protocol::IceCandidate;
 
-use crate::audio::{AudioPlayoutQueue, PlayoutPacket};
+use crate::audio::{AudioPlayoutQueue, AudioPlayoutSink, MockAudioPlayoutSink, PlayoutPacket};
 use crate::connect::{connect_stub, ConnectRequest, ConnectStubResult};
-use crate::decode::{DecodedVideoFrame, SyntheticVideoDecoder, VideoDecodeHook};
+use crate::decode::{DecodedVideoFrame, MockOrSyntheticDecoder, VideoDecodeHook};
 use crate::error::{Result, ViewerError};
 use crate::input::InputEmitter;
 use crate::state::{ConnectionMachine, ViewerPhase};
+use crate::stats::{BindStatus, SessionStats};
 
 /// Events collected from the peer transport for the session to process on `poll`.
 #[derive(Debug, Default)]
@@ -70,28 +80,12 @@ impl PeerTransportCallbacks for SessionCallbacks {
     }
 }
 
-/// Snapshot of session stats for UI / CLI / tests.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct SessionStats {
-    /// Decoded (or synthetic) video frames produced.
-    pub video_frames: u64,
-    /// Audio packets enqueued for playout.
-    pub audio_packets: u64,
-    /// Input events sent toward the host.
-    pub input_events: u64,
-    /// ICE candidates emitted locally.
-    pub local_ice: u64,
-    /// DataChannel messages received (non-input / control).
-    pub data_rx: u64,
-    /// Identity DataChannel messages handled.
-    pub identity_messages: u64,
-}
-
 /// Toolkit-agnostic viewer session (answerer side).
 ///
-/// Owns a [`PeerTransport`], connection state machine, synthetic video decode
-/// hook, audio playout queue, and input emitter. Call [`Self::poll`] regularly
-/// (mock pull model; real backends may push into the same queues via callbacks).
+/// Owns a [`PeerTransport`], connection state machine, video decode hook,
+/// audio playout queue + sink, skew controller, and input emitter. Call
+/// [`Self::poll`] regularly (mock pull model; real backends may push into the
+/// same queues via callbacks).
 ///
 /// # Reconnect
 ///
@@ -113,6 +107,8 @@ pub struct ViewerSession {
     video_out: VecDeque<DecodedVideoFrame>,
     video_out_cap: usize,
     audio: AudioPlayoutQueue,
+    /// Playout sink (mock by default for CI).
+    playout_sink: Box<dyn AudioPlayoutSink>,
     input: InputEmitter,
     /// Local ICE candidates waiting for the signaling path to forward.
     pending_local_ice: Vec<IceCandidate>,
@@ -133,17 +129,38 @@ pub struct ViewerSession {
     host_fp_sign_material: Option<String>,
     /// When true, input send requires identity_bound (default true for KD17).
     require_identity_for_input: bool,
+    /// A/V skew controller (slave audio to video).
+    skew: SkewController,
+    /// Last video present host-equivalent ms (from PTS).
+    last_video_present_ms: Option<f64>,
+    /// Last audio playout host-equivalent ms (from PTS).
+    last_audio_playout_ms: Option<f64>,
+    /// Viewer wall clock origin for skew rate limiting (first media).
+    wall_origin: Option<std::time::Instant>,
+    /// Last video PTS for FPS estimate.
+    last_video_pts: Option<Duration>,
+    /// Video jitter config (targets exported in stats).
+    video_jitter_cfg: JitterConfig,
+    /// Audio jitter config (targets exported in stats).
+    audio_jitter_cfg: JitterConfig,
+    /// Auto-pump decoded audio into the playout sink on each track.
+    auto_playout: bool,
 }
 
 impl ViewerSession {
-    /// Create a session with the default synthetic video decoder.
+    /// Create a session with the default mock-or-synthetic video decoder and mock sink.
     pub fn new() -> Self {
-        Self::with_video_hook(Box::new(SyntheticVideoDecoder::default()))
+        Self::with_video_hook(Box::new(MockOrSyntheticDecoder::new()))
     }
 
     /// Create a session with a custom video decode hook.
     pub fn with_video_hook(video: Box<dyn VideoDecodeHook>) -> Self {
+        let video_jitter_cfg = JitterConfig::wan_default();
+        let audio_jitter_cfg = JitterConfig::wan_default();
         let callbacks = SessionCallbacks::default();
+        let mut stats =
+            SessionStats::default().with_jitter_targets(video_jitter_cfg, audio_jitter_cfg);
+        stats.rtt_ms = None; // placeholder until RTCP RTT is wired
         Self {
             machine: ConnectionMachine::new(),
             transport: None,
@@ -152,10 +169,11 @@ impl ViewerSession {
             video_out: VecDeque::new(),
             video_out_cap: 32,
             audio: AudioPlayoutQueue::new(64),
+            playout_sink: Box::new(MockAudioPlayoutSink::new()),
             input: InputEmitter::new(),
             pending_local_ice: Vec::new(),
             session_id: None,
-            stats: SessionStats::default(),
+            stats,
             recorded_video_nalus: Vec::new(),
             recorded_audio_packets: Vec::new(),
             host_verifying_key: None,
@@ -166,7 +184,35 @@ impl ViewerSession {
             // false for backward-compatible loopback. Callers enabling real
             // security should set require_identity_for_input(true).
             require_identity_for_input: false,
+            skew: SkewController::with_defaults(),
+            last_video_present_ms: None,
+            last_audio_playout_ms: None,
+            wall_origin: None,
+            last_video_pts: None,
+            video_jitter_cfg,
+            audio_jitter_cfg,
+            auto_playout: true,
         }
+    }
+
+    /// Replace the playout sink (e.g. null sink when only draining via API).
+    pub fn set_playout_sink(&mut self, sink: Box<dyn AudioPlayoutSink>) {
+        self.playout_sink = sink;
+    }
+
+    /// When true (default), each decoded audio packet is also pushed to the sink.
+    pub fn set_auto_playout(&mut self, enabled: bool) {
+        self.auto_playout = enabled;
+    }
+
+    /// Use LAN jitter targets (10–15 ms video, 15–25 ms audio).
+    pub fn use_lan_jitter_profile(&mut self) {
+        self.video_jitter_cfg = JitterConfig::lan_video();
+        self.audio_jitter_cfg = JitterConfig::lan_audio();
+        self.stats.video_jitter_target_ms =
+            self.video_jitter_cfg.initial_target.as_secs_f64() * 1000.0;
+        self.stats.audio_jitter_target_ms =
+            self.audio_jitter_cfg.initial_target.as_secs_f64() * 1000.0;
     }
 
     /// Install the enrolled host public key used to verify `fingerprint_sig`.
@@ -204,9 +250,14 @@ impl ViewerSession {
         &self.machine
     }
 
-    /// Session stats snapshot.
+    /// Session stats snapshot (includes required G3 skew metric).
     pub fn stats(&self) -> &SessionStats {
         &self.stats
+    }
+
+    /// Mutable stats (HUD drivers / tests).
+    pub fn stats_mut(&mut self) -> &mut SessionStats {
+        &mut self.stats
     }
 
     /// Active session id after a successful connect stub / attach.
@@ -234,9 +285,16 @@ impl ViewerSession {
         self.video_out.drain(..).collect()
     }
 
-    /// Drain audio playout queue.
+    /// Drain audio playout queue (does not go through sink).
     pub fn drain_audio(&mut self) -> Vec<PlayoutPacket> {
         self.audio.drain()
+    }
+
+    /// Pump queued audio into the configured playout sink.
+    pub fn pump_playout(&mut self, max: usize) -> Result<usize> {
+        let n = self.audio.pump_to_sink(self.playout_sink.as_mut(), max)?;
+        self.stats.audio_played = self.stats.audio_played.saturating_add(n as u64);
+        Ok(n)
     }
 
     /// Attach a peer transport (viewer is answerer). Replaces any previous.
@@ -268,12 +326,19 @@ impl ViewerSession {
         self.host_fp_sign_material = None;
         // Bind key / host key intentionally retained across reconnect only if
         // caller re-installs; clear bind flags but keep keys for same host.
-        self.stats = SessionStats::default();
+        self.stats = SessionStats::default()
+            .with_jitter_targets(self.video_jitter_cfg, self.audio_jitter_cfg);
         self.recorded_video_nalus.clear();
         self.recorded_audio_packets.clear();
         self.video_out.clear();
         self.audio = AudioPlayoutQueue::new(64);
         self.input = InputEmitter::new();
+        self.skew.reset();
+        self.last_video_present_ms = None;
+        self.last_audio_playout_ms = None;
+        self.wall_origin = None;
+        self.last_video_pts = None;
+        self.sync_bind_status();
         Ok(stub)
     }
 
@@ -347,6 +412,7 @@ impl ViewerSession {
     /// Mark the viewer side as session-authorized (after Mode A/B success).
     pub fn mark_session_authorized(&mut self) {
         self.identity.mark_authorized();
+        self.sync_bind_status();
     }
 
     /// Add a remote ICE candidate from signaling.
@@ -366,12 +432,15 @@ impl ViewerSession {
     /// Pump transport + process inbound media/data into decode/playout queues.
     ///
     /// Identity DataChannel challenges are answered automatically when a
-    /// [`SessionBindKey`] is installed.
+    /// [`SessionBindKey`] is installed. Skew stats refresh when both A/V PTS
+    /// have been observed.
     pub fn poll(&mut self) -> Result<()> {
         if let Some(t) = self.transport.as_mut() {
             t.poll()?;
         }
         self.drain_callback_buf()?;
+        self.refresh_skew_stats();
+        self.sync_bind_status();
         Ok(())
     }
 
@@ -423,6 +492,7 @@ impl ViewerSession {
     pub fn close(&mut self) -> Result<()> {
         self.teardown_transport();
         self.machine.close();
+        self.playout_sink.flush();
         Ok(())
     }
 
@@ -544,6 +614,7 @@ impl ViewerSession {
                 // Viewer marks local identity_bound after successfully answering;
                 // host independently verifies the MAC before accepting input.
                 self.identity.mark_identity_bound();
+                self.sync_bind_status();
                 Ok(())
             }
             DcIdentityMessage::Response(_) => Err(ViewerError::InvalidState {
@@ -558,22 +629,98 @@ impl ViewerSession {
             IncomingTrackData::Video(nalu) => {
                 self.recorded_video_nalus.push(nalu.clone());
                 if let Some(decoded) = self.video.decode(&nalu) {
+                    if decoded.from_mock_h264 {
+                        self.stats.mock_h264_frames = self.stats.mock_h264_frames.saturating_add(1);
+                    }
+                    // FPS estimate from PTS deltas.
+                    if let Some(prev) = self.last_video_pts {
+                        let dt = decoded.pts_host_mono.saturating_sub(prev).as_secs_f64();
+                        if dt > 1e-6 {
+                            self.stats.video_fps = 1.0 / dt;
+                        }
+                    }
+                    self.last_video_pts = Some(decoded.pts_host_mono);
+                    self.last_video_present_ms = Some(duration_to_host_ms(decoded.pts_host_mono));
+                    // Crude bitrate estimate from encoded size * fps.
+                    if self.stats.video_fps > 0.0 {
+                        self.stats.video_bitrate_bps =
+                            (decoded.encoded_len as f64 * 8.0 * self.stats.video_fps).round()
+                                as u64;
+                    }
                     while self.video_out.len() >= self.video_out_cap {
                         self.video_out.pop_front();
                     }
                     self.video_out.push_back(decoded);
                     self.stats.video_frames = self.stats.video_frames.saturating_add(1);
                     self.machine.on_media_received();
+                    self.note_wall();
+                    self.refresh_skew_stats();
                 }
             }
             IncomingTrackData::Audio(packet) => {
                 self.recorded_audio_packets.push(packet.clone());
                 if self.audio.push_packet(&packet).is_ok() {
                     self.stats.audio_packets = self.audio.enqueued();
+                    self.stats.mock_opus_packets = self.audio.mock_opus_decoded();
+                    // Playout PTS = packet PTS (+ jitter target as host-equiv delay).
+                    let playout_ms = duration_to_host_ms(packet.pts_host_mono)
+                        + self.stats.audio_jitter_target_ms;
+                    self.last_audio_playout_ms = Some(playout_ms);
+                    if self.auto_playout {
+                        if let Some(pkt) = self.audio.pop() {
+                            if self.playout_sink.push(&pkt).is_ok() {
+                                self.stats.audio_played = self.stats.audio_played.saturating_add(1);
+                            }
+                        }
+                    }
                     self.machine.on_media_received();
+                    self.note_wall();
+                    self.refresh_skew_stats();
                 }
             }
         }
+    }
+
+    fn note_wall(&mut self) {
+        if self.wall_origin.is_none() {
+            self.wall_origin = Some(std::time::Instant::now());
+        }
+    }
+
+    fn wall_ms(&self) -> f64 {
+        self.wall_origin
+            .map(|t| t.elapsed().as_secs_f64() * 1000.0)
+            .unwrap_or(0.0)
+    }
+
+    fn refresh_skew_stats(&mut self) {
+        let (Some(audio_ms), Some(video_ms)) =
+            (self.last_audio_playout_ms, self.last_video_present_ms)
+        else {
+            return;
+        };
+        // Video present also includes video jitter target as host-equiv delay.
+        let video_present = video_ms + self.stats.video_jitter_target_ms;
+        let decision = self.skew.update(
+            SkewSample {
+                audio_playout_host_equiv_ms: audio_ms,
+                video_present_host_equiv_ms: video_present,
+            },
+            self.wall_ms(),
+        );
+        self.stats
+            .apply_skew_decision(&decision, self.skew.delay_offset_ms());
+    }
+
+    fn sync_bind_status(&mut self) {
+        self.stats.identity_bound = self.identity.identity_bound;
+        self.stats.bind_status = if self.identity.identity_bound {
+            BindStatus::Bound
+        } else if self.identity.session_authorized {
+            BindStatus::AuthorizedPending
+        } else {
+            BindStatus::Unbound
+        };
     }
 }
 
@@ -581,6 +728,10 @@ impl Default for ViewerSession {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn duration_to_host_ms(d: Duration) -> f64 {
+    d.as_secs_f64() * 1000.0
 }
 
 /// Drive a complete mock loopback: host (A) offerer + viewer session as answerer (B).
@@ -592,10 +743,11 @@ pub fn run_synthetic_loopback(
     audio_packets: usize,
 ) -> Result<(ViewerSession, SessionStats)> {
     use remotelink_net::{MockPeerPair, NaluFormat};
-    use std::time::Duration;
 
     let mut pair = MockPeerPair::new();
     let mut session = ViewerSession::new();
+    // Loopback drains via sink; keep mock sink so audio_played increments.
+    session.set_playout_sink(Box::new(MockAudioPlayoutSink::new()));
 
     let req = ConnectRequest::otp("synthetic-host", "123456").with_label("viewer-core-test");
     session.begin_connect(&req)?;
@@ -652,9 +804,103 @@ pub fn run_synthetic_loopback(
 
     session.poll()?;
 
-    // Put host back so we can still use peer_a for input receive if needed —
-    // peer_b was moved into the session.
+    let stats = session.stats().clone();
+    Ok((session, stats))
+}
 
+/// Loopback using mock MH264 + mock Opus (MOPU) for PR 17 acceptance.
+pub fn run_mock_codec_loopback(
+    video_frames: usize,
+    audio_packets: usize,
+) -> Result<(ViewerSession, SessionStats)> {
+    use remotelink_media::{
+        AudioSource, H264Encoder, H264EncoderConfig, MockOpusEncoder, MockSoftwareEncoder,
+        OpusEncoder, PixelFormat, RtpEpoch, SyntheticAudioTone, VideoFrame,
+    };
+    use remotelink_net::{MockPeerPair, NaluFormat};
+
+    let t0 = Duration::from_millis(0);
+    let epoch = RtpEpoch::new(t0);
+
+    let mut pair = MockPeerPair::new();
+    let mut session = ViewerSession::new();
+    session.set_playout_sink(Box::new(MockAudioPlayoutSink::new()));
+
+    let req = ConnectRequest::otp("mock-codec-host", "123456").with_label("pr17");
+    session.begin_connect(&req)?;
+
+    let viewer_transport = std::mem::replace(
+        &mut pair.peer_b,
+        remotelink_net::MockPeerTransport::new(Default::default()),
+    );
+    session.attach_transport(Box::new(viewer_transport));
+
+    let offer = pair.peer_a.create_offer()?;
+    pair.peer_a.set_local_description(offer.clone())?;
+    let answer = session.accept_offer(offer)?;
+    pair.peer_a.set_remote_description(answer)?;
+    if let Some(host_ice) = pair.peer_a.last_local_ice().cloned() {
+        session.add_remote_ice(host_ice)?;
+    }
+    for ice in session.take_pending_local_ice() {
+        pair.peer_a.add_ice_candidate(ice)?;
+    }
+    session.poll()?;
+    assert_connected(&session)?;
+
+    let mut enc = MockSoftwareEncoder::new(&H264EncoderConfig {
+        width: 16,
+        height: 9,
+        fps: 30,
+        target_bitrate_bps: 2_000_000,
+    })
+    .with_keyframe_interval(0);
+    let mut opus_enc = MockOpusEncoder::with_epoch(epoch);
+    let mut tone = SyntheticAudioTone::default_a440(t0).with_max_packets(audio_packets as u64);
+
+    for i in 0..video_frames {
+        let pts = t0 + Duration::from_millis((i as u64) * 33);
+        let mut pixels = vec![0u8; 16 * 9 * 3];
+        pixels[0] = i as u8;
+        pixels[1] = 0x80;
+        pixels[2] = 0x40;
+        let frame = VideoFrame {
+            pts_host_mono: pts,
+            width: 16,
+            height: 9,
+            format: PixelFormat::Rgb24,
+            data: pixels,
+        };
+        let au = enc.encode(&frame, i == 0)?;
+        pair.peer_a.send_video_nalu(VideoNalu {
+            pts_host_mono: au.pts_host_mono,
+            rtp_ts: Some(epoch.video_ts(pts)),
+            keyframe: au.keyframe,
+            format: NaluFormat::AnnexB,
+            data: au.data,
+        })?;
+        let _ = VIDEO_CLOCK_HZ;
+    }
+
+    for _ in 0..audio_packets {
+        let af = tone
+            .next_frame()
+            .map_err(|e| ViewerError::Media(e.to_string()))?
+            .ok_or_else(|| ViewerError::Media("tone eos".into()))?;
+        let pkt = opus_enc
+            .encode(&af)
+            .map_err(|e| ViewerError::Media(e.to_string()))?;
+        pair.peer_a.send_audio(AudioPacket {
+            pts_host_mono: pkt.pts_host_mono,
+            rtp_ts: Some(pkt.rtp_ts),
+            sample_rate: af.sample_rate,
+            channels: af.channels,
+            data: pkt.data,
+        })?;
+        let _ = AUDIO_CLOCK_HZ;
+    }
+
+    session.poll()?;
     let stats = session.stats().clone();
     Ok((session, stats))
 }
@@ -712,6 +958,29 @@ mod tests {
             ViewerPhase::Streaming | ViewerPhase::Connected
         ));
         assert_eq!(session.phase(), &ViewerPhase::Streaming);
+        // G3: skew metric always exportable.
+        assert!(stats.has_required_skew_metric());
+        let hud = stats.hud_line();
+        assert!(hud.contains("skew_ms="), "{hud}");
+    }
+
+    #[test]
+    fn mock_codec_loopback_decodes_h264_and_opus() {
+        let (session, stats) = run_mock_codec_loopback(3, 4).unwrap();
+        assert_eq!(stats.video_frames, 3);
+        assert_eq!(stats.mock_h264_frames, 3);
+        assert_eq!(stats.audio_packets, 4);
+        assert_eq!(stats.mock_opus_packets, 4);
+        assert!(stats.audio_played >= 1);
+        assert!(stats.has_required_skew_metric());
+        // With shared t0 and aligned PTS, skew should be near zero after jitter offsets cancel.
+        assert!(
+            stats.skew_ms.abs() < 50.0,
+            "skew out of range: {}",
+            stats.skew_ms
+        );
+        let frames = session.stats().video_frames;
+        assert_eq!(frames, 3);
     }
 
     #[test]
@@ -935,6 +1204,7 @@ mod tests {
         session.poll().unwrap();
         assert!(session.identity_bound());
         assert!(session.stats().identity_messages >= 1);
+        assert_eq!(session.stats().bind_status, BindStatus::Bound);
 
         // Viewer may send input after local identity bind.
         session.send_mouse_move(0.5, 0.5).unwrap();
@@ -968,5 +1238,18 @@ mod tests {
             .accept_offer_with_sig(offer, Some(&sig))
             .unwrap_err();
         assert!(matches!(err, ViewerError::Auth(_)));
+    }
+
+    #[test]
+    fn stats_snapshot_exports_skew_and_jitter() {
+        let (_session, stats) = run_mock_codec_loopback(2, 2).unwrap();
+        assert!(stats.has_required_skew_metric());
+        assert!(stats.video_jitter_target_ms > 0.0);
+        assert!(stats.audio_jitter_target_ms > 0.0);
+        // RTT is a required placeholder field (None until RTCP).
+        assert!(stats.rtt_ms.is_none());
+        let block = stats.hud_block();
+        assert!(block.contains("A/V skew"), "{block}");
+        assert!(block.contains("Bind:"), "{block}");
     }
 }

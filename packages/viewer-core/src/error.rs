@@ -39,5 +39,11 @@ pub enum ViewerError {
     Internal(String),
 }
 
+impl From<remotelink_media::H264Error> for ViewerError {
+    fn from(e: remotelink_media::H264Error) -> Self {
+        ViewerError::Media(e.to_string())
+    }
+}
+
 /// Result alias for viewer-core.
 pub type Result<T> = std::result::Result<T, ViewerError>;

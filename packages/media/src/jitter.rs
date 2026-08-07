@@ -351,7 +351,7 @@ mod tests {
             let pts = Duration::from_millis(i * 10);
             // Alternate early/late arrivals.
             let jitter = if i % 2 == 0 { 0 } else { 25 };
-            recv = recv + Duration::from_millis(10 + jitter);
+            recv += Duration::from_millis(10 + jitter);
             jb.push(pts, recv, i);
         }
         assert!(jb.target() >= Duration::from_millis(20));
