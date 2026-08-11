@@ -111,4 +111,10 @@ Plan PRs 1–27 done.
 - GitHub Actions: Linux + Windows test jobs; package-stage artifact on `main`
 - Vendor NVENC/QSV/AMF remains a documented stub
 
-**Still open for product:** WiX/Authenticode signing of staged MSI layout.
+**Later same day (core product packaging complete):**
+- Portable zip + install/uninstall/lab-start scripts in package layout
+- `scripts/build-msi.ps1` builds WiX MSI when candle/light present; otherwise portable-only
+- CI uploads portable zip (+ MSI if WiX on runner)
+- **Core product marked COMPLETE** — remaining work is optional codesign / vendor SDKs
+
+**Optional (post-core):** Authenticode EV signing, NVENC SDK, webrtc multi-process e2e.

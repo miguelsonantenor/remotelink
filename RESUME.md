@@ -2,141 +2,83 @@
 
 **Saved:** 2026-08-11  
 **Plan ID:** `35709e22`  
-**Primary tree:** branch **`main`** at `C:\Users\Linked\Documents\remotelink`
+**Primary tree:** branch **`main`** at `C:\Users\Linked\Documents\remotelink`  
+**GitHub:** https://github.com/miguelsonantenor/remotelink
 
 ## Status
 
 | Metric | Value |
 |--------|--------|
 | PR plan | **PRs 1–27 complete** (8b optional skipped) |
-| **Integrated monorepo** | **Yes** — `cargo test --workspace` green (default features) |
-| PeerTransport backends | **mock** (CI default) · **live TCP** (default feature) · **webrtc-rs** (opt-in feature) |
-| Real AnyDesk product | **~99.5%** — Media Foundation H.264 + WASAPI COM + DXGI; Windows CI; tray; KD5 |
+| **Integrated monorepo** | **Yes** |
+| PeerTransport backends | **mock** · **live TCP** · **webrtc-rs** (opt-in) |
+| **Core product** | **COMPLETE (~100%)** |
+| Shippable artifact | **Portable zip** (`scripts/package-release.ps1`) |
+| MSI | Optional via WiX (`scripts/build-msi.ps1`) — unsigned until release codesign |
+
+### Core product includes
+
+- Signaling server (WSS SDP/ICE relay, OTP, creds)
+- Host: enrollment, tray (OTP / End session / Exit), Mode A OTP
+- KD5 service↔agent control IPC (TCP + named-pipe ACL + boot secret)
+- Media: DXGI capture, WASAPI COM loopback, Media Foundation H.264 (+ software fallback)
+- Viewer WSS connect path
+- E2E live media tests, Windows + Linux CI
+
+### Not required for “core done” (optional release polish)
+
+- Authenticode / EV code signing certificate  
+- Direct NVENC/QSV/AMF SDKs (MF H.264 covers system encode)  
+- Full webrtc-rs multi-process e2e  
+- Secure desktop / UAC remote (documented v1 gap)
+
+## Ship the product
+
+```powershell
+$env:Path = "C:\msys64\mingw64\bin;$env:USERPROFILE\.cargo\bin;" + $env:Path
+$env:RUSTUP_TOOLCHAIN = "stable-x86_64-pc-windows-gnu"
+cd C:\Users\Linked\Documents\remotelink
+
+# Build portable core product zip
+.\scripts\package-release.ps1
+# → dist\RemoteLink-0.1.0-portable.zip
+# → dist\remotelink-0.1.0\  (QUICKSTART, install-portable, lab-start)
+
+# Optional MSI if WiX v3 installed
+.\scripts\build-msi.ps1 -SkipStage
+```
 
 ## Day-to-day development
 
 ```powershell
-$env:Path = "C:\Users\Linked\tools\mingw64\bin;$env:USERPROFILE\.cargo\bin;" + $env:Path
+$env:Path = "C:\msys64\mingw64\bin;$env:USERPROFILE\.cargo\bin;" + $env:Path
 $env:RUSTUP_TOOLCHAIN = "stable-x86_64-pc-windows-gnu"
 cd C:\Users\Linked\Documents\remotelink
 
-# CI-safe default (mock + live)
 cargo test --workspace
+cargo test -p remotelink-e2e --test ws_cli_live --test ws_agent_ipc
+```
 
-# Real webrtc-rs backend unit tests
-cargo test -p remotelink-net --features webrtc-rs
+### Lab (from source)
 
-# Host / viewer demos (in-process)
-cargo run -p remotelink-host -- --role=agent --transport=mock
-cargo run -p remotelink-host -- --role=agent --transport=live
-cargo run -p remotelink-viewer -- --live-demo
-
-# Multi-process lab (3 terminals; memory server if DATABASE_URL unset)
+```powershell
 cargo run -p remotelink-server
-# Persistent host (unlimited sessions + reconnect; prints OTP; saves .remotelink-host.json):
 cargo run -p remotelink-host -- --role=service --server=http://127.0.0.1:8080 --transport=live
-# Restart reuses .remotelink-host.json (token refresh best-effort). --fresh to re-register.
-# Host prints Mode A OTP + public_id; then:
 cargo run -p remotelink-viewer -- --ws-connect --server=http://127.0.0.1:8080 --host PUBLIC_ID --otp CODE --transport=live
-
-# Lab stack (Postgres + server)
-docker compose -f deploy/docker-compose.yml up -d --build
 ```
 
-## Transport selection
+### KD5 split (production-style)
 
-| `REMOTELINK_TRANSPORT` / `--transport` | Backend |
-|----------------------------------------|---------|
-| unset / `mock` | In-process mock (CI) |
-| `live` | Length-prefixed TCP |
-| `webrtc` | webrtc-rs (needs feature `webrtc-rs`) |
-| `auto` | webrtc (if feature) → live → mock |
-
-## Next best steps
-
-1. WiX MSI + Authenticode (unsigned layout already staged in CI on `main`)  
-2. Optional direct NVENC/QSV/AMF SDKs (MF H.264 covers system encode today)  
-3. Optional: webrtc-rs e2e over WSS+agent IPC  
-
-### WASAPI (Windows)
-
-| Mode | Behavior |
-|------|----------|
-| `StubOnly` | Synthetic PCM (CI) |
-| `PreferNative` | Real COM loopback; stub if no render endpoint |
-| `NativeOnly` | Real COM only (`ClientOpenFailed` if no device) |
-
-### Encode
-
-| Backend | Status |
-|---------|--------|
-| Media Foundation H.264 MFT | Preferred on Windows (may use GPU) |
-| `software_mock` | MH264 Annex-B fallback (CI-safe) |
-| Vendor HW stub | NVENC/QSV/AMF not linked |
-
-```rust
-mgr.request_video_keyframe();
-mgr.set_video_bitrate_bps(2_000_000);
+```powershell
+cargo run -p remotelink-host -- --role=agent --control-listen=pipe --boot-secret=SECRET --transport=live
+cargo run -p remotelink-host -- --role=service --server=http://127.0.0.1:8080 --transport=live --agent-control=pipe --boot-secret=SECRET
 ```
 
-### Capture (Windows)
+## Transport
 
-| Kind | Backend |
+| Mode | Backend |
 |------|---------|
-| `WindowsMock` (default video) | Desktop-shaped BGRA mock (CI-safe) |
-| `WindowsDxgi` | DXGI Desktop Duplication (interactive session) |
-| `WindowsWasapiStub` (default audio) | Synthetic loopback PCM |
-| `WindowsWasapiPreferNative` | Real COM WASAPI; stub fallback if no device |
-| `Synthetic` | Media color bars / A440 |
-
-```rust
-// Agent SessionManager defaults on Windows: WindowsMock + WindowsWasapiStub
-mgr.set_video_kind(VideoCaptureKind::WindowsDxgi);
-mgr.set_audio_kind(AudioCaptureKind::WindowsWasapiPreferNative);
-```
-
-### Package stage
-
-```powershell
-.\scripts\package-release.ps1
-# → dist\remotelink-<version>\bin\*.exe + package-manifest.json
-# WiX: deploy/packaging/Product.wxs (see packaging README)
-```
-
-### Control boot secret (production KD5)
-
-```powershell
-$secret = -join ((1..32) | ForEach-Object { '{0:x2}' -f (Get-Random -Max 256) })
-# Agent
-cargo run -p remotelink-host -- --role=agent --control-listen=pipe --boot-secret=$secret --transport=live
-# Service
-cargo run -p remotelink-host -- --role=service --server=http://127.0.0.1:8080 `
-  --transport=live --agent-control=pipe --boot-secret=$secret
-```
-
-### Control IPC (KD5) — WSS service + agent media
-
-```powershell
-# Demo: service client + agent server over TCP (mock media)
-cargo run -p remotelink-host -- --role=ipc-colocate
-
-# Split processes — TCP (CI/dev):
-cargo run -p remotelink-host -- --role=agent --control-listen=tcp:0 --transport=live
-# note CONTROL_LISTEN=tcp:PORT
-cargo run -p remotelink-host -- --role=service --server=http://127.0.0.1:8080 `
-  --transport=live --agent-control=tcp:PORT
-
-# Split processes — Windows named pipe (production-style ACL):
-cargo run -p remotelink-host -- --role=agent --control-listen=pipe --transport=live
-cargo run -p remotelink-host -- --role=service --server=http://127.0.0.1:8080 `
-  --transport=live --agent-control=pipe
-
-# Viewer
-cargo run -p remotelink-viewer -- --ws-connect --server=http://127.0.0.1:8080 `
-  --host PUBLIC_ID --otp CODE --transport=live
-
-# E2E (one process, two threads):
-cargo test -p remotelink-e2e --test ws_agent_ipc -- --nocapture
-```
-
-Historical PR tips remain on `execute-plan/35709e22-pr-*` and `progress/*` branches / worktrees.
+| `mock` | In-process (CI) |
+| `live` | Length-prefixed TCP |
+| `webrtc` | webrtc-rs (feature `webrtc-rs`) |
+| `auto` | webrtc → live → mock |

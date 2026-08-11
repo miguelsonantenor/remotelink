@@ -21,67 +21,54 @@ Inventory lives in [`binaries.toml`](binaries.toml). List them from a checkout:
 
 Server is primarily distributed via container (`deploy/docker-compose.yml`); an MSI is optional for air-gapped operators.
 
-## Build release binaries + stage layout
+## Build release (core product)
 
 ```powershell
 $env:Path = "C:\msys64\mingw64\bin;$env:USERPROFILE\.cargo\bin;" + $env:Path
 $env:RUSTUP_TOOLCHAIN = "stable-x86_64-pc-windows-gnu"
 
-# One-shot: release build + dist/remotelink-<version>/ layout + package-manifest.json
+# Release build + portable layout + zip (primary shippable artifact)
 .\scripts\package-release.ps1
 
-# Or build only:
-cargo build --release -p remotelink-host -p remotelink-viewer -p remotelink-server
+# Optional MSI if WiX v3 is installed
+.\scripts\build-msi.ps1 -SkipStage
 ```
 
-Outputs (GNU toolchain):
+Outputs:
 
 ```text
-target\release\remotelink-host.exe
-target\release\remotelink-viewer.exe
-target\release\remotelink-server.exe
-
 dist\remotelink-<version>\
   bin\*.exe
-  LICENSE-*
-  binaries.toml
-  package-manifest.json   # version, SHA-256, unsigned=true
+  QUICKSTART.md
+  install-portable.ps1
+  uninstall-portable.ps1
+  lab-start.ps1
+  package-manifest.json   # version, SHA-256, core_product=true, unsigned=true
+
+dist\RemoteLink-<version>-portable.zip   # ship this without WiX
+dist\RemoteLink-<version>.msi            # only if WiX present
 ```
 
-The stage layout is **unsigned**. Authenticode / MSIX signing is release-pipeline only.
+The package is **unsigned**. Authenticode is release-pipeline only.
 
-## MSI outline (WiX / cargo-wix)
-
-Target: per-user or machine install of host (service) and viewer.
-
-Suggested layout:
-
-```text
-Program Files\RemoteLink\
-  remotelink-host.exe
-  remotelink-viewer.exe
-  LICENSE-MIT
-  LICENSE-APACHE
-```
-
-WiX skeleton: [`Product.wxs`](Product.wxs) (not wired in CI).
-
-1. Run `.\scripts\package-release.ps1` to stage `dist\remotelink-<ver>\`.
-2. Build MSI from that layout (host + viewer + license + Start Menu shortcuts).
-3. **Code signing:** Authenticode on the MSI and nested EXEs in the **release** pipeline only.
+### Portable install (no WiX)
 
 ```powershell
-# Stage binaries
-.\scripts\package-release.ps1
+Expand-Archive dist\RemoteLink-0.1.0-portable.zip -DestinationPath $env:TEMP\rl
+powershell -ExecutionPolicy Bypass -File $env:TEMP\rl\install-portable.ps1
+```
 
-# WiX 3 (if candle/light on PATH)
-$ver = "0.1.0"
-$stage = "dist\remotelink-$ver"
-candle -dProductVersion=$ver -dStageDir=$PWD\$stage deploy\packaging\Product.wxs
-light Product.wixobj -o dist\RemoteLink-$ver.msi
+### MSI (WiX v3)
+
+[`Product.wxs`](Product.wxs) + [`scripts/build-msi.ps1`](../../scripts/build-msi.ps1):
+
+```powershell
+.\scripts\package-release.ps1
+.\scripts\build-msi.ps1 -SkipStage
+# → dist\RemoteLink-<ver>.msi (unsigned)
 
 # Release pipeline only:
-# signtool sign /tr http://timestamp.digicert.com /td sha256 /fd sha256 dist\*.msi dist\remotelink-$ver\bin\*.exe
+# signtool sign /tr http://timestamp.digicert.com /td sha256 /fd sha256 dist\*.msi dist\remotelink-*\bin\*.exe
 ```
 
 ## MSIX outline

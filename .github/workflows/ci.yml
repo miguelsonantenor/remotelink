@@ -75,13 +75,20 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Stage unsigned release layout
+      - name: Stage portable core product (zip + layout)
         shell: pwsh
         run: ./scripts/package-release.ps1
 
-      - name: Upload package layout
+      - name: Try MSI (no-op if WiX missing)
+        shell: pwsh
+        run: ./scripts/build-msi.ps1 -SkipStage
+
+      - name: Upload package artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: remotelink-package-stage
-          path: dist/
+          name: remotelink-core-product
+          path: |
+            dist/remotelink-*/
+            dist/RemoteLink-*-portable.zip
+            dist/RemoteLink-*.msi
           if-no-files-found: error
