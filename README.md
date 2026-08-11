@@ -9,6 +9,7 @@ Low-latency remote desktop with **system audio**, host agent, viewer, and signal
 | Signaling (WSS, SDP/ICE, OTP) | Done |
 | Host service + tray + KD5 agent IPC | Done |
 | Live TCP media + DXGI / WASAPI / MF H.264 | Done |
+| **Product shell** (`remotelink-app`) — This PC + Connect | Phase 1 |
 | Portable package + lab scripts | Done |
 | MSI (WiX) | Optional — `scripts/build-msi.ps1` |
 | Authenticode signing | Optional — release pipeline only |
@@ -33,6 +34,21 @@ $env:RUSTUP_TOOLCHAIN = "stable-x86_64-pc-windows-gnu"
 cd C:\Users\Linked\Documents\remotelink
 ```
 
+## Product shell (Phase 1)
+
+One window, AnyDesk-style home screen:
+
+```powershell
+cargo run -p remotelink-server
+cargo run -p remotelink-desktop
+# binary name: remotelink-app
+# • This PC — Your ID + OTP (Allow remote access)
+# • Connect — remote ID + OTP
+# • Advanced — signaling URL (default http://127.0.0.1:8080)
+```
+
+Settings live under `%LOCALAPPDATA%\RemoteLink` (`config.json`, host creds, status).
+
 ## Ship the product
 
 ```powershell
@@ -40,6 +56,7 @@ cd C:\Users\Linked\Documents\remotelink
 .\scripts\package-release.ps1
 # → dist\RemoteLink-0.1.0-portable.zip
 # → dist\remotelink-0.1.0\  (QUICKSTART, install-portable, lab-start)
+# includes remotelink-app.exe (product shell)
 
 # Optional MSI if WiX v3 is installed
 .\scripts\build-msi.ps1 -SkipStage
@@ -57,6 +74,7 @@ One-machine lab from the package:
 ```powershell
 powershell -ExecutionPolicy Bypass -File dist\remotelink-0.1.0\lab-start.ps1
 # Use public_id + OTP printed by the host (also tray balloon)
+# Or: .\bin\remotelink-app.exe after starting the server
 ```
 
 ## Develop & test
@@ -66,8 +84,11 @@ cargo build --workspace
 cargo test --workspace
 cargo test -p remotelink-e2e --test ws_cli_live --test ws_agent_ipc
 
-# From source lab
+# Product shell
 cargo run -p remotelink-server
+cargo run -p remotelink-desktop
+
+# CLI lab (advanced)
 cargo run -p remotelink-host -- --role=service --server=http://127.0.0.1:8080 --transport=live
 cargo run -p remotelink-viewer -- --ws-connect --server=http://127.0.0.1:8080 --host PUBLIC_ID --otp CODE --transport=live
 ```
@@ -82,8 +103,9 @@ cargo run -p remotelink-host -- --role=service --server=http://127.0.0.1:8080 `
 
 ## Layout
 
+- `apps/desktop` — **product shell** (`remotelink-app`: This PC + Connect)
 - `apps/host` — service + session agent (tray, capture, encode, control IPC)
-- `apps/viewer` — CLI viewer / optional egui shell
+- `apps/viewer` — CLI viewer library + binary / optional egui shell
 - `apps/server` — registry, WSS signaling, security, metrics, admin
 - `packages/*` — protocol, auth, media, net, platforms, viewer-core, common
 - `deploy/packaging` — WiX skeleton, portable install scripts

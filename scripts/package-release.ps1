@@ -49,14 +49,15 @@ if (-not $SkipBuild) {
     if (-not (Get-Command gcc -ErrorAction SilentlyContinue)) {
         Write-Warning "gcc not on PATH - windows-gnu release build may fail."
     }
-    Write-Host "cargo build --release -p remotelink-host -p remotelink-viewer -p remotelink-server"
-    cargo build --release -p remotelink-host -p remotelink-viewer -p remotelink-server
+    Write-Host "cargo build --release -p remotelink-desktop -p remotelink-host -p remotelink-viewer -p remotelink-server"
+    cargo build --release -p remotelink-desktop -p remotelink-host -p remotelink-viewer -p remotelink-server
     if ($LASTEXITCODE -ne 0) {
         throw "cargo build failed ($LASTEXITCODE)"
     }
 }
 
 $bins = @(
+    "remotelink-app.exe",
     "remotelink-host.exe",
     "remotelink-viewer.exe",
     "remotelink-server.exe"

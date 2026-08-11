@@ -4,6 +4,15 @@
 schema_version = 1
 
 [[binary]]
+name = "remotelink-app"
+crate = "remotelink-desktop"
+path = "apps/desktop"
+role = "Product shell (this PC + connect)"
+platforms = ["windows-x86_64"]
+packages = ["msi", "msix"]
+primary = true
+
+[[binary]]
 name = "remotelink-host"
 crate = "remotelink-host"
 path = "apps/host"
@@ -16,7 +25,7 @@ primary = true
 name = "remotelink-viewer"
 crate = "remotelink-viewer"
 path = "apps/viewer"
-role = "Viewer client"
+role = "Viewer client (CLI / advanced)"
 platforms = ["windows-x86_64"]
 packages = ["msi", "msix"]
 primary = true

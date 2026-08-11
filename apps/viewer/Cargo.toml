@@ -6,6 +6,10 @@ license.workspace = true
 description = "RemoteLink viewer client (connect shell + optional egui UI)"
 publish = false
 
+[lib]
+name = "remotelink_viewer"
+path = "src/lib.rs"
+
 [[bin]]
 name = "remotelink-viewer"
 path = "src/main.rs"

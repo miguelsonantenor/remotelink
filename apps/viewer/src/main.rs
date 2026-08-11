@@ -12,16 +12,14 @@
 //!
 //! Multi-process WSS: `--ws-connect --server=… --host PUBLIC_ID --transport=live`.
 
-mod ws_connect;
-
 use std::env;
 
 use remotelink_net::{TransportConfig, TransportMode};
+use remotelink_viewer::{run_ws_viewer_blocking, WsViewerConfig};
 use remotelink_viewer_core::{
     connect_stub, run_mock_codec_loopback_ex, run_synthetic_loopback_ex, ConnectRequest,
     SessionStats, ViewerPhase, ViewerSession,
 };
-use ws_connect::{run_ws_viewer_blocking, WsViewerConfig};
 
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();

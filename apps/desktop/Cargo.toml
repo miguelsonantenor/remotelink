@@ -1,0 +1,22 @@
+[package]
+name = "remotelink-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "RemoteLink product shell — single app (this PC + connect)"
+publish = false
+
+[[bin]]
+name = "remotelink-app"
+path = "src/main.rs"
+
+[dependencies]
+remotelink-common = { workspace = true }
+remotelink-host = { path = "../host" }
+remotelink-viewer = { path = "../viewer" }
+remotelink-net = { workspace = true }
+remotelink-signaling = { workspace = true }
+eframe = { version = "0.31", default-features = true }
+egui = { version = "0.31" }
+serde = { workspace = true }
+serde_json = { workspace = true }

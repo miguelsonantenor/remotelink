@@ -47,6 +47,12 @@
     </Directory>
 
     <ComponentGroup Id="ProductComponents" Directory="INSTALLFOLDER">
+      <Component Id="AppExe" Guid="*">
+        <File Id="AppExeFile"
+              Source="$(var.StageDir)\bin\remotelink-app.exe"
+              KeyPath="yes"
+              Checksum="yes" />
+      </Component>
       <Component Id="HostExe" Guid="*">
         <File Id="HostExeFile"
               Source="$(var.StageDir)\bin\remotelink-host.exe"
@@ -68,13 +74,18 @@
 
     <DirectoryRef Id="ApplicationProgramsFolder">
       <Component Id="StartMenuShortcuts" Guid="*">
+        <Shortcut Id="AppShortcut"
+                  Name="RemoteLink"
+                  Description="RemoteLink — this PC and connect"
+                  Target="[INSTALLFOLDER]remotelink-app.exe"
+                  WorkingDirectory="INSTALLFOLDER" />
         <Shortcut Id="HostShortcut"
-                  Name="RemoteLink Host"
+                  Name="RemoteLink Host (CLI)"
                   Description="RemoteLink host service"
                   Target="[INSTALLFOLDER]remotelink-host.exe"
                   WorkingDirectory="INSTALLFOLDER" />
         <Shortcut Id="ViewerShortcut"
-                  Name="RemoteLink Viewer"
+                  Name="RemoteLink Viewer (CLI)"
                   Description="RemoteLink viewer"
                   Target="[INSTALLFOLDER]remotelink-viewer.exe"
                   WorkingDirectory="INSTALLFOLDER" />

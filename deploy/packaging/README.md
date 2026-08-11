@@ -15,8 +15,9 @@ Inventory lives in [`binaries.toml`](binaries.toml). List them from a checkout:
 
 | Binary | Crate | Role | Windows packages |
 |--------|-------|------|------------------|
+| `remotelink-app` | `apps/desktop` | Product shell (This PC + Connect) | MSI, MSIX |
 | `remotelink-host` | `apps/host` | Service + session agent | MSI, MSIX |
-| `remotelink-viewer` | `apps/viewer` | Viewer client | MSI, MSIX |
+| `remotelink-viewer` | `apps/viewer` | Viewer client (CLI) | MSI, MSIX |
 | `remotelink-server` | `apps/server` | Signaling / registry | Optional MSI or container only |
 
 Server is primarily distributed via container (`deploy/docker-compose.yml`); an MSI is optional for air-gapped operators.

@@ -12,6 +12,7 @@ members = [
     "packages/signaling",
     "apps/host",
     "apps/viewer",
+    "apps/desktop",
     "apps/server",
     "tests/e2e",
     "agents/unit-test-agent",

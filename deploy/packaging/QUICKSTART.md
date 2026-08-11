@@ -6,15 +6,28 @@ This folder is a **complete core product** layout: host, viewer, and optional se
 
 | Path | Role |
 |------|------|
-| `bin/remotelink-host.exe` | Host service + session agent (tray, OTP, media) |
-| `bin/remotelink-viewer.exe` | Viewer client |
+| `bin/remotelink-app.exe` | **Product shell** — This PC (ID + OTP) + Connect |
+| `bin/remotelink-host.exe` | Host service + session agent (CLI / advanced) |
+| `bin/remotelink-viewer.exe` | Viewer client (CLI / advanced) |
 | `bin/remotelink-server.exe` | Signaling server (lab / self-host) |
 | `package-manifest.json` | Version + SHA-256 of binaries |
 | `install-portable.ps1` | Copy to `%LOCALAPPDATA%\RemoteLink` + Start Menu |
 | `uninstall-portable.ps1` | Remove portable install |
 | `lab-start.ps1` | One-machine demo (server + host) |
 
-## One-machine lab (memory server)
+## Product shell (recommended)
+
+```powershell
+# Terminal 1 — signaling (in-memory if DATABASE_URL unset)
+.\bin\remotelink-server.exe
+
+# Terminal 2 — single app (Allow remote access shows Your ID + OTP)
+.\bin\remotelink-app.exe
+# Advanced → Server defaults to http://127.0.0.1:8080
+# Connect to another PC: enter their ID + OTP on the same home screen
+```
+
+## One-machine lab (CLI binaries)
 
 ```powershell
 # Terminal 1 — signaling (in-memory if DATABASE_URL unset)

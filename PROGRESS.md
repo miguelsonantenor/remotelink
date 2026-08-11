@@ -117,7 +117,16 @@ Plan PRs 1–27 done.
 - CI uploads portable zip (+ MSI if WiX on runner)
 - **Core product marked COMPLETE** — remaining work is optional codesign / vendor SDKs
 
-**Later same day (README + release checklist):**
+**Later same day (Phase 1 product shell):**
+- New `apps/desktop` → binary **`remotelink-app`** (egui home screen)
+- **This PC**: Allow remote access, public ID, OTP, copy buttons, session chrome
+- **Connect**: remote ID + OTP, recent hosts, background WSS viewer job
+- **Advanced**: signaling URL, transport, auto-start, data folder
+- Host runs in-process via `run_ws_host_blocking` (status JSON under `%LOCALAPPDATA%\RemoteLink`)
+- Viewer lib export (`remotelink_viewer::ws_connect`) for shared connect path
+- Packaging: app primary binary in zip/MSI inventory + Start Menu shortcut
+
+**Earlier same day (README + release checklist):**
 - Top-level README reflects core product complete + ship commands
 - `deploy/packaging/RELEASE_CHECKLIST.md` for MSI/codesign/smoke steps
 - WiX MSI remains optional (needs admin install of WiX Toolset)

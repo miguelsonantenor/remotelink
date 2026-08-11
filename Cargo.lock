@@ -3851,6 +3851,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "remotelink-desktop"
+version = "0.1.0"
+dependencies = [
+ "eframe",
+ "egui",
+ "remotelink-common",
+ "remotelink-host",
+ "remotelink-net",
+ "remotelink-signaling",
+ "remotelink-viewer",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "remotelink-e2e"
 version = "0.1.0"
 dependencies = [

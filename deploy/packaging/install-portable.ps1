@@ -12,8 +12,8 @@ param(
 $ErrorActionPreference = "Stop"
 $Here = $PSScriptRoot
 $Bin = Join-Path $Here "bin"
-if (-not (Test-Path (Join-Path $Bin "remotelink-host.exe"))) {
-    throw "bin\remotelink-host.exe not found. Run this script from a package-release layout."
+if (-not (Test-Path (Join-Path $Bin "remotelink-host.exe")) -and -not (Test-Path (Join-Path $Bin "remotelink-app.exe"))) {
+    throw "bin\remotelink-app.exe / remotelink-host.exe not found. Run this script from a package-release layout."
 }
 
 if (-not $InstallDir) {
@@ -36,12 +36,15 @@ if (-not $NoStartMenu) {
     New-Item -ItemType Directory -Force -Path $programs | Out-Null
     $ws = New-Object -ComObject WScript.Shell
     foreach ($pair in @(
-            @{ Name = "RemoteLink Host"; Target = "remotelink-host.exe"; Args = "--role=service --server=http://127.0.0.1:8080 --transport=live" },
-            @{ Name = "RemoteLink Viewer"; Target = "remotelink-viewer.exe"; Args = "--help" },
+            @{ Name = "RemoteLink"; Target = "remotelink-app.exe"; Args = "" },
+            @{ Name = "RemoteLink Host (CLI)"; Target = "remotelink-host.exe"; Args = "--role=service --server=http://127.0.0.1:8080 --transport=live" },
+            @{ Name = "RemoteLink Viewer (CLI)"; Target = "remotelink-viewer.exe"; Args = "--help" },
             @{ Name = "RemoteLink Server"; Target = "remotelink-server.exe"; Args = "" }
         )) {
+        $targetPath = Join-Path $InstallDir "bin\$($pair.Target)"
+        if (-not (Test-Path $targetPath)) { continue }
         $lnk = $ws.CreateShortcut((Join-Path $programs "$($pair.Name).lnk"))
-        $lnk.TargetPath = Join-Path $InstallDir "bin\$($pair.Target)"
+        $lnk.TargetPath = $targetPath
         $lnk.Arguments = $pair.Args
         $lnk.WorkingDirectory = Join-Path $InstallDir "bin"
         $lnk.Save()
