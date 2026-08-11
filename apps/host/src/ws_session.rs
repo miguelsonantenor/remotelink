@@ -74,6 +74,8 @@ pub struct WsHostConfig {
     pub os_tray: bool,
     /// Path for `.remotelink-host-status.json` (default next to `creds_path`).
     pub status_path: Option<PathBuf>,
+    /// KD5 control IPC boot secret (must match agent `--boot-secret`).
+    pub boot_secret: Option<String>,
 }
 
 /// Pre-enrolled host credentials (from a prior [`register_device`] call).
@@ -107,6 +109,7 @@ impl Default for WsHostConfig {
             tray: true,
             os_tray: cfg!(windows),
             status_path: None,
+            boot_secret: None,
         }
     }
 }
@@ -863,11 +866,16 @@ pub async fn run_ws_host_service(cfg: WsHostConfig) -> Result<String, String> {
 
     let mut agent_client = if let Some(ref ep) = cfg.agent_control {
         println!(
-            "ws-host: KD5 mode — connecting agent control at {}",
-            crate::control_loop::format_endpoint(ep)
+            "ws-host: KD5 mode — connecting agent control at {}{}",
+            crate::control_loop::format_endpoint(ep),
+            if cfg.boot_secret.is_some() {
+                " (boot secret set)"
+            } else {
+                ""
+            }
         );
         Some(
-            ServiceAgentClient::connect(ep)
+            ServiceAgentClient::connect_with_secret(ep, cfg.boot_secret.clone())
                 .map_err(|e| format!("agent control connect: {e}"))?,
         )
     } else {

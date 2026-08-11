@@ -241,6 +241,7 @@ async fn ws_host_viewer_live_tcp_media() {
         tray: false,
         os_tray: false,
         status_path: None,
+        boot_secret: None,
     };
 
     let host_handle = tokio::spawn(async move { run_ws_host(host_cfg).await });

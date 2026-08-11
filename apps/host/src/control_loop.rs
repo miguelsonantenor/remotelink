@@ -7,10 +7,13 @@
 use std::time::Duration;
 
 use remotelink_net::{TransportConfig, TransportMode};
-use remotelink_platform_windows::ipc::message::{Ack, ControlMessage};
+use remotelink_platform_windows::ipc::message::{
+    error_codes, Ack, ControlError, ControlMessage,
+};
 use remotelink_platform_windows::{
     connect_control, listen_control, ControlEndpoint, ControlStream, TransportError,
 };
+use subtle::ConstantTimeEq;
 
 use crate::agent::AgentSession;
 
@@ -29,21 +32,68 @@ pub enum ControlLoopError {
     /// Agent session construction failed.
     #[error("agent: {0}")]
     Agent(String),
+    /// Boot secret rejected by agent.
+    #[error("auth: {0}")]
+    Auth(String),
+}
+
+/// Generate a 32-byte hex boot secret for service↔agent binding.
+pub fn generate_boot_secret() -> String {
+    use rand::RngCore;
+    let mut bytes = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    hex::encode(bytes)
+}
+
+/// Constant-time secret compare (empty expected = auth disabled).
+pub fn boot_secret_ok(expected: Option<&str>, provided: Option<&str>) -> bool {
+    match expected {
+        None => true,
+        Some(exp) => match provided {
+            Some(got) if exp.len() == got.len() => {
+                bool::from(exp.as_bytes().ct_eq(got.as_bytes()))
+            }
+            _ => {
+                // Still burn a compare of equal length to reduce length oracle.
+                let dummy = [0u8; 32];
+                let _ = dummy.ct_eq(&dummy);
+                false
+            }
+        },
+    }
 }
 
 /// Service-side client: request/response + drained agent signals.
 pub struct ServiceAgentClient {
     stream: ControlStream,
+    /// Optional boot secret injected into each `attach_session`.
+    boot_secret: Option<String>,
 }
 
 impl ServiceAgentClient {
-    /// Connect to an agent control endpoint.
+    /// Connect to an agent control endpoint (no boot secret).
     pub fn connect(endpoint: &ControlEndpoint) -> Result<Self, ControlLoopError> {
+        Self::connect_with_secret(endpoint, None)
+    }
+
+    /// Connect and remember a boot secret for subsequent `start_session` calls.
+    pub fn connect_with_secret(
+        endpoint: &ControlEndpoint,
+        boot_secret: Option<String>,
+    ) -> Result<Self, ControlLoopError> {
         let stream = connect_control(endpoint)?;
         // Avoid hanging forever if the agent dies mid-call (TCP or named pipe).
         let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
         let _ = stream.set_write_timeout(Some(Duration::from_secs(30)));
-        Ok(Self { stream })
+        Ok(Self {
+            stream,
+            boot_secret,
+        })
+    }
+
+    /// Boot secret configured on this client, if any.
+    pub fn boot_secret(&self) -> Option<&str> {
+        self.boot_secret.as_deref()
     }
 
     /// Send one control command; return agent reply + any A→S signals drained after it.
@@ -83,9 +133,22 @@ impl ServiceAgentClient {
         enable_input: bool,
     ) -> Result<Vec<ControlMessage>, ControlLoopError> {
         let mut all_outbound = Vec::new();
-        for msg in crate::service::build_session_start_sequence(session_id, enable_input) {
+        for msg in crate::service::build_session_start_sequence(
+            session_id,
+            enable_input,
+            self.boot_secret.as_deref(),
+        ) {
             let (reply, outbound) = self.request(&msg)?;
             if !matches!(reply, ControlMessage::Ack(_)) {
+                if matches!(
+                    &reply,
+                    ControlMessage::Error(e) if e.code == error_codes::AUTH_FAILED
+                ) {
+                    return Err(ControlLoopError::Auth(format!(
+                        "agent rejected {}: {reply:?}",
+                        msg.method_name()
+                    )));
+                }
                 return Err(ControlLoopError::Protocol(format!(
                     "agent rejected {}: {reply:?}",
                     msg.method_name()
@@ -193,9 +256,13 @@ fn new_agent_session(transport: TransportMode) -> Result<AgentSession, ControlLo
 ///
 /// After each service disconnect, accepts the next client (service reconnect).
 /// Prints `CONTROL_LISTEN=tcp:PORT` for the service `--agent-control` flag.
+///
+/// When `expected_boot_secret` is set, every `attach_session` must carry a matching
+/// `boot_secret` (constant-time compare).
 pub fn run_agent_control_server(
     listen: ControlEndpoint,
     transport: TransportMode,
+    expected_boot_secret: Option<String>,
 ) -> Result<(), ControlLoopError> {
     let listener = listen_control(listen)?;
     let bound = listener.endpoint().clone();
@@ -205,6 +272,11 @@ pub fn run_agent_control_server(
         format_endpoint(&bound)
     );
     println!("CONTROL_LISTEN={}", format_endpoint(&bound));
+    if expected_boot_secret.is_some() {
+        println!("agent: boot secret auth ENABLED (service must pass matching --boot-secret)");
+    } else {
+        println!("agent: boot secret auth disabled (dev/CI; set --boot-secret for production)");
+    }
     println!(
         "agent: session manager transport={}",
         TransportConfig { mode: transport }.resolved_mode().as_str()
@@ -215,7 +287,12 @@ pub fn run_agent_control_server(
         let _ = stream.set_read_timeout(Some(Duration::from_secs(120)));
         println!("agent: service connected on control IPC");
         let mut agent = new_agent_session(transport)?;
-        match serve_agent_connection(&mut stream, &mut agent, transport) {
+        match serve_agent_connection(
+            &mut stream,
+            &mut agent,
+            transport,
+            expected_boot_secret.as_deref(),
+        ) {
             Ok(()) => println!("agent: service session ended; waiting for next connect"),
             Err(e) => eprintln!("agent: serve error: {e}; waiting for next connect"),
         }
@@ -226,10 +303,14 @@ pub fn run_agent_control_server(
 ///
 /// `transport` is used to rebuild a fresh [`AgentSession`] after detach so the
 /// next attach gets a new PeerTransport.
+///
+/// When `expected_boot_secret` is `Some`, each [`ControlMessage::AttachSession`]
+/// must present a matching `boot_secret` or the agent replies `auth_failed`.
 pub fn serve_agent_connection(
     stream: &mut ControlStream,
     agent: &mut AgentSession,
     transport: TransportMode,
+    expected_boot_secret: Option<&str>,
 ) -> Result<(), ControlLoopError> {
     loop {
         let msg = match stream.recv() {
@@ -258,20 +339,47 @@ pub fn serve_agent_connection(
         let name = msg.method_name();
         for forbidden in remotelink_platform_windows::ipc::message::FORBIDDEN_MEDIA_METHODS {
             if name == *forbidden {
-                stream.send(&ControlMessage::Error(
-                    remotelink_platform_windows::ipc::message::ControlError {
-                        code: remotelink_platform_windows::ipc::message::error_codes::UNEXPECTED
-                            .into(),
-                        message: format!("media method `{forbidden}` forbidden on control IPC"),
-                        session_id: None,
-                    },
-                ))?;
+                stream.send(&ControlMessage::Error(ControlError {
+                    code: error_codes::UNEXPECTED.into(),
+                    message: format!("media method `{forbidden}` forbidden on control IPC"),
+                    session_id: None,
+                }))?;
                 stream.send(&ControlMessage::Ack(Ack {
                     for_method: Some(DRAIN_COMPLETE.into()),
                     session_id: None,
                 }))?;
                 continue;
             }
+        }
+
+        // Boot-secret gate on attach (and reject other cmds if secret required and
+        // nothing attached yet — attach is the only way to present the secret).
+        if let ControlMessage::AttachSession(ref a) = msg {
+            if !boot_secret_ok(expected_boot_secret, a.boot_secret.as_deref()) {
+                stream.send(&ControlMessage::Error(ControlError {
+                    code: error_codes::AUTH_FAILED.into(),
+                    message: "boot secret missing or incorrect".into(),
+                    session_id: Some(a.session_id.clone()),
+                }))?;
+                stream.send(&ControlMessage::Ack(Ack {
+                    for_method: Some(DRAIN_COMPLETE.into()),
+                    session_id: None,
+                }))?;
+                println!("agent: attach rejected (auth_failed)");
+                continue;
+            }
+        } else if expected_boot_secret.is_some() && agent.state.session_id.is_none() {
+            // Not attached and secret required: only attach (with secret) is allowed.
+            stream.send(&ControlMessage::Error(ControlError {
+                code: error_codes::AUTH_FAILED.into(),
+                message: "control IPC requires attach with boot_secret first".into(),
+                session_id: None,
+            }))?;
+            stream.send(&ControlMessage::Ack(Ack {
+                for_method: Some(DRAIN_COMPLETE.into()),
+                session_id: None,
+            }))?;
+            continue;
         }
 
         let was_detach = matches!(
@@ -353,7 +461,7 @@ pub fn run_ipc_colocate_demo(session_id: &str) -> Result<String, String> {
         let mut stream = listener.accept().map_err(|e| e.to_string())?;
         let mut agent =
             AgentSession::with_manager(SessionManager::with_peer(Box::new(peer_a)));
-        serve_agent_connection(&mut stream, &mut agent, TransportMode::Mock)
+        serve_agent_connection(&mut stream, &mut agent, TransportMode::Mock, None)
             .map_err(|e| e.to_string())?;
         Ok::<_, String>(())
     });
@@ -510,7 +618,7 @@ mod tests {
             let mut agent =
                 AgentSession::with_manager(SessionManager::with_peer(Box::new(peer_a)));
             // Serve until client disconnects.
-            let _ = serve_agent_connection(&mut stream, &mut agent, TransportMode::Mock);
+            let _ = serve_agent_connection(&mut stream, &mut agent, TransportMode::Mock, None);
         });
 
         let mut client = ServiceAgentClient::connect(&endpoint).unwrap();
@@ -555,7 +663,7 @@ mod tests {
             let mut stream = listener.accept().unwrap();
             let mut agent =
                 AgentSession::with_manager(SessionManager::with_peer(Box::new(peer_a)));
-            let _ = serve_agent_connection(&mut stream, &mut agent, TransportMode::Mock);
+            let _ = serve_agent_connection(&mut stream, &mut agent, TransportMode::Mock, None);
         });
         let mut client = ServiceAgentClient::connect(&endpoint).unwrap();
         let outbound = client.start_session("ipc-seq", false).expect("start_session");
@@ -580,5 +688,76 @@ mod tests {
             !summary.contains("viewer_video_rx=0"),
             "expected video frames: {summary}"
         );
+    }
+
+    #[test]
+    fn boot_secret_rejects_wrong_and_accepts_match() {
+        let secret = "test-boot-secret-aaaaaaaaaaaaaaaa";
+        let listener = listen_control(ControlEndpoint::tcp_localhost(0)).unwrap();
+        let port = listener.tcp_port().unwrap();
+        let endpoint = ControlEndpoint::tcp_localhost(port);
+        let secret_a = secret.to_string();
+        let agent_thread = std::thread::spawn(move || {
+            let mut stream = listener.accept().unwrap();
+            let mut agent = AgentSession::new_mock();
+            let _ = serve_agent_connection(
+                &mut stream,
+                &mut agent,
+                TransportMode::Mock,
+                Some(secret_a.as_str()),
+            );
+        });
+
+        // Wrong secret → auth_failed
+        let mut bad = ServiceAgentClient::connect_with_secret(
+            &endpoint,
+            Some("wrong-secret".into()),
+        )
+        .unwrap();
+        let err = bad.start_session("auth-bad", false).unwrap_err();
+        assert!(
+            matches!(err, ControlLoopError::Auth(_)) || err.to_string().contains("auth"),
+            "err={err}"
+        );
+        bad.close();
+
+        // New connection with correct secret
+        let listener2 = listen_control(ControlEndpoint::tcp_localhost(0)).unwrap();
+        let port2 = listener2.tcp_port().unwrap();
+        let endpoint2 = ControlEndpoint::tcp_localhost(port2);
+        let secret_b = secret.to_string();
+        let agent2 = std::thread::spawn(move || {
+            let mut stream = listener2.accept().unwrap();
+            let mut agent = AgentSession::new_mock();
+            let _ = serve_agent_connection(
+                &mut stream,
+                &mut agent,
+                TransportMode::Mock,
+                Some(secret_b.as_str()),
+            );
+        });
+        let mut good =
+            ServiceAgentClient::connect_with_secret(&endpoint2, Some(secret.into())).unwrap();
+        let outbound = good.start_session("auth-ok", false).expect("start with secret");
+        assert!(
+            outbound
+                .iter()
+                .any(|m| matches!(m, ControlMessage::SignalForward(s) if s.kind == "session_offer")),
+            "outbound={outbound:?}"
+        );
+        good.close();
+        let _ = agent_thread.join();
+        let _ = agent2.join();
+    }
+
+    #[test]
+    fn boot_secret_ok_helpers() {
+        assert!(boot_secret_ok(None, None));
+        assert!(boot_secret_ok(None, Some("x")));
+        assert!(!boot_secret_ok(Some("abc"), None));
+        assert!(!boot_secret_ok(Some("abc"), Some("abd")));
+        assert!(boot_secret_ok(Some("abc"), Some("abc")));
+        let s = generate_boot_secret();
+        assert_eq!(s.len(), 64);
     }
 }

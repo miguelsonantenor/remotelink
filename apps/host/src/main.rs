@@ -71,7 +71,12 @@ fn main() {
             {
                 match parse_control_endpoint(&ep) {
                     Ok(endpoint) => {
-                        if let Err(e) = run_agent_control_server(endpoint, transport.mode) {
+                        let boot = flag_value(&args, "--boot-secret")
+                            .or_else(|| env::var("REMOTELINK_BOOT_SECRET").ok())
+                            .filter(|s| !s.is_empty());
+                        if let Err(e) =
+                            run_agent_control_server(endpoint, transport.mode, boot)
+                        {
                             eprintln!("agent control server: {e}");
                             std::process::exit(1);
                         }
@@ -273,6 +278,13 @@ fn parse_ws_host_config(args: &[String], transport: remotelink_net::TransportMod
     if let Some(p) = flag_value(args, "--status-path") {
         cfg.status_path = Some(std::path::PathBuf::from(p));
     }
+    if let Some(s) = flag_value(args, "--boot-secret")
+        .or_else(|| env::var("REMOTELINK_BOOT_SECRET").ok())
+    {
+        if !s.is_empty() {
+            cfg.boot_secret = Some(s);
+        }
+    }
     cfg
 }
 
@@ -346,6 +358,7 @@ fn print_usage() {
          --mint-otp       Mint Mode A OTP and post hash (default on)\n  \
          --no-otp         Skip OTP mint\n  \
          --agent-control=tcp:PORT|pipe[:NAME]  KD5: dial agent control IPC\n  \
+         --boot-secret SECRET  KD5: shared secret (agent + service; or REMOTELINK_BOOT_SECRET)\n  \
          --tray / --no-tray   Host tray (console panel + status JSON; default on)\n  \
          --os-tray / --no-os-tray  Windows NotifyIcon (default on Windows)\n  \
          --status-path PATH   Tray JSON path (default .remotelink-host-status.json)\n  \

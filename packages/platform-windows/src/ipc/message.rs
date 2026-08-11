@@ -285,6 +285,8 @@ pub mod error_codes {
     pub const UNATTENDED_DISABLED: &str = "unattended_disabled";
     /// Message not expected in this role/direction.
     pub const UNEXPECTED: &str = "unexpected";
+    /// Control IPC boot secret missing or incorrect (pipe/TCP auth).
+    pub const AUTH_FAILED: &str = "auth_failed";
 }
 
 /// Media-related method names that must **never** appear on the control IPC.

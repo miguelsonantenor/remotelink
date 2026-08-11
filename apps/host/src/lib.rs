@@ -21,8 +21,9 @@ pub use agent::{
     local_confirm, run_agent_only_synthetic, run_with_transport, AgentSession, AgentSessionState,
 };
 pub use control_loop::{
-    format_endpoint, parse_control_endpoint, run_agent_control_server, run_ipc_colocate_demo,
-    serve_agent_connection, ServiceAgentClient, DRAIN_COMPLETE,
+    boot_secret_ok, format_endpoint, generate_boot_secret, parse_control_endpoint,
+    run_agent_control_server, run_ipc_colocate_demo, serve_agent_connection, ServiceAgentClient,
+    DRAIN_COMPLETE,
 };
 // Control IPC transport (TCP localhost for CI/dev). Re-exported so callers do not
 // need a direct platform-windows dependency for KD5 service↔agent wiring.

@@ -1,0 +1,91 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  RemoteLink WiX skeleton (unsigned layout from scripts/package-release.ps1).
+
+  Prerequisites:
+    - WiX Toolset v3/v4 (candle/light or wix build)
+    - Staged layout: dist\remotelink-<ver>\bin\*.exe
+
+  Example (WiX 3):
+    candle -dProductVersion=0.1.0 -dStageDir=..\..\dist\remotelink-0.1.0 Product.wxs
+    light Product.wixobj -o RemoteLink-0.1.0.msi
+
+  Codesign the MSI + nested EXEs only in the release pipeline (not CI).
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product
+      Id="*"
+      Name="RemoteLink"
+      Language="1033"
+      Version="$(var.ProductVersion)"
+      Manufacturer="RemoteLink"
+      UpgradeCode="A1B2C3D4-E5F6-7890-ABCD-EF1234567890">
+
+    <Package
+        InstallerVersion="500"
+        Compressed="yes"
+        InstallScope="perMachine"
+        Description="RemoteLink host and viewer" />
+
+    <MajorUpgrade
+        DowngradeErrorMessage="A newer version of RemoteLink is already installed." />
+
+    <MediaTemplate EmbedCab="yes" />
+
+    <Feature Id="ProductFeature" Title="RemoteLink" Level="1">
+      <ComponentGroupRef Id="ProductComponents" />
+      <ComponentRef Id="StartMenuShortcuts" />
+    </Feature>
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="INSTALLFOLDER" Name="RemoteLink" />
+      </Directory>
+      <Directory Id="ProgramMenuFolder">
+        <Directory Id="ApplicationProgramsFolder" Name="RemoteLink" />
+      </Directory>
+    </Directory>
+
+    <ComponentGroup Id="ProductComponents" Directory="INSTALLFOLDER">
+      <Component Id="HostExe" Guid="*">
+        <File Id="HostExeFile"
+              Source="$(var.StageDir)\bin\remotelink-host.exe"
+              KeyPath="yes"
+              Checksum="yes" />
+      </Component>
+      <Component Id="ViewerExe" Guid="*">
+        <File Id="ViewerExeFile"
+              Source="$(var.StageDir)\bin\remotelink-viewer.exe"
+              KeyPath="yes"
+              Checksum="yes" />
+      </Component>
+      <Component Id="LicenseMit" Guid="*">
+        <File Id="LicenseMitFile"
+              Source="$(var.StageDir)\LICENSE-MIT"
+              KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <DirectoryRef Id="ApplicationProgramsFolder">
+      <Component Id="StartMenuShortcuts" Guid="*">
+        <Shortcut Id="HostShortcut"
+                  Name="RemoteLink Host"
+                  Description="RemoteLink host service"
+                  Target="[INSTALLFOLDER]remotelink-host.exe"
+                  WorkingDirectory="INSTALLFOLDER" />
+        <Shortcut Id="ViewerShortcut"
+                  Name="RemoteLink Viewer"
+                  Description="RemoteLink viewer"
+                  Target="[INSTALLFOLDER]remotelink-viewer.exe"
+                  WorkingDirectory="INSTALLFOLDER" />
+        <RemoveFolder Id="ApplicationProgramsFolder" On="uninstall" />
+        <RegistryValue Root="HKCU"
+                       Key="Software\RemoteLink"
+                       Name="installed"
+                       Type="integer"
+                       Value="1"
+                       KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+  </Product>
+</Wix>

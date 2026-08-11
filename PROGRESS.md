@@ -75,4 +75,10 @@ Plan PRs 1–27 done.
 - `TrayCommands` polled by WSS service (kill current session / graceful exit)
 - `scripts/package-release.ps1` stages unsigned `dist/remotelink-<ver>/` with SHA-256 manifest
 
-**Still open for product:** WiX MSI + Authenticode, boot-secret on control pipe, real capture polish.
+**Later same day (boot-secret + WiX skeleton):**
+- Agent requires matching `attach_session.boot_secret` when `--boot-secret` set
+- Constant-time compare; `auth_failed` error code; service injects secret on attach
+- CLI/env: `--boot-secret` / `REMOTELINK_BOOT_SECRET` for agent + WSS service
+- `deploy/packaging/Product.wxs` WiX skeleton over package-release layout
+
+**Still open for product:** WiX/Authenticode in CI release pipeline, real capture polish.

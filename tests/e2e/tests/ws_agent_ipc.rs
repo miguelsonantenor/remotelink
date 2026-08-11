@@ -50,7 +50,7 @@ async fn wss_service_drives_agent_over_ipc_live() {
         let mut stream = listener.accept().unwrap();
         let mut agent =
             remotelink_host::AgentSession::from_mode(TransportMode::Live).expect("live agent");
-        let _ = serve_agent_connection(&mut stream, &mut agent, TransportMode::Live);
+        let _ = serve_agent_connection(&mut stream, &mut agent, TransportMode::Live, None);
     });
 
     let control_port = port_rx.recv().expect("agent control port");
@@ -82,6 +82,7 @@ async fn wss_service_drives_agent_over_ipc_live() {
         tray: false,
         os_tray: false,
         status_path: None,
+        boot_secret: None,
     };
 
     let host_task = tokio::spawn(async move { run_ws_host(host_cfg).await });

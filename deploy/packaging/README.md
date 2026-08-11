@@ -64,19 +64,24 @@ Program Files\RemoteLink\
   LICENSE-APACHE
 ```
 
-WiX sketch (not wired in CI):
+WiX skeleton: [`Product.wxs`](Product.wxs) (not wired in CI).
 
-1. Harvest release binaries + licenses.
-2. Host component: install Windows service (or scheduled task for beta) and tray shortcut.
-3. Viewer component: Start Menu shortcut only.
-4. Upgrade code GUID stable per product; version from `Cargo.toml` workspace version.
-5. **Code signing:** Authenticode on the MSI and nested EXEs in the **release** pipeline only. CI builds unsigned artifacts for smoke install tests.
+1. Run `.\scripts\package-release.ps1` to stage `dist\remotelink-<ver>\`.
+2. Build MSI from that layout (host + viewer + license + Start Menu shortcuts).
+3. **Code signing:** Authenticode on the MSI and nested EXEs in the **release** pipeline only.
 
-```text
-# Pseudo-release (not run in PR CI)
-candle Product.wxs -o obj\
-light obj\*.wixobj -o dist\RemoteLink-<version>.msi
-# signtool sign /tr http://timestamp.digicert.com /td sha256 /fd sha256 dist\*.msi
+```powershell
+# Stage binaries
+.\scripts\package-release.ps1
+
+# WiX 3 (if candle/light on PATH)
+$ver = "0.1.0"
+$stage = "dist\remotelink-$ver"
+candle -dProductVersion=$ver -dStageDir=$PWD\$stage deploy\packaging\Product.wxs
+light Product.wixobj -o dist\RemoteLink-$ver.msi
+
+# Release pipeline only:
+# signtool sign /tr http://timestamp.digicert.com /td sha256 /fd sha256 dist\*.msi dist\remotelink-$ver\bin\*.exe
 ```
 
 ## MSIX outline

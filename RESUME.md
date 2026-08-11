@@ -11,7 +11,7 @@
 | PR plan | **PRs 1–27 complete** (8b optional skipped) |
 | **Integrated monorepo** | **Yes** — `cargo test --workspace` green (default features) |
 | PeerTransport backends | **mock** (CI default) · **live TCP** (default feature) · **webrtc-rs** (opt-in feature) |
-| Real AnyDesk product | **~95%** — tray menu (Copy OTP / End session / Exit); package-release layout; named-pipe ACL; KD5; WiX MSI still manual |
+| Real AnyDesk product | **~96%** — control boot-secret auth; tray menu; package-release + WiX skeleton; named-pipe ACL; KD5 |
 
 ## Day-to-day development
 
@@ -54,15 +54,27 @@ docker compose -f deploy/docker-compose.yml up -d --build
 
 ## Next best steps
 
-1. WiX/cargo-wix MSI from `scripts/package-release.ps1` layout + Authenticode  
-2. Optional: webrtc-rs e2e over WSS+agent IPC; boot-secret on control pipe  
-3. Real capture/encode polish for production hosts  
+1. Run WiX MSI in release pipeline + Authenticode  
+2. Real capture/encode polish for production hosts  
+3. Optional: webrtc-rs e2e over WSS+agent IPC  
 
 ### Package stage
 
 ```powershell
 .\scripts\package-release.ps1
 # → dist\remotelink-<version>\bin\*.exe + package-manifest.json
+# WiX: deploy/packaging/Product.wxs (see packaging README)
+```
+
+### Control boot secret (production KD5)
+
+```powershell
+$secret = -join ((1..32) | ForEach-Object { '{0:x2}' -f (Get-Random -Max 256) })
+# Agent
+cargo run -p remotelink-host -- --role=agent --control-listen=pipe --boot-secret=$secret --transport=live
+# Service
+cargo run -p remotelink-host -- --role=service --server=http://127.0.0.1:8080 `
+  --transport=live --agent-control=pipe --boot-secret=$secret
 ```
 
 ### Control IPC (KD5) — WSS service + agent media

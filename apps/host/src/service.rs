@@ -111,7 +111,7 @@ pub fn run_kill_switch_demo(session_id: &str) -> Result<String, String> {
     ux.begin_session(session_id, Some("kill-demo-viewer".into()))
         .map_err(|busy| format!("begin_session busy with {busy}"))?;
 
-    let sequence = build_session_start_sequence(session_id, true);
+    let sequence = build_session_start_sequence(session_id, true, None);
     for msg in &sequence {
         let frame = encode_control(msg).map_err(|e| format!("encode: {e}"))?;
         let (decoded, _) = decode_control(&frame).map_err(|e| format!("decode: {e}"))?;
@@ -243,7 +243,7 @@ pub fn run_colocate_synthetic(session_id: &str) -> Result<String, String> {
     let mut agent = AgentSession::with_manager(SessionManager::with_peer(Box::new(peer_a)));
 
     // Service builds control sequence and encodes each frame (control-only).
-    let sequence = build_session_start_sequence(session_id, false);
+    let sequence = build_session_start_sequence(session_id, false, None);
     for msg in &sequence {
         let frame = encode_control(msg).map_err(|e| format!("encode: {e}"))?;
         let json = String::from_utf8_lossy(&frame);
@@ -361,7 +361,7 @@ pub fn run_colocate_synthetic(session_id: &str) -> Result<String, String> {
 
 /// Encode the standard session-start control sequence (no panics).
 fn smoke_encode_session_frames(session_id: &str) -> Result<(usize, usize), String> {
-    let sequence = build_session_start_sequence(session_id, false);
+    let sequence = build_session_start_sequence(session_id, false, None);
     let mut total_bytes = 0usize;
     let mut count = 0usize;
     for msg in &sequence {
@@ -391,14 +391,21 @@ fn smoke_encode_session_frames(session_id: &str) -> Result<(usize, usize), Strin
 }
 
 /// Build the standard attach + policy + start sequence (unit-tested helper).
-pub fn build_session_start_sequence(session_id: &str, enable_input: bool) -> Vec<ControlMessage> {
+///
+/// When `boot_secret` is `Some`, it is placed on [`AttachSession`] so the agent
+/// can verify KD5 control IPC auth (named pipe / TCP complement to OS ACLs).
+pub fn build_session_start_sequence(
+    session_id: &str,
+    enable_input: bool,
+    boot_secret: Option<&str>,
+) -> Vec<ControlMessage> {
     vec![
         ControlMessage::AttachSession(AttachSession {
             session_id: session_id.into(),
             viewer_label: None,
             feature_flags: FeatureFlags::default(),
             turn_uris: vec![],
-            boot_secret: None,
+            boot_secret: boot_secret.map(str::to_string),
         }),
         ControlMessage::SetPolicy(SetPolicy {
             session_id: session_id.into(),
@@ -444,7 +451,7 @@ mod tests {
 
     #[test]
     fn session_start_sequence_roundtrips() {
-        let msgs = build_session_start_sequence("sess-xyz", false);
+        let msgs = build_session_start_sequence("sess-xyz", false, None);
         assert_eq!(msgs.len(), 3);
         for msg in msgs {
             let frame = encode_control(&msg).unwrap();

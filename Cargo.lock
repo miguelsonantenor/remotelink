@@ -3876,6 +3876,7 @@ version = "0.1.0"
 dependencies = [
  "ed25519-dalek",
  "hex",
+ "rand 0.8.7",
  "remotelink-auth",
  "remotelink-common",
  "remotelink-media",
@@ -3886,6 +3887,7 @@ dependencies = [
  "remotelink-signaling",
  "serde",
  "serde_json",
+ "subtle",
  "thiserror 2.0.20",
  "tokio",
 ]
