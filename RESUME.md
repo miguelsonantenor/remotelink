@@ -11,7 +11,7 @@
 | PR plan | **PRs 1–27 complete** (8b optional skipped) |
 | **Integrated monorepo** | **Yes** — `cargo test --workspace` green (default features) |
 | PeerTransport backends | **mock** (CI default) · **live TCP** (default feature) · **webrtc-rs** (opt-in feature) |
-| Real AnyDesk product | **~90%** — WSS service dials agent control IPC (KD5 split); live media e2e green; no MSI/named-pipe ACL yet |
+| Real AnyDesk product | **~92%** — named-pipe ACL control IPC (Windows); WSS↔agent KD5; live e2e; no MSI/tray yet |
 
 ## Day-to-day development
 
@@ -54,9 +54,9 @@ docker compose -f deploy/docker-compose.yml up -d --build
 
 ## Next best steps
 
-1. Windows named-pipe ACL backend for control IPC (TCP works for CI/dev)  
-2. Tray/GUI for OTP; MSI/codesign; GitHub remote  
-3. Optional: webrtc-rs e2e over WSS+agent IPC  
+1. Tray/GUI for OTP display and session indicator  
+2. MSI/codesign packaging  
+3. Optional: webrtc-rs e2e over WSS+agent IPC; boot-secret on control pipe  
 
 ### Control IPC (KD5) — WSS service + agent media
 
@@ -64,16 +64,18 @@ docker compose -f deploy/docker-compose.yml up -d --build
 # Demo: service client + agent server over TCP (mock media)
 cargo run -p remotelink-host -- --role=ipc-colocate
 
-# Split processes (real WSS + live media):
-# Terminal A — agent control server (owns PeerTransport + synthetic A/V)
+# Split processes — TCP (CI/dev):
 cargo run -p remotelink-host -- --role=agent --control-listen=tcp:0 --transport=live
 # note CONTROL_LISTEN=tcp:PORT
-
-# Terminal B — WSS service (enrollment + signaling; dials agent)
 cargo run -p remotelink-host -- --role=service --server=http://127.0.0.1:8080 `
   --transport=live --agent-control=tcp:PORT
 
-# Terminal C — viewer
+# Split processes — Windows named pipe (production-style ACL):
+cargo run -p remotelink-host -- --role=agent --control-listen=pipe --transport=live
+cargo run -p remotelink-host -- --role=service --server=http://127.0.0.1:8080 `
+  --transport=live --agent-control=pipe
+
+# Viewer
 cargo run -p remotelink-viewer -- --ws-connect --server=http://127.0.0.1:8080 `
   --host PUBLIC_ID --otp CODE --transport=live
 

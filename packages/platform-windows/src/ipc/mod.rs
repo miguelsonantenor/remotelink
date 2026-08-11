@@ -4,13 +4,16 @@
 //! Body is a versioned [`message::ControlEnvelope`]:
 //! `{"v":1,"message":{"method":"…","params":{…}}}`.
 //!
-//! On Windows production hosts this rides a named pipe with ACL + boot secret;
-//! for CI and non-Windows tests the same codec runs over TCP localhost (or any
-//! byte stream). Design mentions protobuf as a long-term option; v1 skeleton
-//! uses serde JSON for simplicity and inspectability.
+//! On Windows production hosts this rides a **named pipe** with a restrictive
+//! SDDL DACL (SYSTEM + Administrators + Owner) and `PIPE_REJECT_REMOTE_CLIENTS`.
+//! For CI and non-Windows tests the same codec runs over TCP localhost (or any
+//! byte stream). Design mentions protobuf as a long-term option; v1 uses
+//! serde JSON for simplicity and inspectability.
 
 pub mod codec;
 pub mod message;
+#[cfg(windows)]
+pub mod pipe;
 pub mod transport;
 
 pub use codec::{

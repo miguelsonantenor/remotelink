@@ -4,7 +4,6 @@
 //! After each command reply the agent drains A→S [`SignalForward`] messages, then
 //! sends a sentinel `Ack(for_method=drain_complete)`.
 
-use std::net::Shutdown;
 use std::time::Duration;
 
 use remotelink_net::{TransportConfig, TransportMode};
@@ -41,9 +40,9 @@ impl ServiceAgentClient {
     /// Connect to an agent control endpoint.
     pub fn connect(endpoint: &ControlEndpoint) -> Result<Self, ControlLoopError> {
         let stream = connect_control(endpoint)?;
-        // Avoid hanging forever if the agent dies mid-call.
-        let _ = stream.tcp().set_read_timeout(Some(Duration::from_secs(30)));
-        let _ = stream.tcp().set_write_timeout(Some(Duration::from_secs(30)));
+        // Avoid hanging forever if the agent dies mid-call (TCP or named pipe).
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
+        let _ = stream.set_write_timeout(Some(Duration::from_secs(30)));
         Ok(Self { stream })
     }
 
@@ -97,36 +96,88 @@ impl ServiceAgentClient {
         Ok(all_outbound)
     }
 
-    /// Graceful half-close of the TCP stream.
+    /// Graceful half-close of the control stream (TCP or named pipe).
     pub fn close(self) {
-        let tcp = self.stream.into_tcp();
-        let _ = tcp.shutdown(Shutdown::Both);
+        self.stream.shutdown();
     }
 }
 
-/// Parse `tcp:PORT` or bare port into a [`ControlEndpoint`].
+/// Parse a control endpoint string into a [`ControlEndpoint`].
 ///
-/// Examples: `tcp:0`, `tcp:7900`, `7900`.
+/// Examples:
+/// - TCP: `tcp:0`, `tcp:7900`, `7900`
+/// - Named pipe (Windows): `pipe`, `pipe:remotelink-host-control`,
+///   `\\.\pipe\remotelink-host-control`
 pub fn parse_control_endpoint(s: &str) -> Result<ControlEndpoint, ControlLoopError> {
     let s = s.trim();
+    if s.is_empty() {
+        return Err(ControlLoopError::Protocol(
+            "empty control endpoint (expected tcp:PORT or pipe[:name])".into(),
+        ));
+    }
+
+    // Named pipe forms (Windows only).
+    #[cfg(windows)]
+    {
+        if s.eq_ignore_ascii_case("pipe") || s.eq_ignore_ascii_case("named-pipe") {
+            return Ok(ControlEndpoint::default_named_pipe());
+        }
+        if let Some(name) = s
+            .strip_prefix("pipe:")
+            .or_else(|| s.strip_prefix("PIPE:"))
+        {
+            let name = name.trim();
+            if name.is_empty() {
+                return Ok(ControlEndpoint::default_named_pipe());
+            }
+            return Ok(ControlEndpoint::named_pipe(name));
+        }
+        let lower = s.to_ascii_lowercase();
+        if lower.starts_with(r"\\.\pipe\") || lower.starts_with("//./pipe/") {
+            return Ok(ControlEndpoint::named_pipe(s));
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        if s.eq_ignore_ascii_case("pipe")
+            || s.eq_ignore_ascii_case("named-pipe")
+            || s.to_ascii_lowercase().starts_with("pipe:")
+            || s.to_ascii_lowercase().starts_with(r"\\.\pipe\")
+        {
+            return Err(ControlLoopError::Protocol(
+                "named pipe control endpoints are only supported on Windows".into(),
+            ));
+        }
+    }
+
     let port_str = s
         .strip_prefix("tcp:")
         .or_else(|| s.strip_prefix("TCP:"))
         .unwrap_or(s);
     let port: u16 = port_str.parse().map_err(|_| {
         ControlLoopError::Protocol(format!(
-            "invalid control endpoint `{s}` (expected tcp:PORT)"
+            "invalid control endpoint `{s}` (expected tcp:PORT or pipe[:name])"
         ))
     })?;
     Ok(ControlEndpoint::tcp_localhost(port))
 }
 
-/// Format a bound TCP endpoint for CLI printout.
+/// Format a bound endpoint for CLI printout.
 pub fn format_endpoint(endpoint: &ControlEndpoint) -> String {
     match endpoint {
         ControlEndpoint::TcpLocalhost { port } => format!("tcp:{port}"),
         #[cfg(windows)]
-        ControlEndpoint::NamedPipe { path } => path.clone(),
+        ControlEndpoint::NamedPipe { path } => {
+            // Prefer compact pipe:leaf form when under \\.\pipe\.
+            if let Some(leaf) = path
+                .strip_prefix(r"\\.\pipe\")
+                .or_else(|| path.strip_prefix(r"\\.\PIPE\"))
+            {
+                format!("pipe:{leaf}")
+            } else {
+                path.clone()
+            }
+        }
     }
 }
 
@@ -161,7 +212,7 @@ pub fn run_agent_control_server(
 
     loop {
         let mut stream = listener.accept()?;
-        let _ = stream.tcp().set_read_timeout(Some(Duration::from_secs(120)));
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(120)));
         println!("agent: service connected on control IPC");
         let mut agent = new_agent_session(transport)?;
         match serve_agent_connection(&mut stream, &mut agent, transport) {
@@ -421,6 +472,27 @@ mod tests {
         assert_eq!(
             parse_control_endpoint("7901").unwrap(),
             ControlEndpoint::tcp_localhost(7901)
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn parse_pipe_endpoint() {
+        assert_eq!(
+            parse_control_endpoint("pipe").unwrap(),
+            ControlEndpoint::default_named_pipe()
+        );
+        assert_eq!(
+            parse_control_endpoint("pipe:my-control").unwrap(),
+            ControlEndpoint::named_pipe("my-control")
+        );
+        assert_eq!(
+            parse_control_endpoint(r"\\.\pipe\remotelink-host-control").unwrap(),
+            ControlEndpoint::default_named_pipe()
+        );
+        assert_eq!(
+            format_endpoint(&ControlEndpoint::default_named_pipe()),
+            "pipe:remotelink-host-control"
         );
     }
 

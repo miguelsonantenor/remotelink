@@ -308,13 +308,15 @@ fn print_usage() {
          remotelink-host --kill-switch\n\n\
          Roles (KD5 agent-media):\n  \
          service      Long-lived WSS host when --server is set; else skeleton stubs\n  \
-         agent        Session agent; with --control-listen=tcp:PORT runs KD5 control server\n  \
+         agent        Session agent; with --control-listen runs KD5 control server\n  \
          ws           One-shot multi-process: register + accept + media (default 1 session)\n  \
          colocate     CI/test: in-process service control + agent synthetic session\n  \
          ipc-colocate KD5 demo: service↔agent over TCP control IPC (mock media)\n  \
          kill-switch  G9 demo: mandatory session indicator + local kill-switch\n\n\
          Agent control IPC:\n  \
-         --control-listen=tcp:PORT   Agent listens for service (0 = ephemeral; prints CONTROL_LISTEN)\n  \
+         --control-listen=tcp:PORT   Agent TCP listen (0 = ephemeral; prints CONTROL_LISTEN)\n  \
+         --control-listen=pipe       Agent named pipe (Windows; SDDL ACL + reject remote)\n  \
+         --control-listen=pipe:NAME  Named pipe leaf under \\\\.\\pipe\\\n  \
          REMOTELINK_CONTROL_LISTEN   Same as --control-listen\n\n\
          WSS host flags (role=ws|service --server):\n  \
          --server URL     Signaling base (default http://127.0.0.1:8080; or REMOTELINK_SERVER)\n  \
@@ -326,7 +328,7 @@ fn print_usage() {
          --no-save-creds  Do not write credential file\n  \
          --mint-otp       Mint Mode A OTP and post hash (default on)\n  \
          --no-otp         Skip OTP mint\n  \
-         --agent-control=tcp:PORT  KD5: dial agent control IPC (media on agent)\n  \
+         --agent-control=tcp:PORT|pipe[:NAME]  KD5: dial agent control IPC\n  \
          --reconnect      Reconnect WSS after disconnect (service default on)\n  \
          --no-reconnect   Disable reconnect\n\n\
          Transport (also REMOTELINK_TRANSPORT; default mock — CI-safe):\n  \

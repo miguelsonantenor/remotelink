@@ -55,4 +55,11 @@ Plan PRs 1–27 done.
 - e2e `ws_agent_ipc`: WSS service + agent IPC + live TCP media (`media=agent`, video_rx>0)
 - Re-export `ControlEndpoint` / `listen_control` from `remotelink-host`
 
-**Still open for product:** named-pipe ACL, tray OTP, MSI/codesign, GitHub remote.
+**Later same day (named-pipe ACL control IPC):**
+- Windows `CreateNamedPipeW` backend with SDDL DACL (SYSTEM + Admins + Owner)
+- `PIPE_REJECT_REMOTE_CLIENTS` (no SMB remote open)
+- Same framed codec as TCP; `ControlStream` backend-agnostic timeouts/shutdown
+- CLI: `--control-listen=pipe` / `pipe:NAME` / `\\.\pipe\…` and matching `--agent-control`
+- Unit test `named_pipe_send_recv_with_acl` green on Windows
+
+**Still open for product:** tray OTP UI, MSI/codesign, boot-secret on control pipe.
