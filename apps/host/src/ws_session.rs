@@ -22,13 +22,17 @@ use remotelink_auth::{generate_device_keypair, mint_otp};
 use remotelink_net::{
     create_peer_transport_with_config, PeerRole, TransportConfig, TransportMode,
 };
+use remotelink_platform_windows::ControlEndpoint;
+use remotelink_platform_windows::ipc::message::{ControlMessage, DetachSession};
 use remotelink_protocol::SignalMessage;
 use remotelink_signaling::{
     http_to_ws_url, post_otp_hash, refresh_device_token, register_device, HostCredentialFile,
     SignalingClient, DEFAULT_CREDS_PATH,
 };
 
+use crate::control_loop::ServiceAgentClient;
 use crate::policy::{DEFAULT_HOST_OTP_PEPPER, DEFAULT_OTP_TTL_SECS};
+use crate::service::signal_to_agent;
 use crate::session::{parse_ice_payload, parse_sdp_payload, signal_kind, SdpPayload, SessionManager};
 
 /// Configuration for [`run_ws_host`] / [`run_ws_host_service`].
@@ -60,6 +64,9 @@ pub struct WsHostConfig {
     pub save_creds: bool,
     /// Mint a Mode A OTP, post hash to server, print plaintext for the viewer.
     pub mint_otp: bool,
+    /// When set, drive media via KD5 agent control IPC instead of in-process
+    /// [`SessionManager`] (service owns WSS only).
+    pub agent_control: Option<ControlEndpoint>,
 }
 
 /// Pre-enrolled host credentials (from a prior [`register_device`] call).
@@ -89,6 +96,7 @@ impl Default for WsHostConfig {
             load_creds: true,
             save_creds: true,
             mint_otp: true,
+            agent_control: None,
         }
     }
 }
@@ -239,13 +247,9 @@ async fn maybe_mint_otp(cfg: &WsHostConfig, enrolled: &EnrolledHost) -> Result<(
     Ok(())
 }
 
-/// Serve one media session on an already-authenticated signaling client.
-async fn handle_one_session(
+/// Wait for intent, accept on WSS, return session id.
+async fn accept_incoming_session(
     sig: &mut SignalingClient,
-    public_id: &str,
-    mode: TransportMode,
-    transport_cfg: &TransportConfig,
-    video_frames: u32,
     wait_incoming: Duration,
 ) -> Result<String, String> {
     println!(
@@ -269,8 +273,6 @@ async fn handle_one_session(
     };
     println!("ws-host: session_incoming session_id={session_id}");
 
-    // Per-session seq: accept must be >= server next (incoming_seq + 1).
-    // Reset client cursor so multi-session service does not skip forever.
     sig.next_seq = incoming_seq.saturating_add(1);
     let accept_seq = sig.take_seq();
     sig.send(&SignalMessage::SessionAccept {
@@ -280,6 +282,19 @@ async fn handle_one_session(
     .await
     .map_err(|e| format!("accept: {e}"))?;
     println!("ws-host: session_accept seq={accept_seq}");
+    Ok(session_id)
+}
+
+/// Serve one session using an **in-process** SessionManager (legacy / single binary).
+async fn handle_one_session_local(
+    sig: &mut SignalingClient,
+    public_id: &str,
+    mode: TransportMode,
+    transport_cfg: &TransportConfig,
+    video_frames: u32,
+    wait_incoming: Duration,
+) -> Result<String, String> {
+    let session_id = accept_incoming_session(sig, wait_incoming).await?;
 
     let offerer = create_peer_transport_with_config(PeerRole::Offerer, transport_cfg)
         .map_err(|e| format!("create offerer: {e}"))?;
@@ -293,6 +308,78 @@ async fn handle_one_session(
         .find(|s| s.kind == signal_kind::SESSION_OFFER)
         .ok_or_else(|| "no session_offer from SessionManager".to_string())?;
     let offer = parse_sdp_payload(&offer_sig.payload).map_err(|e| e.to_string())?;
+    let mut pending_host_ice: Vec<_> = outbound
+        .iter()
+        .filter(|s| s.kind == signal_kind::ICE_CANDIDATE)
+        .cloned()
+        .collect();
+
+    relay_offer_answer_ice_local(sig, &session_id, &offer, &mut pending_host_ice, &mut mgr)
+        .await?;
+
+    mgr.wait_ready(Duration::from_secs(10))
+        .map_err(|e| format!("wait_ready: {e}"))?;
+    let pump = mgr
+        .pump_media(video_frames)
+        .map_err(|e| format!("pump: {e}"))?;
+    if pump.skipped_not_connected || pump.video_sent == 0 {
+        let _ = mgr.shutdown();
+        return Err(format!(
+            "pump failed (skipped={} video_sent={})",
+            pump.skipped_not_connected, pump.video_sent
+        ));
+    }
+
+    let fp = mgr
+        .peer_mut()
+        .local_fingerprint()
+        .map_err(|e| e.to_string())?;
+    let summary = format!(
+        "ws-host ok public_id={public_id} session={session_id} media=local transport={} video_tx={} audio_tx={} fp={}",
+        mode.as_str(),
+        pump.video_sent,
+        pump.audio_sent,
+        fp.as_sign_material()
+    );
+
+    end_wss_session(sig, &session_id).await;
+    let _ = mgr.shutdown();
+    Ok(summary)
+}
+
+/// Serve one session with media on a **remote agent** over control IPC (KD5).
+async fn handle_one_session_agent(
+    sig: &mut SignalingClient,
+    agent: &mut ServiceAgentClient,
+    public_id: &str,
+    mode: TransportMode,
+    video_frames: u32,
+    wait_incoming: Duration,
+) -> Result<String, String> {
+    let session_id = accept_incoming_session(sig, wait_incoming).await?;
+
+    let outbound = agent
+        .start_session(&session_id, false)
+        .map_err(|e| format!("agent start_session: {e}"))?;
+
+    let mut offer_sdp = None;
+    let mut pending_host_ice = Vec::new();
+    for msg in &outbound {
+        if let ControlMessage::SignalForward(s) = msg {
+            match s.kind.as_str() {
+                k if k == signal_kind::SESSION_OFFER => {
+                    offer_sdp = Some(
+                        parse_sdp_payload(&s.payload).map_err(|e| format!("parse offer: {e}"))?,
+                    );
+                }
+                k if k == signal_kind::ICE_CANDIDATE => {
+                    pending_host_ice.push(s.clone());
+                }
+                _ => {}
+            }
+        }
+    }
+    let offer = offer_sdp.ok_or_else(|| "agent did not emit session_offer".to_string())?;
 
     let offer_seq = sig.take_seq();
     sig.send(&SignalMessage::SessionOffer {
@@ -304,16 +391,237 @@ async fn handle_one_session(
     .await
     .map_err(|e| format!("send offer: {e}"))?;
     println!(
-        "ws-host: session_offer seq={offer_seq} sdp_len={}",
+        "ws-host: session_offer (via agent) seq={offer_seq} sdp_len={}",
         offer.sdp.len()
     );
 
-    // Do not trickle host ICE until after session_answer (strict signal_seq).
-    let mut pending_host_ice: Vec<_> = outbound
-        .iter()
-        .filter(|s| s.kind == signal_kind::ICE_CANDIDATE)
-        .cloned()
-        .collect();
+    // Wait for viewer answer; do not trickle host ICE yet.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let mut got_answer = false;
+    let mut early_viewer_ice = Vec::new();
+    while tokio::time::Instant::now() < deadline {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        let msg = match sig
+            .recv_timeout(remaining.min(Duration::from_millis(250)))
+            .await
+        {
+            Ok(m) => m,
+            Err(remotelink_signaling::SignalingError::Timeout(_)) => continue,
+            Err(e) => return Err(format!("recv: {e}")),
+        };
+        match msg {
+            SignalMessage::SessionAnswer { sdp, signal_seq, .. } => {
+                println!("ws-host: session_answer seq={signal_seq}");
+                let payload = serde_json::to_string(&SdpPayload {
+                    sdp,
+                    fingerprint_sig: None,
+                })
+                .map_err(|e| e.to_string())?;
+                let (reply, more) = agent
+                    .request(&signal_to_agent(
+                        &session_id,
+                        signal_kind::SESSION_ANSWER,
+                        &payload,
+                    ))
+                    .map_err(|e| format!("agent answer: {e}"))?;
+                if !matches!(reply, ControlMessage::Ack(_)) {
+                    return Err(format!("agent rejected answer: {reply:?}"));
+                }
+                for m in more {
+                    if let ControlMessage::SignalForward(s) = m {
+                        if s.kind == signal_kind::ICE_CANDIDATE {
+                            pending_host_ice.push(s);
+                        }
+                    }
+                }
+                got_answer = true;
+                break;
+            }
+            SignalMessage::IceCandidate { candidate, .. } => {
+                early_viewer_ice.push(candidate);
+            }
+            other => println!("ws-host: ignore {other:?}"),
+        }
+    }
+    if !got_answer {
+        let _ = agent.request(&ControlMessage::DetachSession(DetachSession {
+            session_id: session_id.clone(),
+            reason: Some("answer_timeout".into()),
+        }));
+        return Err("timeout waiting for session_answer".into());
+    }
+
+    // Host ICE → WSS (after answer).
+    for s in &pending_host_ice {
+        let c = parse_ice_payload(&s.payload).map_err(|e| e.to_string())?;
+        let ice_seq = sig.take_seq();
+        sig.send(&SignalMessage::IceCandidate {
+            session_id: session_id.clone(),
+            signal_seq: ice_seq,
+            candidate: c,
+        })
+        .await
+        .map_err(|e| format!("send host ice: {e}"))?;
+    }
+
+    // Early + trickle viewer ICE → agent (and forward any new agent ICE).
+    for candidate in early_viewer_ice {
+        let payload = serde_json::to_string(&candidate).map_err(|e| e.to_string())?;
+        let (reply, more) = agent
+            .request(&signal_to_agent(
+                &session_id,
+                signal_kind::ICE_CANDIDATE,
+                &payload,
+            ))
+            .map_err(|e| format!("agent ice: {e}"))?;
+        if !matches!(reply, ControlMessage::Ack(_)) {
+            return Err(format!("agent rejected ice: {reply:?}"));
+        }
+        forward_agent_ice_to_wss(sig, &session_id, &more).await?;
+    }
+
+    // Trickle remaining ICE and poke the agent so it can poll → Connected → pump.
+    // QueryStats is the control-plane heartbeat that drives agent-side poll/pump
+    // without putting media bytes on the IPC pipe.
+    let ice_deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    let mut agent_video = 0u64;
+    let mut agent_connected = false;
+    while tokio::time::Instant::now() < ice_deadline {
+        if let Ok(msg) = sig.recv_timeout(Duration::from_millis(40)).await {
+            if let SignalMessage::IceCandidate { candidate, .. } = msg {
+                let payload = serde_json::to_string(&candidate).map_err(|e| e.to_string())?;
+                let (reply, more) = agent
+                    .request(&signal_to_agent(
+                        &session_id,
+                        signal_kind::ICE_CANDIDATE,
+                        &payload,
+                    ))
+                    .map_err(|e| format!("agent ice: {e}"))?;
+                if !matches!(reply, ControlMessage::Ack(_)) {
+                    return Err(format!("agent rejected ice: {reply:?}"));
+                }
+                forward_agent_ice_to_wss(sig, &session_id, &more).await?;
+            }
+        }
+
+        let (stats_reply, more) = agent
+            .request(&ControlMessage::QueryStats(
+                remotelink_platform_windows::ipc::message::QueryStats {
+                    session_id: Some(session_id.clone()),
+                },
+            ))
+            .map_err(|e| format!("agent query_stats: {e}"))?;
+        forward_agent_ice_to_wss(sig, &session_id, &more).await?;
+        if let ControlMessage::StatsPush(s) = stats_reply {
+            if let Some(ref path) = s.ice_path {
+                if path == "connected" {
+                    agent_connected = true;
+                }
+            }
+            // video_bitrate_bps is derived from frames_sent on the agent.
+            if s.video_bitrate_bps.unwrap_or(0) > 0 {
+                agent_video = agent_video.max(1);
+            }
+        }
+
+        if agent_connected && agent_video > 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+
+    if !agent_connected {
+        let _ = agent.request(&ControlMessage::DetachSession(DetachSession {
+            session_id: session_id.clone(),
+            reason: Some("agent_not_connected".into()),
+        }));
+        return Err("agent media plane never reached Connected".into());
+    }
+    if agent_video == 0 && video_frames > 0 {
+        // One last poke: QueryStats again after a short settle.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let (stats_reply, _) = agent
+            .request(&ControlMessage::QueryStats(
+                remotelink_platform_windows::ipc::message::QueryStats {
+                    session_id: Some(session_id.clone()),
+                },
+            ))
+            .map_err(|e| format!("agent query_stats: {e}"))?;
+        if let ControlMessage::StatsPush(s) = stats_reply {
+            if s.video_bitrate_bps.unwrap_or(0) > 0 {
+                agent_video = 1;
+            }
+        }
+    }
+    if agent_video == 0 {
+        let _ = agent.request(&ControlMessage::DetachSession(DetachSession {
+            session_id: session_id.clone(),
+            reason: Some("agent_no_video".into()),
+        }));
+        return Err("agent connected but pumped no video".into());
+    }
+
+    // Detach agent so the next session can attach a fresh media plane.
+    let _ = agent.request(&ControlMessage::DetachSession(DetachSession {
+        session_id: session_id.clone(),
+        reason: Some("host_media_complete".into()),
+    }));
+
+    end_wss_session(sig, &session_id).await;
+    Ok(format!(
+        "ws-host ok public_id={public_id} session={session_id} media=agent transport={} video_tx>={}",
+        mode.as_str(),
+        video_frames.min(3)
+    ))
+}
+
+/// Relay any agent-emitted ICE SignalForward messages onto the host WSS.
+async fn forward_agent_ice_to_wss(
+    sig: &mut SignalingClient,
+    session_id: &str,
+    messages: &[ControlMessage],
+) -> Result<(), String> {
+    for m in messages {
+        if let ControlMessage::SignalForward(s) = m {
+            if s.kind == signal_kind::ICE_CANDIDATE {
+                let c = parse_ice_payload(&s.payload).map_err(|e| e.to_string())?;
+                let ice_seq = sig.take_seq();
+                sig.send(&SignalMessage::IceCandidate {
+                    session_id: session_id.into(),
+                    signal_seq: ice_seq,
+                    candidate: c,
+                })
+                .await
+                .map_err(|e| format!("send agent ice: {e}"))?;
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn relay_offer_answer_ice_local(
+    sig: &mut SignalingClient,
+    session_id: &str,
+    offer: &SdpPayload,
+    pending_host_ice: &mut Vec<remotelink_platform_windows::ipc::message::SignalForward>,
+    mgr: &mut SessionManager,
+) -> Result<(), String> {
+    let offer_seq = sig.take_seq();
+    sig.send(&SignalMessage::SessionOffer {
+        session_id: session_id.into(),
+        signal_seq: offer_seq,
+        sdp: offer.sdp.clone(),
+        fingerprint_sig: offer.fingerprint_sig.clone().unwrap_or_default(),
+    })
+    .await
+    .map_err(|e| format!("send offer: {e}"))?;
+    println!(
+        "ws-host: session_offer seq={offer_seq} sdp_len={}",
+        offer.sdp.len()
+    );
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     let mut got_answer = false;
@@ -353,14 +661,10 @@ async fn handle_one_session(
                 )
                 .map_err(|e| format!("apply ice: {e}"))?;
             }
-            other => {
-                println!("ws-host: ignore {other:?}");
-            }
+            other => println!("ws-host: ignore {other:?}"),
         }
     }
-
     if !got_answer {
-        let _ = mgr.shutdown();
         return Err("timeout waiting for session_answer".into());
     }
 
@@ -370,11 +674,11 @@ async fn handle_one_session(
             .into_iter()
             .filter(|s| s.kind == signal_kind::ICE_CANDIDATE),
     );
-    for ice_sig in pending_host_ice {
+    for ice_sig in pending_host_ice.iter() {
         let c = parse_ice_payload(&ice_sig.payload).map_err(|e| e.to_string())?;
         let ice_seq = sig.take_seq();
         sig.send(&SignalMessage::IceCandidate {
-            session_id: session_id.clone(),
+            session_id: session_id.into(),
             signal_seq: ice_seq,
             candidate: c,
         })
@@ -390,7 +694,7 @@ async fn handle_one_session(
                 let c = parse_ice_payload(&ice_sig.payload).map_err(|e| e.to_string())?;
                 let ice_seq = sig.take_seq();
                 sig.send(&SignalMessage::IceCandidate {
-                    session_id: session_id.clone(),
+                    session_id: session_id.into(),
                     signal_seq: ice_seq,
                     candidate: c,
                 })
@@ -412,43 +716,18 @@ async fn handle_one_session(
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+    Ok(())
+}
 
-    mgr.wait_ready(Duration::from_secs(10))
-        .map_err(|e| format!("wait_ready: {e}"))?;
-    let pump = mgr
-        .pump_media(video_frames)
-        .map_err(|e| format!("pump: {e}"))?;
-    if pump.skipped_not_connected || pump.video_sent == 0 {
-        let _ = mgr.shutdown();
-        return Err(format!(
-            "pump failed (skipped={} video_sent={})",
-            pump.skipped_not_connected, pump.video_sent
-        ));
-    }
-
-    let fp = mgr
-        .peer_mut()
-        .local_fingerprint()
-        .map_err(|e| e.to_string())?;
-    let summary = format!(
-        "ws-host ok public_id={public_id} session={session_id} transport={} video_tx={} audio_tx={} fp={}",
-        mode.as_str(),
-        pump.video_sent,
-        pump.audio_sent,
-        fp.as_sign_material()
-    );
-
-    // End session on the media plane; keep WSS for the next viewer.
+async fn end_wss_session(sig: &mut SignalingClient, session_id: &str) {
     let end_seq = sig.take_seq();
     let _ = sig
         .send(&SignalMessage::SessionEnd {
-            session_id: session_id.clone(),
+            session_id: session_id.into(),
             signal_seq: end_seq,
             reason: "host_media_complete".into(),
         })
         .await;
-    let _ = mgr.shutdown();
-    Ok(summary)
 }
 
 /// One-shot: register, connect, serve **one** session, close.
@@ -461,6 +740,9 @@ pub async fn run_ws_host(cfg: WsHostConfig) -> Result<String, String> {
 
 /// Long-lived host: enroll once, serve up to `max_sessions` (0 = unlimited),
 /// reconnect signaling on failure when `reconnect` is set.
+///
+/// When [`WsHostConfig::agent_control`] is set, media runs on the agent over
+/// KD5 control IPC; this process only owns WSS + enrollment.
 pub async fn run_ws_host_service(cfg: WsHostConfig) -> Result<String, String> {
     let mode = coerce_transport(cfg.transport);
     let transport_cfg = TransportConfig { mode };
@@ -469,6 +751,19 @@ pub async fn run_ws_host_service(cfg: WsHostConfig) -> Result<String, String> {
     let public_id = enrolled.public_id.clone();
     let access_token = enrolled.access_token.clone();
     let ws_url = http_to_ws_url(&cfg.server).map_err(|e| format!("ws url: {e}"))?;
+
+    let mut agent_client = if let Some(ref ep) = cfg.agent_control {
+        println!(
+            "ws-host: KD5 mode — connecting agent control at {}",
+            crate::control_loop::format_endpoint(ep)
+        );
+        Some(
+            ServiceAgentClient::connect(ep)
+                .map_err(|e| format!("agent control connect: {e}"))?,
+        )
+    } else {
+        None
+    };
 
     let unlimited = cfg.max_sessions == 0;
     let mut completed: u32 = 0;
@@ -490,11 +785,16 @@ pub async fn run_ws_host_service(cfg: WsHostConfig) -> Result<String, String> {
                 .map_err(|e| format!("hello: {e}"))?;
             if let SignalMessage::HelloOk { feature_flags, .. } = &hello {
                 println!(
-                    "ws-host: hello_ok sdp_relay={} public_id={public_id}",
+                    "ws-host: hello_ok sdp_relay={} public_id={public_id} media={}",
                     feature_flags
                         .get("sdp_relay")
                         .and_then(|v| v.as_bool())
-                        .unwrap_or(false)
+                        .unwrap_or(false),
+                    if agent_client.is_some() {
+                        "agent-ipc"
+                    } else {
+                        "local"
+                    }
                 );
             }
 
@@ -504,16 +804,28 @@ pub async fn run_ws_host_service(cfg: WsHostConfig) -> Result<String, String> {
                     let _ = sig.close().await;
                     return Ok::<_, String>(());
                 }
-                match handle_one_session(
-                    &mut sig,
-                    &public_id,
-                    mode,
-                    &transport_cfg,
-                    cfg.video_frames,
-                    cfg.wait_incoming,
-                )
-                .await
-                {
+                let session_result = if let Some(ref mut agent) = agent_client {
+                    handle_one_session_agent(
+                        &mut sig,
+                        agent,
+                        &public_id,
+                        mode,
+                        cfg.video_frames,
+                        cfg.wait_incoming,
+                    )
+                    .await
+                } else {
+                    handle_one_session_local(
+                        &mut sig,
+                        &public_id,
+                        mode,
+                        &transport_cfg,
+                        cfg.video_frames,
+                        cfg.wait_incoming,
+                    )
+                    .await
+                };
+                match session_result {
                     Ok(summary) => {
                         println!("{summary}");
                         last_summary = summary;
@@ -525,6 +837,7 @@ pub async fn run_ws_host_service(cfg: WsHostConfig) -> Result<String, String> {
                             if e.contains("connection closed")
                                 || e.contains("connect")
                                 || e.contains("ws ")
+                                || e.contains("agent control")
                             {
                                 let _ = sig.close().await;
                                 return Err(e);

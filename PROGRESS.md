@@ -47,4 +47,12 @@ Plan PRs 1–27 done.
 - `--role=ipc-colocate` and `--role=agent --control-listen=tcp:PORT`
 - Auto pump after answer/ICE when Connected (no media on the wire)
 
-**Still open for product:** named-pipe ACL, WSS→agent IPC split, tray OTP, MSI/codesign, GitHub remote.
+**Later same day (WSS service → agent IPC):**
+- `WsHostConfig::agent_control` + `--agent-control=tcp:PORT` / `REMOTELINK_AGENT_CONTROL`
+- `handle_one_session_agent`: offer/answer/ICE over WSS, media on agent PeerTransport
+- Agent polls live peer after each control message; QueryStats pokes Connected+pump
+- Multi-accept agent server rebuilds SessionManager after detach
+- e2e `ws_agent_ipc`: WSS service + agent IPC + live TCP media (`media=agent`, video_rx>0)
+- Re-export `ControlEndpoint` / `listen_control` from `remotelink-host`
+
+**Still open for product:** named-pipe ACL, tray OTP, MSI/codesign, GitHub remote.

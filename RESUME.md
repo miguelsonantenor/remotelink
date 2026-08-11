@@ -11,7 +11,7 @@
 | PR plan | **PRs 1–27 complete** (8b optional skipped) |
 | **Integrated monorepo** | **Yes** — `cargo test --workspace` green (default features) |
 | PeerTransport backends | **mock** (CI default) · **live TCP** (default feature) · **webrtc-rs** (opt-in feature) |
-| Real AnyDesk product | **~88%** — KD5 control IPC (TCP) service↔agent; host creds+OTP; WSS service; RTP; no MSI/named-pipe ACL yet |
+| Real AnyDesk product | **~90%** — WSS service dials agent control IPC (KD5 split); live media e2e green; no MSI/named-pipe ACL yet |
 
 ## Day-to-day development
 
@@ -55,20 +55,30 @@ docker compose -f deploy/docker-compose.yml up -d --build
 ## Next best steps
 
 1. Windows named-pipe ACL backend for control IPC (TCP works for CI/dev)  
-2. Wire WSS service path to dial agent control IPC (split process)  
-3. Tray/GUI for OTP; MSI/codesign; GitHub remote  
+2. Tray/GUI for OTP; MSI/codesign; GitHub remote  
+3. Optional: webrtc-rs e2e over WSS+agent IPC  
 
-### Control IPC (KD5)
+### Control IPC (KD5) — WSS service + agent media
 
 ```powershell
 # Demo: service client + agent server over TCP (mock media)
 cargo run -p remotelink-host -- --role=ipc-colocate
 
-# Split processes:
-# Terminal A — agent control server
-cargo run -p remotelink-host -- --role=agent --control-listen=tcp:0 --transport=mock
+# Split processes (real WSS + live media):
+# Terminal A — agent control server (owns PeerTransport + synthetic A/V)
+cargo run -p remotelink-host -- --role=agent --control-listen=tcp:0 --transport=live
 # note CONTROL_LISTEN=tcp:PORT
-# Terminal B — service uses ServiceAgentClient::connect (WSS path wiring next)
+
+# Terminal B — WSS service (enrollment + signaling; dials agent)
+cargo run -p remotelink-host -- --role=service --server=http://127.0.0.1:8080 `
+  --transport=live --agent-control=tcp:PORT
+
+# Terminal C — viewer
+cargo run -p remotelink-viewer -- --ws-connect --server=http://127.0.0.1:8080 `
+  --host PUBLIC_ID --otp CODE --transport=live
+
+# E2E (one process, two threads):
+cargo test -p remotelink-e2e --test ws_agent_ipc -- --nocapture
 ```
 
 Historical PR tips remain on `execute-plan/35709e22-pr-*` and `progress/*` branches / worktrees.

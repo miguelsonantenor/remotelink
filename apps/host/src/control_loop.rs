@@ -130,9 +130,18 @@ pub fn format_endpoint(endpoint: &ControlEndpoint) -> String {
     }
 }
 
-/// Run the agent control server: accept one service connection and serve until EOF.
+fn new_agent_session(transport: TransportMode) -> Result<AgentSession, ControlLoopError> {
+    match transport {
+        TransportMode::Mock | TransportMode::Auto => Ok(AgentSession::new_mock()),
+        other => AgentSession::from_mode(other)
+            .map_err(|e| ControlLoopError::Agent(e.to_string())),
+    }
+}
+
+/// Run the agent control server: accept service connections and serve until process exit.
 ///
-/// Prints the bound endpoint on stdout (`CONTROL_LISTEN=tcp:PORT`) for the service to dial.
+/// After each service disconnect, accepts the next client (service reconnect).
+/// Prints `CONTROL_LISTEN=tcp:PORT` for the service `--agent-control` flag.
 pub fn run_agent_control_server(
     listen: ControlEndpoint,
     transport: TransportMode,
@@ -140,31 +149,36 @@ pub fn run_agent_control_server(
     let listener = listen_control(listen)?;
     let bound = listener.endpoint().clone();
     println!(
-        "agent: control listening on {} (set REMOTELINK_AGENT_CONTROL or --agent-control)",
+        "agent: control listening on {} (service: --agent-control={})",
+        format_endpoint(&bound),
         format_endpoint(&bound)
     );
     println!("CONTROL_LISTEN={}", format_endpoint(&bound));
-
-    let mut stream = listener.accept()?;
-    let _ = stream.tcp().set_read_timeout(Some(Duration::from_secs(120)));
-    println!("agent: service connected on control IPC");
-
-    let mut agent = match transport {
-        TransportMode::Mock | TransportMode::Auto => AgentSession::new_mock(),
-        other => AgentSession::from_mode(other).map_err(|e| ControlLoopError::Agent(e.to_string()))?,
-    };
     println!(
         "agent: session manager transport={}",
         TransportConfig { mode: transport }.resolved_mode().as_str()
     );
 
-    serve_agent_connection(&mut stream, &mut agent)
+    loop {
+        let mut stream = listener.accept()?;
+        let _ = stream.tcp().set_read_timeout(Some(Duration::from_secs(120)));
+        println!("agent: service connected on control IPC");
+        let mut agent = new_agent_session(transport)?;
+        match serve_agent_connection(&mut stream, &mut agent, transport) {
+            Ok(()) => println!("agent: service session ended; waiting for next connect"),
+            Err(e) => eprintln!("agent: serve error: {e}; waiting for next connect"),
+        }
+    }
 }
 
 /// Serve control messages on an accepted stream (testable without bind).
+///
+/// `transport` is used to rebuild a fresh [`AgentSession`] after detach so the
+/// next attach gets a new PeerTransport.
 pub fn serve_agent_connection(
     stream: &mut ControlStream,
     agent: &mut AgentSession,
+    transport: TransportMode,
 ) -> Result<(), ControlLoopError> {
     loop {
         let msg = match stream.recv() {
@@ -209,9 +223,20 @@ pub fn serve_agent_connection(
             }
         }
 
+        let was_detach = matches!(
+            msg,
+            ControlMessage::DetachSession(_) | ControlMessage::ShutdownSession(_)
+        );
+
         let reply = agent.handle(&msg);
         // Reply first so the service is never blocked behind media send.
         stream.send(&reply)?;
+
+        // Live TCP / webrtc need poll() to finish the handshake (remote Hello)
+        // and to surface further local ICE. Always poll when a session is live.
+        if agent.state.session_id.is_some() && !agent.state.killed {
+            let _ = agent.manager.peer_mut().poll();
+        }
         for outbound in agent.take_outbound_signals() {
             stream.send(&outbound)?;
         }
@@ -220,18 +245,36 @@ pub fn serve_agent_connection(
             session_id: None,
         }))?;
 
-        // After the request fully completes, pump synthetic media when Connected
-        // (answer/ICE applied). No PumpMedia control method on the wire.
-        if let ControlMessage::SignalForward(s) = &msg {
-            use crate::session::signal_kind;
-            if matches!(
-                s.kind.as_str(),
-                signal_kind::SESSION_ANSWER | signal_kind::ICE_CANDIDATE
-            ) && agent.manager.connection_state()
-                == remotelink_net::ConnectionState::Connected
-            {
-                let _ = agent.pump_media(3);
+        // After the request fully completes, pump synthetic media when Connected.
+        // No PumpMedia control method on the wire (media stays off control IPC).
+        // Trigger after answer/ICE or QueryStats (service uses stats to poke poll).
+        let may_pump = match &msg {
+            ControlMessage::SignalForward(s) => {
+                use crate::session::signal_kind;
+                matches!(
+                    s.kind.as_str(),
+                    signal_kind::SESSION_ANSWER | signal_kind::ICE_CANDIDATE
+                )
             }
+            ControlMessage::QueryStats(_) => true,
+            _ => false,
+        };
+        if may_pump
+            && agent.state.media_started
+            && agent.manager.connection_state() == remotelink_net::ConnectionState::Connected
+        {
+            // Prefer a short wait_ready so live Hello can land, then pump.
+            let _ = agent.manager.wait_ready(Duration::from_millis(200));
+            let _ = agent.pump_media(3);
+        }
+
+        // Fresh PeerTransport for the next session (live/webrtc sockets not reusable).
+        if was_detach && matches!(reply, ControlMessage::Ack(_)) {
+            *agent = new_agent_session(transport)?;
+            println!(
+                "agent: rebuilt session manager for next attach (transport={})",
+                TransportConfig { mode: transport }.resolved_mode().as_str()
+            );
         }
     }
     Ok(())
@@ -259,7 +302,8 @@ pub fn run_ipc_colocate_demo(session_id: &str) -> Result<String, String> {
         let mut stream = listener.accept().map_err(|e| e.to_string())?;
         let mut agent =
             AgentSession::with_manager(SessionManager::with_peer(Box::new(peer_a)));
-        serve_agent_connection(&mut stream, &mut agent).map_err(|e| e.to_string())?;
+        serve_agent_connection(&mut stream, &mut agent, TransportMode::Mock)
+            .map_err(|e| e.to_string())?;
         Ok::<_, String>(())
     });
 
@@ -394,7 +438,7 @@ mod tests {
             let mut agent =
                 AgentSession::with_manager(SessionManager::with_peer(Box::new(peer_a)));
             // Serve until client disconnects.
-            let _ = serve_agent_connection(&mut stream, &mut agent);
+            let _ = serve_agent_connection(&mut stream, &mut agent, TransportMode::Mock);
         });
 
         let mut client = ServiceAgentClient::connect(&endpoint).unwrap();
@@ -439,7 +483,7 @@ mod tests {
             let mut stream = listener.accept().unwrap();
             let mut agent =
                 AgentSession::with_manager(SessionManager::with_peer(Box::new(peer_a)));
-            let _ = serve_agent_connection(&mut stream, &mut agent);
+            let _ = serve_agent_connection(&mut stream, &mut agent, TransportMode::Mock);
         });
         let mut client = ServiceAgentClient::connect(&endpoint).unwrap();
         let outbound = client.start_session("ipc-seq", false).expect("start_session");

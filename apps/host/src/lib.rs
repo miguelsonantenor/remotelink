@@ -23,6 +23,11 @@ pub use control_loop::{
     format_endpoint, parse_control_endpoint, run_agent_control_server, run_ipc_colocate_demo,
     serve_agent_connection, ServiceAgentClient, DRAIN_COMPLETE,
 };
+// Control IPC transport (TCP localhost for CI/dev). Re-exported so callers do not
+// need a direct platform-windows dependency for KD5 service↔agent wiring.
+pub use remotelink_platform_windows::{
+    listen_control, ControlEndpoint, ControlListener, ControlStream,
+};
 pub use chrome::{HostSessionUx, SessionChrome, SessionIndicator};
 pub use platform_capture::{
     default_audio_kind, default_video_kind, open_audio_source, open_default_sources,

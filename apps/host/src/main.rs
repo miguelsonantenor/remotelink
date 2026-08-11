@@ -248,6 +248,14 @@ fn parse_ws_host_config(args: &[String], transport: remotelink_net::TransportMod
     if args.iter().any(|a| a == "--no-reconnect") {
         cfg.reconnect = false;
     }
+    if let Some(ep) = flag_value(args, "--agent-control")
+        .or_else(|| env::var("REMOTELINK_AGENT_CONTROL").ok())
+    {
+        match parse_control_endpoint(&ep) {
+            Ok(endpoint) => cfg.agent_control = Some(endpoint),
+            Err(e) => eprintln!("warning: {e}; ignoring --agent-control"),
+        }
+    }
     cfg
 }
 
@@ -318,6 +326,7 @@ fn print_usage() {
          --no-save-creds  Do not write credential file\n  \
          --mint-otp       Mint Mode A OTP and post hash (default on)\n  \
          --no-otp         Skip OTP mint\n  \
+         --agent-control=tcp:PORT  KD5: dial agent control IPC (media on agent)\n  \
          --reconnect      Reconnect WSS after disconnect (service default on)\n  \
          --no-reconnect   Disable reconnect\n\n\
          Transport (also REMOTELINK_TRANSPORT; default mock — CI-safe):\n  \
