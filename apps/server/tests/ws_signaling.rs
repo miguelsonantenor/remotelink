@@ -856,6 +856,198 @@ async fn stale_signal_seq_rejected_on_accept() {
 }
 
 #[tokio::test]
+async fn sdp_ice_relay_after_accept() {
+    let repo = Arc::new(MemoryDeviceRepo::new());
+    let sessions = Arc::new(SessionRegistry::new());
+    let state = AppState::with_sessions(repo.clone(), sessions.clone());
+    let (host_public_id, access) = register_host(&repo).await;
+    let addr = spawn_server(state).await;
+
+    let (mut host, mut viewer) = connect_host_viewer(addr, &access).await;
+    intent(&mut viewer, "sess-sdp-relay", &host_public_id, 1).await;
+    assert!(matches!(
+        recv_msg(&mut host).await,
+        SignalMessage::SessionIncoming { .. }
+    ));
+    send_msg(
+        &mut host,
+        &SignalMessage::SessionAccept {
+            session_id: "sess-sdp-relay".into(),
+            signal_seq: 3,
+        },
+    )
+    .await;
+    assert!(matches!(
+        recv_msg(&mut viewer).await,
+        SignalMessage::SessionAccept { .. }
+    ));
+    assert_eq!(sessions.next_signal_seq("sess-sdp-relay").await, Some(4));
+
+    // Host → viewer offer
+    send_msg(
+        &mut host,
+        &SignalMessage::SessionOffer {
+            session_id: "sess-sdp-relay".into(),
+            signal_seq: 4,
+            sdp: "v=0\r\noffer-body".into(),
+            fingerprint_sig: String::new(),
+        },
+    )
+    .await;
+    match recv_msg(&mut viewer).await {
+        SignalMessage::SessionOffer {
+            session_id,
+            signal_seq,
+            sdp,
+            fingerprint_sig,
+        } => {
+            assert_eq!(session_id, "sess-sdp-relay");
+            assert_eq!(signal_seq, 4);
+            assert_eq!(sdp, "v=0\r\noffer-body");
+            assert!(fingerprint_sig.is_empty());
+        }
+        other => panic!("expected session_offer, got {other:?}"),
+    }
+
+    // Viewer → host answer
+    send_msg(
+        &mut viewer,
+        &SignalMessage::SessionAnswer {
+            session_id: "sess-sdp-relay".into(),
+            signal_seq: 5,
+            sdp: "v=0\r\nanswer-body".into(),
+        },
+    )
+    .await;
+    match recv_msg(&mut host).await {
+        SignalMessage::SessionAnswer {
+            session_id,
+            signal_seq,
+            sdp,
+        } => {
+            assert_eq!(session_id, "sess-sdp-relay");
+            assert_eq!(signal_seq, 5);
+            assert_eq!(sdp, "v=0\r\nanswer-body");
+        }
+        other => panic!("expected session_answer, got {other:?}"),
+    }
+
+    // ICE both ways
+    send_msg(
+        &mut host,
+        &SignalMessage::IceCandidate {
+            session_id: "sess-sdp-relay".into(),
+            signal_seq: 6,
+            candidate: remotelink_protocol::IceCandidate {
+                candidate: "candidate:1 1 udp 1 127.0.0.1 9 typ host".into(),
+                sdp_mid: Some("0".into()),
+                sdp_m_line_index: Some(0),
+                username_fragment: None,
+            },
+        },
+    )
+    .await;
+    match recv_msg(&mut viewer).await {
+        SignalMessage::IceCandidate {
+            candidate, signal_seq, ..
+        } => {
+            assert_eq!(signal_seq, 6);
+            assert!(candidate.candidate.contains("127.0.0.1"));
+        }
+        other => panic!("expected ice_candidate, got {other:?}"),
+    }
+
+    send_msg(
+        &mut viewer,
+        &SignalMessage::IceCandidate {
+            session_id: "sess-sdp-relay".into(),
+            signal_seq: 7,
+            candidate: remotelink_protocol::IceCandidate {
+                candidate: "candidate:2 1 udp 1 127.0.0.1 10 typ host".into(),
+                sdp_mid: Some("0".into()),
+                sdp_m_line_index: Some(0),
+                username_fragment: None,
+            },
+        },
+    )
+    .await;
+    match recv_msg(&mut host).await {
+        SignalMessage::IceCandidate { signal_seq, .. } => assert_eq!(signal_seq, 7),
+        other => panic!("expected ice_candidate, got {other:?}"),
+    }
+
+    assert_eq!(sessions.next_signal_seq("sess-sdp-relay").await, Some(8));
+}
+
+#[tokio::test]
+async fn offer_before_accept_rejected() {
+    let repo = Arc::new(MemoryDeviceRepo::new());
+    let sessions = Arc::new(SessionRegistry::new());
+    let state = AppState::with_sessions(repo.clone(), sessions.clone());
+    let (host_public_id, access) = register_host(&repo).await;
+    let addr = spawn_server(state).await;
+
+    let (mut host, mut viewer) = connect_host_viewer(addr, &access).await;
+    intent(&mut viewer, "sess-offer-early", &host_public_id, 1).await;
+    assert!(matches!(
+        recv_msg(&mut host).await,
+        SignalMessage::SessionIncoming { .. }
+    ));
+    // Still Pending — media relay requires Active.
+    send_msg(
+        &mut host,
+        &SignalMessage::SessionOffer {
+            session_id: "sess-offer-early".into(),
+            signal_seq: 3,
+            sdp: "v=0".into(),
+            fingerprint_sig: String::new(),
+        },
+    )
+    .await;
+    match recv_msg(&mut host).await {
+        SignalMessage::Error { code, .. } => assert_eq!(code, "invalid_state"),
+        other => panic!("expected invalid_state, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn viewer_cannot_send_session_offer() {
+    let repo = Arc::new(MemoryDeviceRepo::new());
+    let sessions = Arc::new(SessionRegistry::new());
+    let state = AppState::with_sessions(repo.clone(), sessions.clone());
+    let (host_public_id, access) = register_host(&repo).await;
+    let addr = spawn_server(state).await;
+
+    let (mut host, mut viewer) = connect_host_viewer(addr, &access).await;
+    intent(&mut viewer, "sess-role-offer", &host_public_id, 1).await;
+    let _ = recv_msg(&mut host).await;
+    send_msg(
+        &mut host,
+        &SignalMessage::SessionAccept {
+            session_id: "sess-role-offer".into(),
+            signal_seq: 3,
+        },
+    )
+    .await;
+    let _ = recv_msg(&mut viewer).await;
+
+    send_msg(
+        &mut viewer,
+        &SignalMessage::SessionOffer {
+            session_id: "sess-role-offer".into(),
+            signal_seq: 4,
+            sdp: "v=0".into(),
+            fingerprint_sig: String::new(),
+        },
+    )
+    .await;
+    match recv_msg(&mut viewer).await {
+        SignalMessage::Error { code, .. } => assert_eq!(code, "unauthorized"),
+        other => panic!("expected unauthorized, got {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn pending_session_ttl_releases_busy() {
     let repo = Arc::new(MemoryDeviceRepo::new());
     let sessions = Arc::new(SessionRegistry::new());

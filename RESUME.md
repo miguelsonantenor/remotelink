@@ -11,7 +11,7 @@
 | PR plan | **PRs 1–27 complete** (8b optional skipped) |
 | **Integrated monorepo** | **Yes** — `cargo test --workspace` green (default features) |
 | PeerTransport backends | **mock** (CI default) · **live TCP** (default feature) · **webrtc-rs** (opt-in feature) |
-| Real AnyDesk product | **~65%** — SessionManager/viewer factory wiring for mock/live/webrtc; real ICE/DTLS DataChannels; media still interim DC NALU/Opus (not SampleBuilder RTP); no full installers |
+| Real AnyDesk product | **~70%** — WSS SDP/ICE relay live; SessionManager + ViewerSession factory transports; real ICE/DTLS (webrtc-rs); media still interim DC NALU/Opus (not SampleBuilder RTP); no full installers |
 
 ## Day-to-day development
 
@@ -48,8 +48,8 @@ docker compose -f deploy/docker-compose.yml up -d --build
 
 ## Next best steps
 
-1. **SampleBuilder H.264 / Opus RTP tracks** (replace interim `media-video` / `media-audio` DataChannels)  
-2. Multi-process host/viewer over **real WSS** signaling (SessionManager + ViewerSession already take factory transports)  
+1. **CLI multi-process demo**: host/viewer binaries dial real server WSS end-to-end (e2e test already covers path)  
+2. **SampleBuilder H.264 / Opus RTP tracks** (replace interim `media-video` / `media-audio` DataChannels)  
 3. Push to GitHub remote; real MSI/codesign (`deploy/packaging/`)  
 
 Historical PR tips remain on `execute-plan/35709e22-pr-*` and `progress/*` branches / worktrees.

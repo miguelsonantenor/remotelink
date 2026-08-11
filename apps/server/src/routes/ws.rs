@@ -1,10 +1,12 @@
 //! WebSocket signaling endpoint (`GET /v1/ws`).
 //!
-//! Flow (PR 5a):
+//! Flow:
 //! 1. Client connects and sends `hello` (host device token; viewer token or anonymous).
 //! 2. Server replies `hello_ok` and publishes host presence.
 //! 3. Viewer sends `session_intent` → host receives `session_incoming` (busy lock).
 //! 4. Host sends `session_accept` or `session_reject` → forwarded to viewer.
+//! 5. **Active session:** host/viewer exchange `session_offer` / `session_answer` /
+//!    `ice_candidate` (and auth/media-control signals) via opaque relay (PR 5b).
 //!
 //! PR 6: rate-limit session_intent, enforce host blocklist, audit accept/reject,
 //! and track hello auth failures.
@@ -208,7 +210,7 @@ async fn expect_hello(
         server_time: Utc::now().to_rfc3339(),
         feature_flags: json!({
             "max_protocol_version": PROTOCOL_VERSION,
-            "sdp_relay": false,
+            "sdp_relay": true,
         }),
     };
     if !state.sessions.send_to(conn_id, ok).await {
@@ -554,7 +556,7 @@ async fn handle_text(
             }
             result
         }
-        // PR 5b will relay SDP/ICE; reject early with a clear code.
+        // Active-session media / control signaling (opaque relay).
         SignalMessage::SessionOffer { .. }
         | SignalMessage::SessionAnswer { .. }
         | SignalMessage::IceCandidate { .. }
@@ -562,10 +564,9 @@ async fn handle_text(
         | SignalMessage::Renegotiate { .. }
         | SignalMessage::AuthChallenge { .. }
         | SignalMessage::AuthResponse { .. }
-        | SignalMessage::Stats { .. } => Err(error_msg(
-            "not_implemented",
-            "message type not handled in this server version",
-        )),
+        | SignalMessage::Stats { .. } => {
+            state.sessions.relay_media_signal(conn_id, msg).await
+        }
         SignalMessage::SessionEnd {
             session_id,
             signal_seq,

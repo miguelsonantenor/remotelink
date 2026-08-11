@@ -9,6 +9,7 @@
 //! - Input rejected before bind, accepted after
 //! - Synthetic video/audio frames received on the viewer
 //! - Optional in-process server WS `session_intent` + accept smoke
+//! - WSS SDP/ICE relay + [`SessionManager`] media (`tests/ws_media_signaling.rs`)
 //!
 //! # Run
 //!
@@ -16,8 +17,8 @@
 //! cargo test -p remotelink-e2e
 //! ```
 //!
-//! No GPU, DXGI, WASAPI, or external network is required. The server smoke test
-//! binds `127.0.0.1:0` only.
+//! No GPU, DXGI, WASAPI, or external network is required. Server tests
+//! bind `127.0.0.1:0` only.
 
 #![deny(missing_docs)]
 

@@ -43,12 +43,12 @@ impl std::fmt::Display for ConnId {
     }
 }
 
-/// Session lifecycle state for PR 5a (SDP/ICE relay is PR 5b).
+/// Session lifecycle state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionState {
     /// Viewer intent delivered; waiting for host accept/reject.
     Pending,
-    /// Host accepted; media signaling may follow (PR 5b).
+    /// Host accepted; SDP/ICE media signaling may be relayed.
     Active,
     /// Terminal — rejected or ended; lock released.
     Closed,
@@ -612,6 +612,139 @@ impl SessionRegistry {
     pub async fn next_signal_seq(&self, session_id: &str) -> Option<u64> {
         let g = self.inner.lock().await;
         g.sessions.get(session_id).map(|s| s.next_signal_seq)
+    }
+
+    /// Relay an **active-session** media/control signal (SDP offer/answer, ICE,
+    /// auth challenge/response, media restart, renegotiate, stats) to the peer.
+    ///
+    /// # Rules
+    ///
+    /// - Session must be [`SessionState::Active`].
+    /// - Sender must be host or viewer for the session.
+    /// - Role checks: `session_offer` host-only; `session_answer` viewer-only;
+    ///   ICE / restart / renegotiate / auth / stats: either party.
+    /// - Strict `signal_seq` (same as [`Self::accept_session`]).
+    /// - Message is forwarded **verbatim** (opaque SRTP / SDP; server does not
+    ///   parse media). Payload size limits are enforced by protocol decode.
+    pub async fn relay_media_signal(
+        &self,
+        from: ConnId,
+        msg: SignalMessage,
+    ) -> Result<(), SignalMessage> {
+        let (session_id, signal_seq) = match &msg {
+            SignalMessage::SessionOffer {
+                session_id,
+                signal_seq,
+                ..
+            }
+            | SignalMessage::SessionAnswer {
+                session_id,
+                signal_seq,
+                ..
+            }
+            | SignalMessage::IceCandidate {
+                session_id,
+                signal_seq,
+                ..
+            }
+            | SignalMessage::MediaRestart {
+                session_id,
+                signal_seq,
+                ..
+            }
+            | SignalMessage::Renegotiate {
+                session_id,
+                signal_seq,
+                ..
+            }
+            | SignalMessage::AuthChallenge {
+                session_id,
+                signal_seq,
+                ..
+            }
+            | SignalMessage::AuthResponse {
+                session_id,
+                signal_seq,
+                ..
+            }
+            | SignalMessage::Stats {
+                session_id,
+                signal_seq,
+                ..
+            } => (session_id.clone(), *signal_seq),
+            other => {
+                return Err(error_msg(
+                    "protocol_error",
+                    format!(
+                        "relay_media_signal: unsupported type (session_id={:?})",
+                        other.session_id()
+                    ),
+                ));
+            }
+        };
+
+        let mut g = self.inner.lock().await;
+        let now = Utc::now();
+        Self::reap_expired_locked(&mut g, now);
+
+        let Some(session) = g.sessions.get_mut(&session_id) else {
+            return Err(error_msg("not_found", "unknown session_id"));
+        };
+        if session.host_conn != from && session.viewer_conn != from {
+            return Err(error_msg("unauthorized", "not a party to this session"));
+        }
+        if session.state != SessionState::Active {
+            return Err(error_msg(
+                "invalid_state",
+                format!("session is {:?}, expected active for media relay", session.state),
+            ));
+        }
+        if signal_seq < session.next_signal_seq {
+            return Err(error_msg(
+                "stale_signal_seq",
+                format!("signal_seq {signal_seq} < next {}", session.next_signal_seq),
+            ));
+        }
+
+        // Role gates for offer/answer (host = offerer, viewer = answerer).
+        let is_host = session.host_conn == from;
+        match &msg {
+            SignalMessage::SessionOffer { .. } if !is_host => {
+                return Err(error_msg(
+                    "unauthorized",
+                    "only the host may send session_offer",
+                ));
+            }
+            SignalMessage::SessionAnswer { .. } if is_host => {
+                return Err(error_msg(
+                    "unauthorized",
+                    "only the viewer may send session_answer",
+                ));
+            }
+            _ => {}
+        }
+
+        let peer = if is_host {
+            session.viewer_conn
+        } else {
+            session.host_conn
+        };
+        session.next_signal_seq = signal_seq.saturating_add(1);
+
+        if let Some(tx) = g.conns.get(&peer) {
+            if tx.send(msg).is_err() {
+                return Err(error_msg(
+                    "peer_offline",
+                    "peer disconnected; could not relay media signal",
+                ));
+            }
+        } else {
+            return Err(error_msg(
+                "peer_offline",
+                "peer not connected; could not relay media signal",
+            ));
+        }
+        Ok(())
     }
 }
 

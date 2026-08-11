@@ -15,4 +15,9 @@ Plan PRs 1–27 done.
 - `PeerTransport::wait_ready` (webrtc waits for DataChannel open)
 - Live/webrtc agent demos pump synthetic A/V through **SessionManager** (not raw peer sends)
 
-**Still open for product:** SampleBuilder RTP tracks, full WSS multi-process sessions, MSI/codesign, GitHub remote.
+**Later same day (WSS SDP/ICE relay):**
+- Server `SessionRegistry::relay_media_signal` for offer/answer/ICE/auth/media control
+- `hello_ok.feature_flags.sdp_relay = true`
+- Tests: `sdp_ice_relay_after_accept`, role/state guards, e2e `ws_media_signaling`
+
+**Still open for product:** host/viewer CLI WSS dialers, SampleBuilder RTP tracks, MSI/codesign, GitHub remote.

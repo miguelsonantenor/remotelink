@@ -10,7 +10,7 @@
 //! - `GET /v1/devices/{id}/blocklist/check` — check if a subject is blocked
 //! - `GET /v1/devices/{id}/audit` — host owner audit list
 //! - `POST /v1/admin/sessions/{id}/force-disconnect` — operator disconnect (`ADMIN_TOKEN`)
-//! - `GET /v1/ws` — signaling WebSocket (`hello`, `session_intent`, accept/reject)
+//! - `GET /v1/ws` — signaling WebSocket (`hello`, `session_intent`, accept/reject, SDP/ICE relay)
 //! - `GET /healthz` / `GET /readyz` — probes
 //!
 //! Storage is abstracted via [`repo::DeviceRepository`] with in-memory and
