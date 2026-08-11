@@ -105,4 +105,10 @@ Plan PRs 1–27 done.
 - `is_available()` true on Windows; PreferNative opens wasapi when a render endpoint exists
 - Exclusive-mode near-silence detection on native PCM; device-change → ReopenRequired
 
-**Still open for product:** Real HW H.264 SDK, WiX/Authenticode release pipeline.
+**Later same day (Media Foundation H.264 + Windows CI):**
+- `MediaFoundationEncoder` via Microsoft H.264 Encoder MFT (RGB32 → Annex-B)
+- `open_encoder` prefers MF on Windows, falls back to software mock
+- GitHub Actions: Linux + Windows test jobs; package-stage artifact on `main`
+- Vendor NVENC/QSV/AMF remains a documented stub
+
+**Still open for product:** WiX/Authenticode signing of staged MSI layout.

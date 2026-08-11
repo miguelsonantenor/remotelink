@@ -8,13 +8,13 @@
 //!
 //! | Backend | When selected | CI-safe? |
 //! |---------|---------------|----------|
-//! | [`MockSoftwareEncoder`] | `disable_hw_encode` / `force_software`, or HW open fails | Yes |
-//! | [`HardwareEncoderStub`] | Preferred when HW encode allowed | Open fails without GPU driver hooks |
+//! | [`MockSoftwareEncoder`] | `disable_hw_encode` / `force_software`, or HW/MF open fails | Yes |
+//! | Media Foundation H.264 MFT | Preferred on Windows when codec pack is present | May use GPU |
+//! | [`HardwareEncoderStub`] | Direct NVENC/QSV/AMF (not linked yet) | Always unavailable |
 //!
-//! Hardware (NVENC / Quick Sync / AMF) is **documented as a stub** in this PR:
-//! [`HardwareEncoderStub::try_open`] always returns [`EncodeError::HardwareUnavailable`]
-//! so CI and windows-gnu builds never depend on a real GPU or proprietary SDK.
-//! A later PR can replace the stub body without changing the trait surface.
+//! Production path tries **Media Foundation** (`CLSID_CMSH264EncoderMFT`) first,
+//! then falls back to the mock software encoder. Direct vendor SDKs remain a
+//! future replacement for the hardware stub.
 //!
 //! # Feedback
 //!
@@ -24,6 +24,8 @@
 
 mod h264;
 mod hardware;
+#[cfg(windows)]
+mod mf;
 mod software;
 
 pub use h264::{
@@ -31,4 +33,6 @@ pub use h264::{
     EncoderConfig, H264Encoder, NaluFormat, DEFAULT_TARGET_BITRATE_BPS,
 };
 pub use hardware::HardwareEncoderStub;
+#[cfg(windows)]
+pub use mf::MediaFoundationEncoder;
 pub use software::MockSoftwareEncoder;

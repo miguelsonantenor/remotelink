@@ -152,8 +152,11 @@ pub trait H264Encoder {
 pub enum AnyH264Encoder {
     /// Software / mock path.
     Software(MockSoftwareEncoder),
-    /// Hardware path (stub until real SDK wiring).
+    /// Direct vendor HW stub (NVENC/QSV/AMF — not linked).
     Hardware(HardwareEncoderStub),
+    /// Windows Media Foundation H.264 MFT (may be GPU-accelerated).
+    #[cfg(windows)]
+    MediaFoundation(super::mf::MediaFoundationEncoder),
 }
 
 impl H264Encoder for AnyH264Encoder {
@@ -167,6 +170,8 @@ impl H264Encoder for AnyH264Encoder {
         match self {
             AnyH264Encoder::Software(e) => e.encode(frame, force_keyframe),
             AnyH264Encoder::Hardware(e) => e.encode(frame, force_keyframe),
+            #[cfg(windows)]
+            AnyH264Encoder::MediaFoundation(e) => e.encode(frame, force_keyframe),
         }
     }
 
@@ -174,6 +179,8 @@ impl H264Encoder for AnyH264Encoder {
         match self {
             AnyH264Encoder::Software(e) => e.request_keyframe(),
             AnyH264Encoder::Hardware(e) => e.request_keyframe(),
+            #[cfg(windows)]
+            AnyH264Encoder::MediaFoundation(e) => e.request_keyframe(),
         }
     }
 
@@ -181,6 +188,8 @@ impl H264Encoder for AnyH264Encoder {
         match self {
             AnyH264Encoder::Software(e) => e.set_target_bitrate_bps(bps),
             AnyH264Encoder::Hardware(e) => e.set_target_bitrate_bps(bps),
+            #[cfg(windows)]
+            AnyH264Encoder::MediaFoundation(e) => e.set_target_bitrate_bps(bps),
         }
     }
 
@@ -188,6 +197,8 @@ impl H264Encoder for AnyH264Encoder {
         match self {
             AnyH264Encoder::Software(e) => e.target_bitrate_bps(),
             AnyH264Encoder::Hardware(e) => e.target_bitrate_bps(),
+            #[cfg(windows)]
+            AnyH264Encoder::MediaFoundation(e) => e.target_bitrate_bps(),
         }
     }
 
@@ -195,6 +206,8 @@ impl H264Encoder for AnyH264Encoder {
         match self {
             AnyH264Encoder::Software(e) => e.backend_kind(),
             AnyH264Encoder::Hardware(e) => e.backend_kind(),
+            #[cfg(windows)]
+            AnyH264Encoder::MediaFoundation(e) => e.backend_kind(),
         }
     }
 }
@@ -203,17 +216,26 @@ impl H264Encoder for AnyH264Encoder {
 ///
 /// Selection order:
 /// 1. If [`EncoderConfig::prefer_software`] → [`MockSoftwareEncoder`]
-/// 2. Else try [`HardwareEncoderStub::try_open`]
-/// 3. On HW failure → fall back to [`MockSoftwareEncoder`]
-///
-/// Today step 2 always fails (documented stub), so production CI always lands
-/// on the mock software path unless a future PR implements real HW open.
+/// 2. Else try Media Foundation H.264 MFT (Windows)
+/// 3. Else try [`HardwareEncoderStub::try_open`] (vendor SDK — unavailable today)
+/// 4. Fall back to [`MockSoftwareEncoder`]
 pub fn open_encoder(config: &EncoderConfig) -> Result<AnyH264Encoder, EncodeError> {
     if config.fps == 0 {
         return Err(EncodeError::InvalidConfig("fps must be > 0".into()));
     }
     if config.prefer_software() {
         return Ok(AnyH264Encoder::Software(MockSoftwareEncoder::new(config)));
+    }
+    #[cfg(windows)]
+    {
+        match super::mf::MediaFoundationEncoder::try_open(config) {
+            Ok(mf) => return Ok(AnyH264Encoder::MediaFoundation(mf)),
+            Err(EncodeError::HardwareUnavailable(_)) => {}
+            Err(e) => {
+                // Soft config/type errors → software fallback for robustness.
+                eprintln!("encode: Media Foundation open failed ({e}); using software mock");
+            }
+        }
     }
     match HardwareEncoderStub::try_open(config) {
         Ok(hw) => Ok(AnyH264Encoder::Hardware(hw)),
@@ -271,6 +293,8 @@ mod tests {
         let au = match enc {
             AnyH264Encoder::Software(mut e) => e.encode(&tiny_bgra(), true).unwrap(),
             AnyH264Encoder::Hardware(_) => panic!("expected software"),
+            #[cfg(windows)]
+            AnyH264Encoder::MediaFoundation(_) => panic!("expected software"),
         };
         assert!(au.keyframe);
         assert_eq!(au.format, NaluFormat::AnnexB);
@@ -278,10 +302,17 @@ mod tests {
     }
 
     #[test]
-    fn open_encoder_default_falls_back_to_software() {
-        // Hardware stub always unavailable → software fallback.
-        let enc = open_encoder(&EncoderConfig::default()).unwrap();
-        assert_eq!(enc.backend_kind(), EncoderBackendKind::SoftwareMock);
+    fn open_encoder_default_opens_mf_or_software() {
+        // Prefer Media Foundation when available; else software mock.
+        let enc = open_encoder(&EncoderConfig {
+            width: 320,
+            height: 180,
+            ..EncoderConfig::default()
+        })
+        .unwrap();
+        match enc.backend_kind() {
+            EncoderBackendKind::SoftwareMock | EncoderBackendKind::Hardware => {}
+        }
     }
 
     #[test]

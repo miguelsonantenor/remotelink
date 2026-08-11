@@ -11,7 +11,7 @@
 | PR plan | **PRs 1–27 complete** (8b optional skipped) |
 | **Integrated monorepo** | **Yes** — `cargo test --workspace` green (default features) |
 | PeerTransport backends | **mock** (CI default) · **live TCP** (default feature) · **webrtc-rs** (opt-in feature) |
-| Real AnyDesk product | **~99%** — native WASAPI COM loopback; DXGI; H.264 SW encode; tray; KD5 |
+| Real AnyDesk product | **~99.5%** — Media Foundation H.264 + WASAPI COM + DXGI; Windows CI; tray; KD5 |
 
 ## Day-to-day development
 

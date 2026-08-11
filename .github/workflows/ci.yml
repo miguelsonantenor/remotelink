@@ -9,15 +9,16 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  rust:
-    name: fmt / clippy / test
+  rust-linux:
+    name: Linux fmt / clippy / test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      # Reads channel + components from rust-toolchain.toml (single source of truth).
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
+        with:
+          components: rustfmt, clippy
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
@@ -31,17 +32,56 @@ jobs:
       - name: cargo test
         run: cargo test --workspace
 
-      # Packaging inventory smoke (no codesign / WiX). Uses PowerShell Core on ubuntu-latest.
       - name: packaging inventory smoke
         shell: pwsh
         run: ./scripts/list-package-binaries.ps1
 
-  # Optional Windows matrix can be enabled later for host/platform crates.
-  # windows:
-  #   name: windows test
-  #   runs-on: windows-latest
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - uses: dtolnay/rust-toolchain@master
-  #     - uses: Swatinem/rust-cache@v2
-  #     - run: cargo test --workspace
+  rust-windows:
+    name: Windows test (host / platform)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      # MSVC on windows-latest works best with the `windows` crate (DXGI/WASAPI/MF).
+      - name: cargo test host + platform-windows + e2e live
+        run: |
+          cargo test -p remotelink-platform-windows --lib
+          cargo test -p remotelink-host --lib
+          cargo test -p remotelink-e2e --test ws_cli_live --test ws_agent_ipc -- --nocapture
+
+      - name: packaging inventory smoke
+        shell: pwsh
+        run: ./scripts/list-package-binaries.ps1
+
+  package-stage:
+    name: Release package stage (Windows)
+    runs-on: windows-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [rust-linux, rust-windows]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Stage unsigned release layout
+        shell: pwsh
+        run: ./scripts/package-release.ps1
+
+      - name: Upload package layout
+        uses: actions/upload-artifact@v4
+        with:
+          name: remotelink-package-stage
+          path: dist/
+          if-no-files-found: error

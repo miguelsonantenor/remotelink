@@ -35,6 +35,8 @@ pub use encode::{
     H264Encoder, MockSoftwareEncoder, NaluFormat as EncodeNaluFormat, DEFAULT_TARGET_BITRATE_BPS,
 };
 #[cfg(windows)]
+pub use encode::MediaFoundationEncoder;
+#[cfg(windows)]
 pub use input::WindowsInjector;
 pub use input::{
     open_injector, AnyInjector, InjectError, InjectorConfig, InjectorOpenMode, InputInjector,
