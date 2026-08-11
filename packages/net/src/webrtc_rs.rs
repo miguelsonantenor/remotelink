@@ -50,6 +50,7 @@ use tokio::runtime::{Handle, Runtime};
 use webrtc::api::media_engine::MediaEngine;
 use webrtc::api::APIBuilder;
 use webrtc::data_channel::data_channel_message::DataChannelMessage;
+use webrtc::data_channel::data_channel_state::RTCDataChannelState;
 use webrtc::data_channel::RTCDataChannel;
 use webrtc::ice_transport::ice_candidate::{RTCIceCandidate, RTCIceCandidateInit};
 use webrtc::peer_connection::certificate::RTCCertificate;
@@ -347,8 +348,8 @@ impl WebrtcPeerTransport {
     fn send_on_channel(&self, label: &str, payload: Bytes) -> Result<()> {
         self.ensure_open()?;
         if self.connection_state_locked() != ConnectionState::Connected {
-            // Allow sends once channels are open even if state races slightly —
-            // but require Connected for the public media/data API.
+            // PeerConnection Connected is required, but DCs may still be
+            // Connecting — callers should wait via [`Self::wait_data_channels_open`].
             return Err(NetError::InvalidState {
                 expected: "connected",
                 actual: self.connection_state_locked().as_str().into(),
@@ -363,15 +364,69 @@ impl WebrtcPeerTransport {
         };
         let Some(dc) = dc else {
             return Err(NetError::SendFailed(format!(
-                "data channel `{label}` not open yet"
+                "data channel `{label}` not registered yet"
             )));
         };
+        let state = dc.ready_state();
+        if state != RTCDataChannelState::Open {
+            return Err(NetError::SendFailed(format!(
+                "data channel `{label}` not open (state={state})"
+            )));
+        }
         block_on(async {
             dc.send(&payload)
                 .await
                 .map_err(|e| NetError::SendFailed(format!("dc `{label}` send: {e}")))
         })?;
         Ok(())
+    }
+
+    /// True when every application DataChannel label is registered and `Open`.
+    ///
+    /// PeerConnection `Connected` does **not** imply DCs are open; SCTP open
+    /// can lag DTLS by tens of milliseconds on localhost.
+    pub fn data_channels_open(&self) -> bool {
+        let Ok(map) = self.channels.lock() else {
+            return false;
+        };
+        CHANNEL_LABELS.iter().all(|label| {
+            map.get(*label)
+                .map(|dc| dc.ready_state() == RTCDataChannelState::Open)
+                .unwrap_or(false)
+        })
+    }
+
+    /// Block until all application DataChannels report `Open`, or `timeout`.
+    pub fn wait_data_channels_open(&self, timeout: Duration) -> Result<()> {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            if self.data_channels_open() {
+                return Ok(());
+            }
+            if std::time::Instant::now() >= deadline {
+                let detail = self
+                    .channels
+                    .lock()
+                    .map(|map| {
+                        CHANNEL_LABELS
+                            .iter()
+                            .map(|l| {
+                                let st = map
+                                    .get(*l)
+                                    .map(|dc| dc.ready_state().to_string())
+                                    .unwrap_or_else(|| "missing".into());
+                                format!("{l}={st}")
+                            })
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    })
+                    .unwrap_or_else(|_| "channels lock poisoned".into());
+                return Err(NetError::Internal(format!(
+                    "timed out waiting for DataChannels open ({detail})"
+                )));
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 
     fn parse_remote_fp_from_sdp(&self, sdp: &str) -> Option<DtlsFingerprint> {
@@ -835,13 +890,19 @@ pub fn webrtc_handshake(
         if offerer.connection_state() == ConnectionState::Connected
             && answerer.connection_state() == ConnectionState::Connected
         {
-            return Ok(());
+            // Connected ≠ DataChannel open; wait for SCTP DCs before return.
+            if offerer.data_channels_open() && answerer.data_channels_open() {
+                return Ok(());
+            }
+            // Answerer may still be registering remote DCs; keep polling.
         }
         if std::time::Instant::now() >= deadline {
             return Err(NetError::Internal(format!(
-                "webrtc_handshake timeout (offerer={}, answerer={})",
+                "webrtc_handshake timeout (offerer={}, answerer={}, o_dc={}, a_dc={})",
                 offerer.connection_state().as_str(),
-                answerer.connection_state().as_str()
+                answerer.connection_state().as_str(),
+                offerer.data_channels_open(),
+                answerer.data_channels_open()
             )));
         }
         std::thread::sleep(Duration::from_millis(15));
@@ -962,17 +1023,24 @@ mod tests {
         // Local fingerprint from DTLS cert; remote may be SDP and/or DTLS.
         let ofp = offerer.local_fingerprint().unwrap();
         assert_eq!(ofp.algorithm, "sha-256");
-        // Wait briefly for DTLS remote cert path.
-        for _ in 0..50 {
+        // Wait briefly for DTLS remote cert path + DataChannel SCTP open.
+        // PeerConnection Connected does not guarantee DC ready_state == Open.
+        for _ in 0..100 {
             offerer.poll().unwrap();
             answerer.poll().unwrap();
             if answerer.remote_fingerprint().unwrap().is_some()
                 && offerer.remote_fingerprint().unwrap().is_some()
+                && offerer.data_channels_open()
+                && answerer.data_channels_open()
             {
                 break;
             }
             std::thread::sleep(Duration::from_millis(20));
         }
+        offerer
+            .wait_data_channels_open(Duration::from_secs(5))
+            .expect("offerer DataChannels open");
+        // Answerer only needs channels registered; open on offerer is enough to send.
 
         // DataChannel echo: offerer → answerer on "input".
         offerer
@@ -981,7 +1049,7 @@ mod tests {
                 data: b"ping-webrtc".to_vec(),
                 unordered: false,
             })
-            .unwrap();
+            .expect("send_data after DC open");
 
         let mut got = false;
         for _ in 0..100 {

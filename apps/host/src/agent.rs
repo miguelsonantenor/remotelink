@@ -457,9 +457,9 @@ pub fn run() {
 /// - **mock** (default): in-process [`MockPeerPair`] stands in for a viewer.
 /// - **live**: localhost TCP offerer+answerer pair — real sockets, still
 ///   single-process for the agent demo (`remotelink-net` feature `live`).
-/// - **webrtc**: webrtc-rs PeerConnection when compiled with feature `webrtc-rs`;
-///   agent demo still falls back to the synthetic mock session manager path
-///   (full webrtc agent loop is a follow-up).
+/// - **webrtc**: webrtc-rs PeerConnection when compiled with
+///   `remotelink-host --features webrtc-rs` (or net feature). Without the
+///   feature, falls back to a clear error message + mock synthetic path.
 pub fn run_with_transport(mode: remotelink_net::TransportMode) {
     let resolved = remotelink_net::TransportConfig { mode }.resolved_mode();
     println!(
@@ -469,13 +469,7 @@ pub fn run_with_transport(mode: remotelink_net::TransportMode) {
 
     let result = match resolved {
         remotelink_net::TransportMode::Live => run_agent_only_live_synthetic("agent-live-session"),
-        remotelink_net::TransportMode::Webrtc => {
-            println!(
-                "agent: webrtc mode selected — synthetic session uses factory PeerTransport; \
-                 enable feature webrtc-rs on remotelink-net for real ICE/DTLS"
-            );
-            run_agent_only_synthetic("agent-webrtc-session")
-        }
+        remotelink_net::TransportMode::Webrtc => run_agent_only_webrtc_synthetic("agent-webrtc-session"),
         _ => run_agent_only_synthetic("agent-synthetic-session"),
     };
 
@@ -575,6 +569,110 @@ fn run_agent_only_live_synthetic(session_id: &str) -> Result<String, String> {
         fp.as_sign_material(),
         snap.data.len()
     ))
+}
+
+/// Agent-only webrtc-rs loopback when feature `webrtc-rs` is enabled.
+///
+/// Without the feature, returns an error so the caller prints guidance
+/// (CI keeps default mock; demos opt in with `--features webrtc-rs`).
+fn run_agent_only_webrtc_synthetic(session_id: &str) -> Result<String, String> {
+    #[cfg(feature = "webrtc-rs")]
+    {
+        use std::time::Duration;
+
+        use remotelink_net::{
+            webrtc_handshake, AudioPacket, DataMessage, IncomingTrackData, NaluFormat, PeerRole,
+            PeerTransport, SharedRecording, VideoNalu, WebrtcPeerConfig, WebrtcPeerTransport,
+            LABEL_INPUT,
+        };
+
+        let mut offerer = WebrtcPeerTransport::new(PeerRole::Offerer, WebrtcPeerConfig::default())
+            .map_err(|e| e.to_string())?;
+        let mut answerer =
+            WebrtcPeerTransport::new(PeerRole::Answerer, WebrtcPeerConfig::default())
+                .map_err(|e| e.to_string())?;
+        let rec = SharedRecording::new();
+        answerer.set_callbacks(Box::new(rec.clone()));
+
+        webrtc_handshake(&mut offerer, &mut answerer, Duration::from_secs(15))
+            .map_err(|e| e.to_string())?;
+        offerer
+            .wait_data_channels_open(Duration::from_secs(5))
+            .map_err(|e| e.to_string())?;
+
+        let fp = offerer.local_fingerprint().map_err(|e| e.to_string())?;
+        offerer
+            .send_video_nalu(VideoNalu {
+                pts_host_mono: Duration::from_millis(0),
+                rtp_ts: Some(0),
+                keyframe: true,
+                format: NaluFormat::AnnexB,
+                data: vec![0, 0, 0, 1, 0x67],
+            })
+            .map_err(|e| e.to_string())?;
+        offerer
+            .send_audio(AudioPacket {
+                pts_host_mono: Duration::from_millis(0),
+                rtp_ts: Some(0),
+                sample_rate: 48_000,
+                channels: 2,
+                data: vec![0, 1, 2, 3],
+            })
+            .map_err(|e| e.to_string())?;
+        offerer
+            .send_data(DataMessage {
+                label: LABEL_INPUT.into(),
+                data: format!("session={session_id}").into_bytes(),
+                unordered: false,
+            })
+            .map_err(|e| e.to_string())?;
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            answerer.poll().map_err(|e| e.to_string())?;
+            let snap = rec.snapshot();
+            if snap.tracks.len() >= 2 && !snap.data.is_empty() {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(format!(
+                    "webrtc demo timeout tracks={} data={}",
+                    snap.tracks.len(),
+                    snap.data.len()
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(15));
+        }
+
+        let snap = rec.snapshot();
+        let video_n = snap
+            .tracks
+            .iter()
+            .filter(|t| matches!(t, IncomingTrackData::Video(_)))
+            .count();
+        let audio_n = snap
+            .tracks
+            .iter()
+            .filter(|t| matches!(t, IncomingTrackData::Audio(_)))
+            .count();
+
+        offerer.close().map_err(|e| e.to_string())?;
+        answerer.close().map_err(|e| e.to_string())?;
+
+        Ok(format!(
+            "webrtc-rs session={session_id} fp={} video_rx={video_n} audio_rx={audio_n} data_rx={}",
+            fp.as_sign_material(),
+            snap.data.len()
+        ))
+    }
+    #[cfg(not(feature = "webrtc-rs"))]
+    {
+        let _ = session_id;
+        Err(
+            "webrtc backend not compiled: rebuild with `cargo run -p remotelink-host --features webrtc-rs -- --role=agent --transport=webrtc`"
+                .into(),
+        )
+    }
 }
 
 /// Agent-only synthetic session: mock viewer peer in-process, no real display.

@@ -15,6 +15,8 @@ default = []
 # Optional egui+winit shell. Disabled by default so windows-gnu / CI stay lean;
 # enable with `cargo run -p remotelink-viewer --features gui`.
 gui = ["dep:eframe", "dep:egui"]
+# Real webrtc-rs PeerTransport demos (pulls webrtc + tokio). Off by default for CI.
+webrtc-rs = ["remotelink-net/webrtc-rs"]
 
 [dependencies]
 remotelink-common = { workspace = true }

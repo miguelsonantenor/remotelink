@@ -1,4 +1,4 @@
-﻿//! Integration tests for `/v1/ws` hello + session_intent + accept/reject.
+//! Integration tests for `/v1/ws` hello + session_intent + accept/reject.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -1131,6 +1131,3 @@ async fn session_intent_rate_limited() {
         other => panic!("expected rate_limited, got {other:?}"),
     }
 }
-
-
-

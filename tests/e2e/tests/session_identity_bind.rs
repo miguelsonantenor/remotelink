@@ -1,9 +1,9 @@
 //! Synthetic e2e for integrated tree: bind gate + mock media + input.
 
-use remotelink_auth::{SessionBindKey, HostSecret};
+use remotelink_auth::{HostSecret, SessionBindKey};
 use remotelink_e2e::{handshake_host_viewer, take_pair_peers};
 use remotelink_host::{
-    SessionManager, HostAuthService, HostLocalConfig, DEFAULT_HOST_OTP_PEPPER, InputProcessOutcome,
+    HostAuthService, HostLocalConfig, InputProcessOutcome, SessionManager, DEFAULT_HOST_OTP_PEPPER,
 };
 use remotelink_net::DataMessage;
 use remotelink_protocol::{InputPayload, SessionMode};

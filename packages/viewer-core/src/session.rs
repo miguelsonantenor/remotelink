@@ -1,4 +1,4 @@
-﻿//! Viewer session: PeerTransport answerer + decode/playout/input/skew.
+//! Viewer session: PeerTransport answerer + decode/playout/input/skew.
 //!
 //! # Identity binding (PR 13 / KD17)
 //!
@@ -1717,5 +1717,3 @@ mod tests {
         assert!(block.contains("Bind:"), "{block}");
     }
 }
-
-

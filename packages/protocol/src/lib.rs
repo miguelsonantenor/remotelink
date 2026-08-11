@@ -1,4 +1,4 @@
-﻿//! RemoteLink signaling and input protocol schemas.
+//! RemoteLink signaling and input protocol schemas.
 //!
 //! Wire encoding is JSON via `serde_json`. See `DESIGN.md` WebSocket (`/v1/ws`)
 //! and input path (v1 freeze) sections.
@@ -617,4 +617,3 @@ mod tests {
         assert!(decode_input("null").is_err());
     }
 }
-

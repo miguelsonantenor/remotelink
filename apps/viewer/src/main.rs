@@ -83,13 +83,14 @@ fn print_usage() {
     eprintln!(
         "remotelink-viewer {} — connect shell (viewer-core)\n\n\
          Usage:\n  \
-         remotelink-viewer [--synthetic | --mock-codec | --live-demo] [--host ID] \
+         remotelink-viewer [--synthetic | --mock-codec | --live-demo | --webrtc-demo] [--host ID] \
          [--password PW | --otp CODE | --unattended SECRET]\n  \
          remotelink-viewer --connect-stub --host ID --otp CODE\n  \
          remotelink-viewer --gui          (requires --features gui)\n\n\
          Transport (also REMOTELINK_TRANSPORT; default mock — CI-safe):\n  \
          --transport=mock|live|webrtc|auto\n  \
-         --live-demo       localhost TCP PeerTransport answerer demo (real sockets)\n\n\
+         --live-demo       localhost TCP PeerTransport answerer demo (real sockets)\n  \
+         --webrtc-demo     webrtc-rs PeerConnection demo (requires --features webrtc-rs)\n\n\
          Input (PR 19):\n  \
          --inject-input     after synthetic/mock media, send demo mouse/key events\n\
                             on DataChannel \"input\" (capture + scancode path)\n  \
@@ -128,10 +129,15 @@ fn parse_transport(args: &[String]) -> TransportConfig {
             });
         }
     }
-    // --live-demo implies live transport mode for logging / factory defaults.
+    // Demo flags imply the matching transport for logging / factory defaults.
     if args.iter().any(|a| a == "--live-demo") {
         return TransportConfig {
             mode: TransportMode::Live,
+        };
+    }
+    if args.iter().any(|a| a == "--webrtc-demo") {
+        return TransportConfig {
+            mode: TransportMode::Webrtc,
         };
     }
     TransportConfig::from_env()
@@ -145,8 +151,17 @@ fn run_cli(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let connect_stub_only = args.iter().any(|a| a == "--connect-stub");
     let want_synthetic = args.iter().any(|a| a == "--synthetic");
     let want_mock_codec = args.iter().any(|a| a == "--mock-codec");
+    let resolved = parse_transport(args).resolved_mode();
     let want_live_demo = args.iter().any(|a| a == "--live-demo")
-        || (parse_transport(args).resolved_mode() == TransportMode::Live
+        || (resolved == TransportMode::Live
+            && !want_synthetic
+            && !want_mock_codec
+            && !connect_stub_only
+            && (args
+                .iter()
+                .any(|a| a == "--transport" || a.starts_with("--transport="))));
+    let want_webrtc_demo = args.iter().any(|a| a == "--webrtc-demo")
+        || (resolved == TransportMode::Webrtc
             && !want_synthetic
             && !want_mock_codec
             && !connect_stub_only
@@ -160,6 +175,9 @@ fn run_cli(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|s| s.parse::<u64>().ok())
         .unwrap_or(if want_mock_codec { 1 } else { 0 });
 
+    if want_webrtc_demo {
+        return run_webrtc_demo();
+    }
     if want_live_demo {
         return run_live_demo();
     }
@@ -293,6 +311,103 @@ fn print_hud(stats: &SessionStats, block: bool) {
         print!("{}", stats.hud_block());
     } else {
         println!("hud {}", stats.hud_line());
+    }
+}
+
+/// webrtc-rs PeerTransport demo (answerer + in-process offerer).
+///
+/// Requires building with `--features webrtc-rs`.
+fn run_webrtc_demo() -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(feature = "webrtc-rs")]
+    {
+        use std::time::Duration;
+
+        use remotelink_net::{
+            webrtc_handshake, AudioPacket, DataMessage, IncomingTrackData, NaluFormat, PeerRole,
+            PeerTransport, SharedRecording, VideoNalu, WebrtcPeerConfig, WebrtcPeerTransport,
+            LABEL_INPUT,
+        };
+
+        println!(
+            "remotelink-viewer {} webrtc-rs PeerTransport demo (answerer)",
+            remotelink_common::VERSION
+        );
+
+        let mut offerer =
+            WebrtcPeerTransport::new(PeerRole::Offerer, WebrtcPeerConfig::default())?;
+        let mut answerer =
+            WebrtcPeerTransport::new(PeerRole::Answerer, WebrtcPeerConfig::default())?;
+        let rec = SharedRecording::new();
+        answerer.set_callbacks(Box::new(rec.clone()));
+
+        webrtc_handshake(&mut offerer, &mut answerer, Duration::from_secs(15))?;
+        offerer.wait_data_channels_open(Duration::from_secs(5))?;
+
+        offerer.send_video_nalu(VideoNalu {
+            pts_host_mono: Duration::from_millis(16),
+            rtp_ts: Some(1440),
+            keyframe: true,
+            format: NaluFormat::AnnexB,
+            data: vec![0, 0, 0, 1, 0x65],
+        })?;
+        offerer.send_audio(AudioPacket {
+            pts_host_mono: Duration::from_millis(16),
+            rtp_ts: Some(768),
+            sample_rate: 48_000,
+            channels: 2,
+            data: vec![9, 8, 7, 6],
+        })?;
+        offerer.send_data(DataMessage {
+            label: LABEL_INPUT.into(),
+            data: b"{}".to_vec(),
+            unordered: false,
+        })?;
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            answerer.poll()?;
+            let snap = rec.snapshot();
+            if snap.tracks.len() >= 2 && !snap.data.is_empty() {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err("webrtc demo: timeout waiting for frames".into());
+            }
+            std::thread::sleep(Duration::from_millis(15));
+        }
+
+        let snap = rec.snapshot();
+        let video_n = snap
+            .tracks
+            .iter()
+            .filter(|t| matches!(t, IncomingTrackData::Video(_)))
+            .count();
+        let audio_n = snap
+            .tracks
+            .iter()
+            .filter(|t| matches!(t, IncomingTrackData::Audio(_)))
+            .count();
+        let fp = answerer
+            .remote_fingerprint()?
+            .ok_or("missing remote fingerprint")?;
+
+        println!(
+            "webrtc ok: video_rx={video_n} audio_rx={audio_n} data_rx={} remote_fp={}",
+            snap.data.len(),
+            fp.as_sign_material()
+        );
+
+        offerer.close()?;
+        answerer.close()?;
+        Ok(())
+    }
+    #[cfg(not(feature = "webrtc-rs"))]
+    {
+        Err(
+            "webrtc demo requires --features webrtc-rs \
+             (cargo run -p remotelink-viewer --features webrtc-rs -- --webrtc-demo)"
+                .into(),
+        )
     }
 }
 

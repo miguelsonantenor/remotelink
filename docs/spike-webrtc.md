@@ -50,11 +50,15 @@ CLI (host / viewer):
 ```bash
 remotelink-host --role=agent --transport=mock
 remotelink-host --role=agent --transport=live
-remotelink-host --role=agent --transport=webrtc
+# webrtc demos need the feature flag:
+cargo run -p remotelink-host --features webrtc-rs -- --role=agent --transport=webrtc
 remotelink-viewer --live-demo
-remotelink-viewer --transport=live
-remotelink-viewer --transport=webrtc
+cargo run -p remotelink-viewer --features webrtc-rs -- --webrtc-demo
 ```
+
+**Note:** PeerConnection `Connected` does not imply DataChannels are open. Call
+`wait_data_channels_open` (or use `webrtc_handshake`, which waits for DC open)
+before `send_data` / media sends.
 
 Build with webrtc-rs:
 

@@ -14,6 +14,11 @@ path = "src/lib.rs"
 name = "remotelink-host"
 path = "src/main.rs"
 
+[features]
+default = []
+# Real webrtc-rs PeerTransport demos (pulls webrtc + tokio). Off by default for CI.
+webrtc-rs = ["remotelink-net/webrtc-rs"]
+
 [dependencies]
 remotelink-common = { workspace = true }
 remotelink-auth = { workspace = true }
