@@ -14,10 +14,17 @@ mock = []
 # Included in default so workspace tests cover loopback; apps still default to
 # mock via REMOTELINK_TRANSPORT / TransportConfig (CI-safe path).
 live = ["dep:serde", "dep:serde_json", "dep:sha2", "dep:rand", "dep:hex"]
-# Placeholder for a future pure-Rust webrtc-rs backend. Not wired to crates.io
-# deps in v1: windows-gnu CI + external-NALU path (see docs/spike-webrtc.md).
-# Re-enable with real `dep:webrtc` only on a dedicated msvc/unix builder job.
-webrtc-rs = []
+# Pure-Rust webrtc-rs (webrtc crate 0.11) PeerTransport backend.
+# **Off by default** so CI stays lean; enable with `--features webrtc-rs`.
+# Pulls tokio + webrtc; windows-gnu probe succeeded for 0.11.
+webrtc-rs = [
+    "dep:webrtc",
+    "dep:tokio",
+    "dep:bytes",
+    "dep:sha2",
+    "dep:rcgen",
+    "dep:hex",
+]
 
 [dependencies]
 remotelink-protocol = { workspace = true }
@@ -27,5 +34,15 @@ serde_json = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
 hex = { workspace = true, optional = true }
+# webrtc-rs feature only
+webrtc = { version = "0.11", optional = true }
+tokio = { workspace = true, optional = true, features = [
+    "rt-multi-thread",
+    "macros",
+    "sync",
+    "time",
+] }
+bytes = { version = "1", optional = true }
+rcgen = { version = "0.13", optional = true }
 
 [dev-dependencies]

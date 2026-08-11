@@ -1,15 +1,14 @@
-//! Transport factory: select mock vs live backends from env / CLI.
+//! Transport factory: select mock / live / webrtc backends from env / CLI.
 //!
 //! # Defaults (CI-safe)
 //!
 //! - Env `REMOTELINK_TRANSPORT` defaults to **`mock`** when unset.
-//! - Values: `mock` | `live` | `auto`.
-//! - `auto` prefers the live TCP backend when the `live` feature is enabled,
-//!   otherwise falls back to mock.
+//! - Values: `mock` | `live` | `webrtc` | `auto`.
+//! - `auto` prefers **webrtc** when feature `webrtc-rs` is enabled, else **live**
+//!   when feature `live` is enabled, else **mock**.
 //!
-//! Real WebRTC (DTLS-SRTP / ICE) is **not** selected here yet — see
-//! `docs/spike-webrtc.md`. The live backend is a pragmatic multi-process TCP
-//! path for local demos, not a production media stack.
+//! Real WebRTC (DTLS-SRTP / ICE) is selected with `REMOTELINK_TRANSPORT=webrtc`
+//! when built with `--features webrtc-rs`. See `docs/spike-webrtc.md`.
 
 use std::env;
 use std::str::FromStr;
@@ -20,6 +19,8 @@ use crate::live_loopback::{LivePeerConfig, LivePeerTransport};
 #[cfg(feature = "mock")]
 use crate::mock::{MockPeerConfig, MockPeerTransport};
 use crate::transport::BoxPeerTransport;
+#[cfg(feature = "webrtc-rs")]
+use crate::webrtc_rs::{WebrtcPeerConfig, WebrtcPeerTransport};
 
 /// Which side of the peer connection this process owns.
 ///
@@ -64,7 +65,9 @@ pub enum TransportMode {
     Mock,
     /// Length-prefixed TCP media plane (feature `live`).
     Live,
-    /// Prefer live when compiled in; otherwise mock.
+    /// Pure-Rust webrtc-rs PeerConnection (feature `webrtc-rs`).
+    Webrtc,
+    /// Prefer webrtc (if compiled), else live, else mock.
     Auto,
 }
 
@@ -74,6 +77,7 @@ impl TransportMode {
         match self {
             TransportMode::Mock => "mock",
             TransportMode::Live => "live",
+            TransportMode::Webrtc => "webrtc",
             TransportMode::Auto => "auto",
         }
     }
@@ -86,9 +90,10 @@ impl FromStr for TransportMode {
         match s.trim().to_ascii_lowercase().as_str() {
             "mock" | "synthetic" => Ok(TransportMode::Mock),
             "live" | "tcp" | "loopback" => Ok(TransportMode::Live),
+            "webrtc" | "webrtc-rs" | "webrtc_rs" => Ok(TransportMode::Webrtc),
             "auto" => Ok(TransportMode::Auto),
             other => Err(NetError::BackendUnavailable(format!(
-                "unknown transport mode `{other}` (expected mock|live|auto)"
+                "unknown transport mode `{other}` (expected mock|live|webrtc|auto)"
             ))),
         }
     }
@@ -97,7 +102,7 @@ impl FromStr for TransportMode {
 /// Configuration for [`create_peer_transport`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransportConfig {
-    /// Backend mode (`mock` / `live` / `auto`).
+    /// Backend mode (`mock` / `live` / `webrtc` / `auto`).
     pub mode: TransportMode,
 }
 
@@ -110,7 +115,7 @@ impl Default for TransportConfig {
 }
 
 impl TransportConfig {
-    /// Read `REMOTELINK_TRANSPORT` (`mock` | `live` | `auto`). Unset → mock.
+    /// Read `REMOTELINK_TRANSPORT` (`mock` | `live` | `webrtc` | `auto`). Unset → mock.
     pub fn from_env() -> Self {
         match env::var("REMOTELINK_TRANSPORT") {
             Ok(v) if !v.trim().is_empty() => match TransportMode::from_str(&v) {
@@ -124,7 +129,7 @@ impl TransportConfig {
         }
     }
 
-    /// Build from a CLI/env string (`mock` / `live` / `auto`).
+    /// Build from a CLI/env string (`mock` / `live` / `webrtc` / `auto`).
     pub fn parse(s: &str) -> Result<Self> {
         Ok(Self {
             mode: TransportMode::from_str(s)?,
@@ -132,14 +137,20 @@ impl TransportConfig {
     }
 
     /// Resolve `auto` to a concrete mode given compiled features.
+    ///
+    /// Preference: **webrtc-rs** (if feature on) → **live** (if feature on) → **mock**.
     pub fn resolved_mode(&self) -> TransportMode {
         match self.mode {
             TransportMode::Auto => {
-                #[cfg(feature = "live")]
+                #[cfg(feature = "webrtc-rs")]
+                {
+                    TransportMode::Webrtc
+                }
+                #[cfg(all(not(feature = "webrtc-rs"), feature = "live"))]
                 {
                     TransportMode::Live
                 }
-                #[cfg(not(feature = "live"))]
+                #[cfg(all(not(feature = "webrtc-rs"), not(feature = "live")))]
                 {
                     TransportMode::Mock
                 }
@@ -162,6 +173,7 @@ pub fn create_peer_transport_with_config(
     match config.resolved_mode() {
         TransportMode::Mock => create_mock(role),
         TransportMode::Live => create_live(role),
+        TransportMode::Webrtc => create_webrtc(role),
         TransportMode::Auto => unreachable!("resolved_mode never returns Auto"),
     }
 }
@@ -200,6 +212,21 @@ fn create_live(_role: PeerRole) -> Result<BoxPeerTransport> {
     ))
 }
 
+#[cfg(feature = "webrtc-rs")]
+fn create_webrtc(role: PeerRole) -> Result<BoxPeerTransport> {
+    Ok(Box::new(WebrtcPeerTransport::new(
+        role,
+        WebrtcPeerConfig::from_env(),
+    )?))
+}
+
+#[cfg(not(feature = "webrtc-rs"))]
+fn create_webrtc(_role: PeerRole) -> Result<BoxPeerTransport> {
+    Err(NetError::BackendUnavailable(
+        "webrtc-rs backend not compiled (enable feature `webrtc-rs`)".into(),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -228,7 +255,15 @@ mod tests {
             TransportConfig::parse("auto").unwrap().mode,
             TransportMode::Auto
         );
-        assert!(TransportConfig::parse("webrtc").is_err());
+        assert_eq!(
+            TransportConfig::parse("webrtc").unwrap().mode,
+            TransportMode::Webrtc
+        );
+        assert_eq!(
+            TransportConfig::parse("webrtc-rs").unwrap().mode,
+            TransportMode::Webrtc
+        );
+        assert!(TransportConfig::parse("nope").is_err());
     }
 
     #[test]
@@ -269,12 +304,52 @@ mod tests {
         t.close().unwrap();
     }
 
-    #[cfg(feature = "live")]
+    #[cfg(all(feature = "live", not(feature = "webrtc-rs")))]
     #[test]
-    fn auto_resolves_to_live_when_feature_on() {
+    fn auto_resolves_to_live_when_webrtc_off() {
         let cfg = TransportConfig {
             mode: TransportMode::Auto,
         };
         assert_eq!(cfg.resolved_mode(), TransportMode::Live);
+    }
+
+    #[cfg(feature = "webrtc-rs")]
+    #[test]
+    fn auto_resolves_to_webrtc_when_feature_on() {
+        let cfg = TransportConfig {
+            mode: TransportMode::Auto,
+        };
+        assert_eq!(cfg.resolved_mode(), TransportMode::Webrtc);
+    }
+
+    #[cfg(feature = "webrtc-rs")]
+    #[test]
+    fn factory_webrtc_offerer() {
+        let mut t = create_peer_transport_with_config(
+            PeerRole::Offerer,
+            &TransportConfig {
+                mode: TransportMode::Webrtc,
+            },
+        )
+        .unwrap();
+        assert_eq!(t.connection_state(), ConnectionState::New);
+        let fp = t.local_fingerprint().unwrap();
+        assert_eq!(fp.algorithm, "sha-256");
+        t.close().unwrap();
+    }
+
+    #[cfg(not(feature = "webrtc-rs"))]
+    #[test]
+    fn webrtc_mode_unavailable_without_feature() {
+        let result = create_peer_transport_with_config(
+            PeerRole::Offerer,
+            &TransportConfig {
+                mode: TransportMode::Webrtc,
+            },
+        );
+        assert!(
+            matches!(result, Err(NetError::BackendUnavailable(_))),
+            "expected BackendUnavailable without webrtc-rs feature"
+        );
     }
 }

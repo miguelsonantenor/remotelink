@@ -88,7 +88,7 @@ fn print_usage() {
          remotelink-viewer --connect-stub --host ID --otp CODE\n  \
          remotelink-viewer --gui          (requires --features gui)\n\n\
          Transport (also REMOTELINK_TRANSPORT; default mock — CI-safe):\n  \
-         --transport=mock|live|auto\n  \
+         --transport=mock|live|webrtc|auto\n  \
          --live-demo       localhost TCP PeerTransport answerer demo (real sockets)\n\n\
          Input (PR 19):\n  \
          --inject-input     after synthetic/mock media, send demo mouse/key events\n\

@@ -6,7 +6,7 @@
 //! - **colocate**: CI/test mode — service control sequence + agent in-process
 //! - **`--kill-switch`**: G9 demo — active session indicator then local kill
 //!
-//! Transport: `--transport=mock|live|auto` (or `REMOTELINK_TRANSPORT`; default **mock**).
+//! Transport: `--transport=mock|live|webrtc|auto` (or `REMOTELINK_TRANSPORT`; default **mock**).
 //!
 //! Control IPC is length-prefixed JSON (no media bytes).
 
@@ -148,7 +148,7 @@ fn print_usage() {
     eprintln!(
         "remotelink-host {} — Windows host service / session agent\n\n\
          Usage:\n  \
-         remotelink-host [--role=service|agent|colocate|kill-switch] [--transport=mock|live|auto]\n  \
+         remotelink-host [--role=service|agent|colocate|kill-switch] [--transport=mock|live|webrtc|auto]\n  \
          remotelink-host --kill-switch\n\n\
          Roles (KD5 agent-media):\n  \
          service      Enrollment, signaling, policy, kill-switch (default)\n  \
@@ -158,7 +158,8 @@ fn print_usage() {
          Transport (also REMOTELINK_TRANSPORT; default mock — CI-safe):\n  \
          mock         In-process MockPeerTransport (default)\n  \
          live         TCP length-prefixed PeerTransport (local multi-process demos)\n  \
-         auto         Prefer live when compiled; else mock\n",
+         webrtc       webrtc-rs PeerConnection (requires remotelink-net feature webrtc-rs)\n  \
+         auto         Prefer webrtc (if feature on) → live → mock\n",
         remotelink_common::VERSION
     );
 }

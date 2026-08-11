@@ -169,7 +169,7 @@ WS messages are session-scoped with monotonic `signal_seq` (stale seq dropped). 
 
 ---
 
-## 4b. PeerTransport modes (mock / live)
+## 4b. PeerTransport modes (mock / live / webrtc)
 
 Media-plane backends are selected by env or CLI. **Default is mock** so CI never requires sockets or WebRTC.
 
@@ -177,10 +177,11 @@ Media-plane backends are selected by env or CLI. **Default is mock** so CI never
 |------|------------|----------|
 | **mock** (default) | `REMOTELINK_TRANSPORT=mock` or unset | In-process `MockPeerTransport` — unit tests, colocate CI |
 | **live** | `REMOTELINK_TRANSPORT=live` or `--transport=live` | TCP length-prefixed frames between peers — local multi-process demos |
-| **auto** | `REMOTELINK_TRANSPORT=auto` | Prefer live when compiled (`remotelink-net` feature `live`); else mock |
+| **webrtc** | `REMOTELINK_TRANSPORT=webrtc` or `--transport=webrtc` | webrtc-rs `RTCPeerConnection` (build with `remotelink-net` feature `webrtc-rs`) |
+| **auto** | `REMOTELINK_TRANSPORT=auto` | Prefer webrtc if feature on → live if feature on → mock |
 
 ```powershell
-# CI / default
+# CI / default (mock + live features only — no webrtc crate)
 cargo run -p remotelink-host -- --role=agent
 cargo run -p remotelink-viewer -- --synthetic
 
@@ -188,10 +189,15 @@ cargo run -p remotelink-viewer -- --synthetic
 cargo run -p remotelink-host -- --role=agent --transport=live
 cargo run -p remotelink-viewer -- --live-demo
 
+# webrtc-rs (opt-in feature; real ICE/DTLS; interim media on DataChannels)
+cargo test -p remotelink-net --features webrtc-rs
+cargo run -p remotelink-host --features remotelink-net/webrtc-rs -- --role=agent --transport=webrtc
+
 # Env form
 $env:REMOTELINK_TRANSPORT = "live"
 $env:REMOTELINK_LIVE_BIND = "127.0.0.1:0"          # optional
 $env:REMOTELINK_LIVE_ADVERTISE = "127.0.0.1"       # optional SDP/ICE host
+$env:REMOTELINK_WEBRTC_STUN = "stun:127.0.0.1:3478" # optional when using webrtc
 ```
 
 Factory API (library):
@@ -203,9 +209,14 @@ remotelink_net::create_peer_transport_with_config(
     remotelink_net::PeerRole::Answerer,
     &remotelink_net::TransportConfig::parse("live")?,
 )?;
+// webrtc requires --features webrtc-rs at compile time
+remotelink_net::create_peer_transport_with_config(
+    remotelink_net::PeerRole::Offerer,
+    &remotelink_net::TransportConfig::parse("webrtc")?,
+)?;
 ```
 
-Live TCP is **not** DTLS-SRTP WebRTC. Production path remains spike-gated — see [spike-webrtc.md](spike-webrtc.md). coturn is for the future real ICE/TURN path, not for the live TCP demo.
+Live TCP is **not** DTLS-SRTP WebRTC. The **webrtc-rs** backend is real PeerConnection but media still rides interim DataChannels until SampleBuilder H.264 tracks land — see [spike-webrtc.md](spike-webrtc.md). coturn serves the real ICE/TURN path (`REMOTELINK_WEBRTC_STUN`), not the live TCP demo.
 
 ---
 

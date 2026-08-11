@@ -17,7 +17,8 @@
 //! |------------------------|---------|
 //! | unset / `mock` (default) | In-process mock — **CI path** |
 //! | `live` | TCP length-prefixed frames (feature `live`) |
-//! | `auto` | Prefer live when compiled; else mock |
+//! | `webrtc` | webrtc-rs PeerConnection (feature `webrtc-rs`, default-off) |
+//! | `auto` | Prefer webrtc (if feature on) → live → mock |
 //!
 //! # Mock (default mode)
 //!
@@ -30,14 +31,17 @@
 //! [`live_loopback::LivePeerTransport`] carries media/data over real TCP for
 //! local multi-process demos. Not DTLS-SRTP / WebRTC — see `docs/spike-webrtc.md`.
 //!
-//! # Real backends
+//! # webrtc-rs (feature `webrtc-rs`, default **off**)
 //!
-//! - Feature `webrtc-rs`: **name-only placeholder** (no crates.io deps wired).
-//! - Plan B: libwebrtc FFI in a follow-up crate (`packages/net-libwebrtc`)
-//!   behind the same trait.
+//! [`webrtc_rs::WebrtcPeerTransport`] uses the pure-Rust `webrtc` crate (0.11)
+//! for real SDP / ICE / DTLS. Media is interim on DataChannels `media-video` /
+//! `media-audio` with the same payload layout as live TCP until SampleBuilder
+//! H.264 tracks land. CI keeps default features (mock+live only).
 //!
-//! Spike decision: **GO for v1 with mock-first + live TCP step + Plan B
-//! libwebrtc**; pure-Rust WebRTC remains tracked, not the v1 ship path.
+//! # Plan B
+//!
+//! libwebrtc FFI in a follow-up crate (`packages/net-libwebrtc`) behind the
+//! same trait if pure-Rust path fails packaging / packetization needs.
 
 #![deny(missing_docs)]
 
@@ -51,6 +55,9 @@ pub mod mock;
 
 #[cfg(feature = "live")]
 pub mod live_loopback;
+
+#[cfg(feature = "webrtc-rs")]
+pub mod webrtc_rs;
 
 pub use error::{NetError, Result};
 pub use factory::{
@@ -72,6 +79,12 @@ pub use mock::{MockPeerConfig, MockPeerPair, MockPeerTransport, SharedRecording}
 #[cfg(feature = "live")]
 pub use live_loopback::{live_handshake, LivePeerConfig, LivePeerTransport, LiveSdp};
 
+#[cfg(feature = "webrtc-rs")]
+pub use webrtc_rs::{
+    webrtc_handshake, WebrtcPeerConfig, WebrtcPeerTransport, LABEL_IDENTITY, LABEL_INPUT,
+    LABEL_MEDIA_AUDIO, LABEL_MEDIA_VIDEO,
+};
+
 /// Crate version from `Cargo.toml`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -82,7 +95,7 @@ pub enum TransportBackend {
     Mock,
     /// Length-prefixed TCP live path (feature `live`).
     Live,
-    /// Pure-Rust webrtc crate (feature `webrtc-rs` placeholder).
+    /// Pure-Rust webrtc crate PeerTransport (feature `webrtc-rs`).
     WebrtcRs,
     /// Placeholder for future libwebrtc FFI.
     Libwebrtc,

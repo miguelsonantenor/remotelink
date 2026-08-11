@@ -452,11 +452,14 @@ pub fn run() {
     run_with_transport(remotelink_net::TransportMode::Mock);
 }
 
-/// Run the agent role with an explicit transport mode (`mock` / `live` / `auto`).
+/// Run the agent role with an explicit transport mode (`mock` / `live` / `webrtc` / `auto`).
 ///
 /// - **mock** (default): in-process [`MockPeerPair`] stands in for a viewer.
 /// - **live**: localhost TCP offerer+answerer pair — real sockets, still
 ///   single-process for the agent demo (`remotelink-net` feature `live`).
+/// - **webrtc**: webrtc-rs PeerConnection when compiled with feature `webrtc-rs`;
+///   agent demo still falls back to the synthetic mock session manager path
+///   (full webrtc agent loop is a follow-up).
 pub fn run_with_transport(mode: remotelink_net::TransportMode) {
     let resolved = remotelink_net::TransportConfig { mode }.resolved_mode();
     println!(
@@ -466,6 +469,13 @@ pub fn run_with_transport(mode: remotelink_net::TransportMode) {
 
     let result = match resolved {
         remotelink_net::TransportMode::Live => run_agent_only_live_synthetic("agent-live-session"),
+        remotelink_net::TransportMode::Webrtc => {
+            println!(
+                "agent: webrtc mode selected — synthetic session uses factory PeerTransport; \
+                 enable feature webrtc-rs on remotelink-net for real ICE/DTLS"
+            );
+            run_agent_only_synthetic("agent-webrtc-session")
+        }
         _ => run_agent_only_synthetic("agent-synthetic-session"),
     };
 
