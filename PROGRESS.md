@@ -20,4 +20,10 @@ Plan PRs 1–27 done.
 - `hello_ok.feature_flags.sdp_relay = true`
 - Tests: `sdp_ice_relay_after_accept`, role/state guards, e2e `ws_media_signaling`
 
-**Still open for product:** host/viewer CLI WSS dialers, SampleBuilder RTP tracks, MSI/codesign, GitHub remote.
+**Later same day (CLI WSS clients):**
+- `packages/signaling` — register HTTP + `SignalingClient` WSS
+- Host `--role=ws` (enroll + accept + SessionManager media)
+- Viewer `--ws-connect` (intent + answer + media RX)
+- e2e `ws_cli_live`: live TCP media over real WSS (video_tx/rx=3)
+
+**Still open for product:** SampleBuilder RTP tracks, long-lived host service, MSI/codesign, GitHub remote.

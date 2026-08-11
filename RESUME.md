@@ -11,7 +11,7 @@
 | PR plan | **PRs 1–27 complete** (8b optional skipped) |
 | **Integrated monorepo** | **Yes** — `cargo test --workspace` green (default features) |
 | PeerTransport backends | **mock** (CI default) · **live TCP** (default feature) · **webrtc-rs** (opt-in feature) |
-| Real AnyDesk product | **~70%** — WSS SDP/ICE relay live; SessionManager + ViewerSession factory transports; real ICE/DTLS (webrtc-rs); media still interim DC NALU/Opus (not SampleBuilder RTP); no full installers |
+| Real AnyDesk product | **~75%** — Host/viewer CLI WSS clients + live TCP media multi-process path; SDP/ICE relay; factory transports; webrtc-rs optional; media still interim DC NALU (not SampleBuilder RTP); no installers |
 
 ## Day-to-day development
 
@@ -26,14 +26,18 @@ cargo test --workspace
 # Real webrtc-rs backend unit tests
 cargo test -p remotelink-net --features webrtc-rs
 
-# Host / viewer demos
+# Host / viewer demos (in-process)
 cargo run -p remotelink-host -- --role=agent --transport=mock
 cargo run -p remotelink-host -- --role=agent --transport=live
-cargo run -p remotelink-host --features webrtc-rs -- --role=agent --transport=webrtc
 cargo run -p remotelink-viewer -- --live-demo
-cargo run -p remotelink-viewer --features webrtc-rs -- --webrtc-demo
 
-# Lab stack
+# Multi-process lab (3 terminals; memory server if DATABASE_URL unset)
+cargo run -p remotelink-server
+cargo run -p remotelink-host -- --role=ws --server=http://127.0.0.1:8080 --transport=live
+# copy public_id from host output:
+cargo run -p remotelink-viewer -- --ws-connect --server=http://127.0.0.1:8080 --host PUBLIC_ID --otp 123456 --transport=live
+
+# Lab stack (Postgres + server)
 docker compose -f deploy/docker-compose.yml up -d --build
 ```
 
@@ -48,8 +52,8 @@ docker compose -f deploy/docker-compose.yml up -d --build
 
 ## Next best steps
 
-1. **CLI multi-process demo**: host/viewer binaries dial real server WSS end-to-end (e2e test already covers path)  
-2. **SampleBuilder H.264 / Opus RTP tracks** (replace interim `media-video` / `media-audio` DataChannels)  
+1. **SampleBuilder H.264 / Opus RTP tracks** (replace interim `media-video` / `media-audio` DataChannels)  
+2. Persistent host service (reconnect, OTP mint UI, named pipe agent)  
 3. Push to GitHub remote; real MSI/codesign (`deploy/packaging/`)  
 
 Historical PR tips remain on `execute-plan/35709e22-pr-*` and `progress/*` branches / worktrees.

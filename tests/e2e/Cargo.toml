@@ -13,6 +13,7 @@ remotelink-net = { workspace = true }
 remotelink-protocol = { workspace = true }
 remotelink-server = { path = "../../apps/server" }
 remotelink-viewer-core = { workspace = true }
+remotelink-signaling = { workspace = true }
 axum = { workspace = true }
 chrono = { workspace = true }
 futures-util = { workspace = true }

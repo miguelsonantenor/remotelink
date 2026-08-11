@@ -9,6 +9,10 @@
 //! `--always-capture` enables input while unfocused (default for headless).
 //!
 //! Optional egui shell: build with `--features gui` and pass `--gui`.
+//!
+//! Multi-process WSS: `--ws-connect --server=… --host PUBLIC_ID --transport=live`.
+
+mod ws_connect;
 
 use std::env;
 
@@ -17,6 +21,7 @@ use remotelink_viewer_core::{
     connect_stub, run_mock_codec_loopback_ex, run_synthetic_loopback_ex, ConnectRequest,
     SessionStats, ViewerPhase, ViewerSession,
 };
+use ws_connect::{run_ws_viewer_blocking, WsViewerConfig};
 
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -83,14 +88,17 @@ fn print_usage() {
     eprintln!(
         "remotelink-viewer {} — connect shell (viewer-core)\n\n\
          Usage:\n  \
-         remotelink-viewer [--synthetic | --mock-codec | --live-demo | --webrtc-demo] [--host ID] \
+         remotelink-viewer [--synthetic | --mock-codec | --live-demo | --webrtc-demo | --ws-connect] [--host ID] \
          [--password PW | --otp CODE | --unattended SECRET]\n  \
+         remotelink-viewer --ws-connect --server=http://127.0.0.1:8080 --host PUBLIC_ID --otp 123456 --transport=live\n  \
          remotelink-viewer --connect-stub --host ID --otp CODE\n  \
          remotelink-viewer --gui          (requires --features gui)\n\n\
          Transport (also REMOTELINK_TRANSPORT; default mock — CI-safe):\n  \
          --transport=mock|live|webrtc|auto\n  \
          --live-demo       localhost TCP PeerTransport answerer demo (real sockets)\n  \
-         --webrtc-demo     webrtc-rs PeerConnection demo (requires --features webrtc-rs)\n\n\
+         --webrtc-demo     webrtc-rs PeerConnection demo (requires --features webrtc-rs)\n  \
+         --ws-connect      Multi-process: WSS intent/accept + SDP/ICE + media RX\n  \
+         --server URL      Signaling base for --ws-connect (or REMOTELINK_SERVER)\n\n\
          Input (PR 19):\n  \
          --inject-input     after synthetic/mock media, send demo mouse/key events\n\
                             on DataChannel \"input\" (capture + scancode path)\n  \
@@ -165,9 +173,11 @@ fn run_cli(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             && !want_synthetic
             && !want_mock_codec
             && !connect_stub_only
+            && !args.iter().any(|a| a == "--ws-connect")
             && (args
                 .iter()
                 .any(|a| a == "--transport" || a.starts_with("--transport="))));
+    let want_ws_connect = args.iter().any(|a| a == "--ws-connect");
     let inject_input = args.iter().any(|a| a == "--inject-input");
     let always_capture = args.iter().any(|a| a == "--always-capture");
     let hud_block = args.iter().any(|a| a == "--hud-block");
@@ -175,6 +185,30 @@ fn run_cli(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|s| s.parse::<u64>().ok())
         .unwrap_or(if want_mock_codec { 1 } else { 0 });
 
+    if want_ws_connect {
+        let mut cfg = WsViewerConfig {
+            host_public_id: host.clone(),
+            transport: resolved,
+            ..WsViewerConfig::default()
+        };
+        if let Some(s) = flag_value(args, "--server") {
+            cfg.server = s;
+        } else if let Ok(s) = env::var("REMOTELINK_SERVER") {
+            if !s.is_empty() {
+                cfg.server = s;
+            }
+        }
+        if let Some(o) = otp.as_deref() {
+            cfg.otp = o.to_string();
+        }
+        return match run_ws_viewer_blocking(cfg) {
+            Ok(summary) => {
+                println!("{summary}");
+                Ok(())
+            }
+            Err(e) => Err(e.into()),
+        };
+    }
     if want_webrtc_demo {
         return run_webrtc_demo();
     }

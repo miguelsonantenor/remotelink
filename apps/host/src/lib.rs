@@ -13,6 +13,7 @@ pub mod platform_capture;
 pub mod policy;
 pub mod service;
 pub mod session;
+pub mod ws_session;
 
 pub use agent::{
     local_confirm, run_agent_only_synthetic, run_with_transport, AgentSession, AgentSessionState,
@@ -32,3 +33,4 @@ pub use session::{
     parse_ice_payload, parse_sdp_payload, signal_kind, InboundStats, InputProcessOutcome,
     PumpStats, SdpPayload, SessionError, SessionManager, INPUT_CHANNEL_LABEL,
 };
+pub use ws_session::{run_ws_host, run_ws_host_blocking, ExistingHostCreds, WsHostConfig};

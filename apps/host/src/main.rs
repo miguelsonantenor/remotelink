@@ -14,6 +14,7 @@ use std::env;
 
 use remotelink_host::agent;
 use remotelink_host::service;
+use remotelink_host::{run_ws_host_blocking, WsHostConfig};
 use remotelink_net::TransportConfig;
 #[cfg(test)]
 use remotelink_net::TransportMode;
@@ -40,6 +41,21 @@ fn main() {
                 transport.mode.as_str()
             );
             agent::run_with_transport(transport.mode);
+        }
+        HostRole::Ws => {
+            println!(
+                "remotelink-host {} role=ws transport={}",
+                remotelink_common::VERSION,
+                transport.mode.as_str()
+            );
+            let cfg = parse_ws_host_config(&args, transport.mode);
+            match run_ws_host_blocking(cfg) {
+                Ok(summary) => println!("{summary}"),
+                Err(e) => {
+                    eprintln!("ws-host: failed: {e}");
+                    std::process::exit(1);
+                }
+            }
         }
         HostRole::Colocate => {
             println!(
@@ -77,6 +93,8 @@ fn main() {
 enum HostRole {
     Service,
     Agent,
+    /// Multi-process WSS: register + accept + SessionManager media.
+    Ws,
     /// In-process service control + agent synthetic session (CI / dogfood).
     Colocate,
     /// G9: attach session, show Active indicator, fire local kill-switch.
@@ -107,14 +125,53 @@ fn role_from_str(s: &str) -> HostRole {
     match s {
         "service" => HostRole::Service,
         "agent" => HostRole::Agent,
+        "ws" | "ws-agent" | "signaling" => HostRole::Ws,
         "colocate" | "synthetic" => HostRole::Colocate,
         "kill-switch" | "kill_switch" => HostRole::KillSwitchDemo,
         "help" => HostRole::Help,
         other => {
-            eprintln!("unknown --role `{other}` (expected service|agent|colocate|kill-switch)");
+            eprintln!(
+                "unknown --role `{other}` (expected service|agent|ws|colocate|kill-switch)"
+            );
             HostRole::Help
         }
     }
+}
+
+fn parse_ws_host_config(args: &[String], transport: remotelink_net::TransportMode) -> WsHostConfig {
+    let mut cfg = WsHostConfig {
+        transport,
+        ..WsHostConfig::default()
+    };
+    if let Some(s) = flag_value(args, "--server") {
+        cfg.server = s;
+    } else if let Ok(s) = env::var("REMOTELINK_SERVER") {
+        if !s.is_empty() {
+            cfg.server = s;
+        }
+    }
+    if let Some(n) = flag_value(args, "--display-name") {
+        cfg.display_name = n;
+    }
+    if let Some(n) = flag_value(args, "--frames") {
+        if let Ok(v) = n.parse() {
+            cfg.video_frames = v;
+        }
+    }
+    cfg
+}
+
+fn flag_value(args: &[String], name: &str) -> Option<String> {
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if arg == name {
+            return iter.next().cloned();
+        }
+        if let Some(rest) = arg.strip_prefix(&format!("{name}=")) {
+            return Some(rest.to_string());
+        }
+    }
+    None
 }
 
 /// CLI `--transport=` overrides env; unset CLI falls back to [`TransportConfig::from_env`].
@@ -148,16 +205,22 @@ fn print_usage() {
     eprintln!(
         "remotelink-host {} — Windows host service / session agent\n\n\
          Usage:\n  \
-         remotelink-host [--role=service|agent|colocate|kill-switch] [--transport=mock|live|webrtc|auto]\n  \
+         remotelink-host [--role=service|agent|ws|colocate|kill-switch] [--transport=mock|live|webrtc|auto]\n  \
+         remotelink-host --role=ws --server=http://127.0.0.1:8080 --transport=live\n  \
          remotelink-host --kill-switch\n\n\
          Roles (KD5 agent-media):\n  \
          service      Enrollment, signaling, policy, kill-switch (default)\n  \
-         agent        Session manager + PeerTransport synthetic A/V\n  \
+         agent        Session manager + PeerTransport synthetic A/V (in-process demos)\n  \
+         ws           Multi-process: register + WSS hello/accept + SDP/ICE + media\n  \
          colocate     CI/test: in-process service control + agent synthetic session\n  \
          kill-switch  G9 demo: mandatory session indicator + local kill-switch\n\n\
+         WSS host flags (role=ws):\n  \
+         --server URL     Signaling base (default http://127.0.0.1:8080; or REMOTELINK_SERVER)\n  \
+         --display-name N Enrollment display name\n  \
+         --frames N       Synthetic video frames to pump after connect (default 5)\n\n\
          Transport (also REMOTELINK_TRANSPORT; default mock — CI-safe):\n  \
-         mock         In-process MockPeerTransport (default)\n  \
-         live         TCP length-prefixed PeerTransport (local multi-process demos)\n  \
+         mock         In-process MockPeerTransport (default; ws role upgrades to live)\n  \
+         live         TCP length-prefixed PeerTransport (multi-process demos)\n  \
          webrtc       webrtc-rs PeerConnection (requires remotelink-net feature webrtc-rs)\n  \
          auto         Prefer webrtc (if feature on) → live → mock\n",
         remotelink_common::VERSION

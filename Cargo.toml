@@ -9,6 +9,7 @@ members = [
     "packages/platform-windows",
     "packages/platform-linux",
     "packages/viewer-core",
+    "packages/signaling",
     "apps/host",
     "apps/viewer",
     "apps/server",
@@ -33,6 +34,7 @@ remotelink-net = { path = "packages/net", version = "0.1.0" }
 remotelink-platform-windows = { path = "packages/platform-windows", version = "0.1.0" }
 remotelink-platform-linux = { path = "packages/platform-linux", version = "0.1.0" }
 remotelink-viewer-core = { path = "packages/viewer-core", version = "0.1.0" }
+remotelink-signaling = { path = "packages/signaling", version = "0.1.0" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 argon2 = { version = "0.5", features = ["std"] }
