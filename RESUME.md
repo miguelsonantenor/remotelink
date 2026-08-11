@@ -11,7 +11,7 @@
 | PR plan | **PRs 1–27 complete** (8b optional skipped) |
 | **Integrated monorepo** | **Yes** — `cargo test --workspace` green (default features) |
 | PeerTransport backends | **mock** (CI default) · **live TCP** (default feature) · **webrtc-rs** (opt-in feature) |
-| Real AnyDesk product | **~75%** — Host/viewer CLI WSS clients + live TCP media multi-process path; SDP/ICE relay; factory transports; webrtc-rs optional; media still interim DC NALU (not SampleBuilder RTP); no installers |
+| Real AnyDesk product | **~80%** — WSS multi-process + live TCP; webrtc-rs RTP H.264/Opus tracks (SampleBuilder RX) + DC mirror; factory transports; no full installers / long-lived service |
 
 ## Day-to-day development
 
@@ -52,7 +52,7 @@ docker compose -f deploy/docker-compose.yml up -d --build
 
 ## Next best steps
 
-1. **SampleBuilder H.264 / Opus RTP tracks** (replace interim `media-video` / `media-audio` DataChannels)  
+1. Drop DC media mirror once RTP-only is proven multi-process (keep input/identity DCs)  
 2. Persistent host service (reconnect, OTP mint UI, named pipe agent)  
 3. Push to GitHub remote; real MSI/codesign (`deploy/packaging/`)  
 

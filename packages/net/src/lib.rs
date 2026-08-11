@@ -34,9 +34,9 @@
 //! # webrtc-rs (feature `webrtc-rs`, default **off**)
 //!
 //! [`webrtc_rs::WebrtcPeerTransport`] uses the pure-Rust `webrtc` crate (0.11)
-//! for real SDP / ICE / DTLS. Media is interim on DataChannels `media-video` /
-//! `media-audio` with the same payload layout as live TCP until SampleBuilder
-//! H.264 tracks land. CI keeps default features (mock+live only).
+//! for real SDP / ICE / DTLS. Media prefers **RTP H.264 + Opus tracks**
+//! (SampleBuilder on receive) and mirrors on DataChannels `media-video` /
+//! `media-audio` during track bind races. CI keeps default features (mock+live only).
 //!
 //! # Plan B
 //!

@@ -26,4 +26,9 @@ Plan PRs 1–27 done.
 - Viewer `--ws-connect` (intent + answer + media RX)
 - e2e `ws_cli_live`: live TCP media over real WSS (video_tx/rx=3)
 
-**Still open for product:** SampleBuilder RTP tracks, long-lived host service, MSI/codesign, GitHub remote.
+**Later same day (RTP SampleBuilder):**
+- webrtc-rs offerer adds H.264 + Opus `TrackLocalStaticSample`
+- answerer `on_track` + `SampleBuilder` → `IncomingTrackData`
+- default interceptors for RTP; media still mirrored on DC during bind races
+
+**Still open for product:** RTP-only media (drop DC mirror), long-lived host service, MSI/codesign, GitHub remote.

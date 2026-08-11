@@ -25,7 +25,7 @@ without coupling the encode pipeline to a browser capturer.
 |------|---------|--------|
 | **In-process mock** | **Default / CI** | `MockPeerTransport` — no sockets, no native deps; windows-gnu green |
 | **Live TCP** | **Local demos** | `LivePeerTransport` — real TCP, length-prefixed frames; **not** DTLS-SRTP |
-| **webrtc-rs (`webrtc` 0.11)** | **Optional feature** | Real SDP/ICE/DTLS; media interim on DataChannels; **default-off** for CI speed |
+| **webrtc-rs (`webrtc` 0.11)** | **Optional feature** | Real SDP/ICE/DTLS; **RTP H.264+Opus tracks** (+ DC mirror); **default-off** for CI speed |
 | **libwebrtc FFI** | **Plan B / v1 ship risk** | Browser-grade ICE/DTLS-SRTP; heavier build matrix |
 
 **Ship posture:** keep CI on **mock** (+ live TCP tests under default features). Enable `webrtc-rs` for local/dev builds that need real PeerConnection. Introduce SampleBuilder H.264 tracks as a follow-up; Plan B libwebrtc if packaging or packetization fails.

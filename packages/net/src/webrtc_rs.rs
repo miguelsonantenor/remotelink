@@ -5,23 +5,22 @@
 //! Compiled only with `remotelink-net` feature **`webrtc-rs`** (default-off so
 //! CI does not pull the webrtc dependency graph).
 //!
-//! # Media path (interim)
+//! # Media path
 //!
-//! Full RTP H.264 SampleBuilder tracks are **not** wired yet. Until then,
-//! media rides application DataChannels:
+//! **Preferred:** real RTP media tracks (H.264 + Opus) via
+//! [`TrackLocalStaticSample`](webrtc::track::track_local::track_local_static_sample::TrackLocalStaticSample)
+//! on the offerer and [`SampleBuilder`](webrtc::media::io::sample_builder::SampleBuilder)
+//! on the answerer (`on_track` + `read_rtp`).
+//!
+//! **Fallback:** application DataChannels keep working for CI/debug and when
+//! tracks are not yet bound:
 //!
 //! | Label | Purpose |
 //! |-------|---------|
 //! | `input` | Input / control JSON (raw payload) |
 //! | `identity` | Identity bind challenge (raw payload) |
-//! | `media-video` | H.264 NALU batches — **same payload layout as live TCP video** |
-//! | `media-audio` | Opus packets — **same payload layout as live TCP audio** |
-//!
-//! Each DataChannel binary message is one media unit. Payload bytes match the
-//! live TCP kind-specific body (PTS, RTP ts, flags, bitstream) so host/viewer
-//! code can share codecs; the DC message boundary replaces the TCP
-//! `[u32 BE length][u8 kind]` outer frame. Documented as **interim** until
-//! SampleBuilder H.264 / Opus RTP tracks replace these channels.
+//! | `media-video` | Interim H.264 NALU batches (live-TCP payload layout) |
+//! | `media-audio` | Interim Opus packets (live-TCP payload layout) |
 //!
 //! # Fingerprints
 //!
@@ -40,19 +39,23 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use bytes::Bytes;
 use rcgen::KeyPair;
 use remotelink_protocol::IceCandidate;
 use sha2::{Digest, Sha256};
 use tokio::runtime::{Handle, Runtime};
-use webrtc::api::media_engine::MediaEngine;
+use webrtc::api::interceptor_registry::register_default_interceptors;
+use webrtc::api::media_engine::{MediaEngine, MIME_TYPE_H264, MIME_TYPE_OPUS};
 use webrtc::api::APIBuilder;
+use webrtc::interceptor::registry::Registry;
 use webrtc::data_channel::data_channel_message::DataChannelMessage;
 use webrtc::data_channel::data_channel_state::RTCDataChannelState;
 use webrtc::data_channel::RTCDataChannel;
 use webrtc::ice_transport::ice_candidate::{RTCIceCandidate, RTCIceCandidateInit};
+use webrtc::media::io::sample_builder::SampleBuilder;
+use webrtc::media::Sample;
 use webrtc::peer_connection::certificate::RTCCertificate;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::offer_answer_options::RTCOfferOptions;
@@ -60,6 +63,12 @@ use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::sdp::sdp_type::RTCSdpType;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::peer_connection::RTCPeerConnection;
+use webrtc::rtp::codecs::h264::H264Packet;
+use webrtc::rtp::codecs::opus::OpusPacket;
+use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
+use webrtc::track::track_local::track_local_static_sample::TrackLocalStaticSample;
+use webrtc::track::track_local::TrackLocal;
+use webrtc::track::track_remote::TrackRemote;
 
 use crate::error::{NetError, Result};
 use crate::factory::PeerRole;
@@ -140,7 +149,8 @@ impl WebrtcPeerConfig {
     }
 }
 
-/// webrtc-rs [`PeerTransport`] using real SDP / ICE / DTLS and DataChannels.
+/// webrtc-rs [`PeerTransport`] using real SDP / ICE / DTLS, RTP media tracks,
+/// and application DataChannels (input/identity + media fallback).
 pub struct WebrtcPeerTransport {
     role: PeerRole,
     pc: Arc<RTCPeerConnection>,
@@ -148,12 +158,18 @@ pub struct WebrtcPeerTransport {
     remote_fp: Arc<Mutex<Option<DtlsFingerprint>>>,
     state: Arc<Mutex<ConnectionState>>,
     channels: Arc<Mutex<HashMap<String, Arc<RTCDataChannel>>>>,
+    /// Local H.264 track (offerer); `write_sample` after negotiation.
+    video_track: Option<Arc<TrackLocalStaticSample>>,
+    /// Local Opus track (offerer).
+    audio_track: Option<Arc<TrackLocalStaticSample>>,
     inbound_tx: Sender<Inbound>,
     inbound_rx: Receiver<Inbound>,
     callbacks: Box<dyn PeerTransportCallbacks>,
     closed: bool,
     /// Channels created on offerer before first offer.
     offerer_channels_ready: bool,
+    /// Local RTP tracks added on offerer.
+    offerer_tracks_ready: bool,
 }
 
 impl WebrtcPeerTransport {
@@ -189,7 +205,14 @@ impl WebrtcPeerTransport {
             let mut m = MediaEngine::default();
             m.register_default_codecs()
                 .map_err(|e| NetError::Internal(format!("media engine: {e}")))?;
-            let api = APIBuilder::new().with_media_engine(m).build();
+            // Default interceptors (NACK/TWCC/…) so RTP media flows reliably.
+            let mut registry = Registry::new();
+            registry = register_default_interceptors(registry, &mut m)
+                .map_err(|e| NetError::Internal(format!("interceptors: {e}")))?;
+            let api = APIBuilder::new()
+                .with_media_engine(m)
+                .with_interceptor_registry(registry)
+                .build();
             api.new_peer_connection(rtc_cfg)
                 .await
                 .map_err(|e| NetError::Internal(format!("new_peer_connection: {e}")))
@@ -263,6 +286,17 @@ impl WebrtcPeerTransport {
             }));
         }
 
+        // Remote RTP media → SampleBuilder → inbound Track events.
+        {
+            let tx = inbound_tx.clone();
+            pc.on_track(Box::new(move |track, _receiver, _transceiver| {
+                let tx = tx.clone();
+                Box::pin(async move {
+                    spawn_remote_track_reader(track, tx);
+                })
+            }));
+        }
+
         Ok(Self {
             role,
             pc,
@@ -270,11 +304,14 @@ impl WebrtcPeerTransport {
             remote_fp,
             state,
             channels,
+            video_track: None,
+            audio_track: None,
             inbound_tx,
             inbound_rx,
             callbacks: Box::new(NullCallbacks),
             closed: false,
             offerer_channels_ready: false,
+            offerer_tracks_ready: false,
         })
     }
 
@@ -314,6 +351,53 @@ impl WebrtcPeerTransport {
             Ok::<(), NetError>(())
         })?;
         self.offerer_channels_ready = true;
+        Ok(())
+    }
+
+    /// Add local H.264 + Opus tracks (offerer only) before the first offer.
+    fn ensure_offerer_tracks(&mut self) -> Result<()> {
+        if self.offerer_tracks_ready || self.role != PeerRole::Offerer {
+            return Ok(());
+        }
+        let pc = Arc::clone(&self.pc);
+        let (video, audio) = block_on(async {
+            let video = Arc::new(TrackLocalStaticSample::new(
+                RTCRtpCodecCapability {
+                    mime_type: MIME_TYPE_H264.to_owned(),
+                    clock_rate: 90_000,
+                    channels: 0,
+                    sdp_fmtp_line:
+                        "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f"
+                            .to_owned(),
+                    rtcp_feedback: vec![],
+                },
+                "video".into(),
+                "remotelink".into(),
+            ));
+            let audio = Arc::new(TrackLocalStaticSample::new(
+                RTCRtpCodecCapability {
+                    mime_type: MIME_TYPE_OPUS.to_owned(),
+                    clock_rate: 48_000,
+                    channels: 2,
+                    sdp_fmtp_line: "minptime=10;useinbandfec=1".to_owned(),
+                    rtcp_feedback: vec![],
+                },
+                "audio".into(),
+                "remotelink".into(),
+            ));
+            let v: Arc<dyn TrackLocal + Send + Sync> = Arc::clone(&video) as _;
+            let a: Arc<dyn TrackLocal + Send + Sync> = Arc::clone(&audio) as _;
+            pc.add_track(v)
+                .await
+                .map_err(|e| NetError::Internal(format!("add video track: {e}")))?;
+            pc.add_track(a)
+                .await
+                .map_err(|e| NetError::Internal(format!("add audio track: {e}")))?;
+            Ok::<_, NetError>((video, audio))
+        })?;
+        self.video_track = Some(video);
+        self.audio_track = Some(audio);
+        self.offerer_tracks_ready = true;
         Ok(())
     }
 
@@ -533,6 +617,108 @@ async fn remote_fingerprint_from_dtls(pc: &RTCPeerConnection) -> Option<DtlsFing
     DtlsFingerprint::sha256(hex::encode(digest)).ok()
 }
 
+// --- RTP track receive + H.264 helpers ----------------------------------------
+
+fn spawn_remote_track_reader(track: Arc<TrackRemote>, tx: Sender<Inbound>) {
+    tokio::spawn(async move {
+        let mime = track.codec().capability.mime_type.to_ascii_lowercase();
+        if mime.contains("h264") {
+            let mut sb = SampleBuilder::new(64, H264Packet::default(), 90_000);
+            loop {
+                match track.read_rtp().await {
+                    Ok((pkt, _)) => {
+                        sb.push(pkt);
+                        while let Some(sample) = sb.pop() {
+                            let data = sample.data.to_vec();
+                            let keyframe = is_h264_keyframe(&data);
+                            let _ = tx.send(Inbound::Track(IncomingTrackData::Video(VideoNalu {
+                                pts_host_mono: Duration::from_millis(0),
+                                rtp_ts: Some(sample.packet_timestamp),
+                                keyframe,
+                                format: NaluFormat::AnnexB,
+                                data,
+                            })));
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        } else if mime.contains("opus") {
+            let mut sb = SampleBuilder::new(32, OpusPacket, 48_000);
+            loop {
+                match track.read_rtp().await {
+                    Ok((pkt, _)) => {
+                        sb.push(pkt);
+                        while let Some(sample) = sb.pop() {
+                            let _ = tx.send(Inbound::Track(IncomingTrackData::Audio(AudioPacket {
+                                pts_host_mono: Duration::from_millis(0),
+                                rtp_ts: Some(sample.packet_timestamp),
+                                sample_rate: 48_000,
+                                channels: 2,
+                                data: sample.data.to_vec(),
+                            })));
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        } else {
+            // Drain unsupported codecs so the peer does not stall.
+            while track.read_rtp().await.is_ok() {}
+        }
+    });
+}
+
+/// Ensure H.264 payload is Annex-B for the RTP H264 payloader.
+fn nalu_payload_annex_b(n: &VideoNalu) -> Result<Vec<u8>> {
+    match n.format {
+        NaluFormat::AnnexB => Ok(n.data.clone()),
+        NaluFormat::Avcc => avcc_to_annex_b(&n.data),
+    }
+}
+
+fn avcc_to_annex_b(data: &[u8]) -> Result<Vec<u8>> {
+    let mut out = Vec::with_capacity(data.len() + 16);
+    let mut i = 0usize;
+    while i + 4 <= data.len() {
+        let len = u32::from_be_bytes(data[i..i + 4].try_into().unwrap()) as usize;
+        i += 4;
+        if i + len > data.len() {
+            return Err(NetError::Internal("truncated AVCC NAL".into()));
+        }
+        out.extend_from_slice(&[0, 0, 0, 1]);
+        out.extend_from_slice(&data[i..i + len]);
+        i += len;
+    }
+    if out.is_empty() {
+        return Err(NetError::Internal("empty AVCC payload".into()));
+    }
+    Ok(out)
+}
+
+fn is_h264_keyframe(annex_b: &[u8]) -> bool {
+    let mut i = 0usize;
+    while i + 4 < annex_b.len() {
+        // Find start code
+        let sc = if annex_b[i..].starts_with(&[0, 0, 0, 1]) {
+            4
+        } else if annex_b[i..].starts_with(&[0, 0, 1]) {
+            3
+        } else {
+            i += 1;
+            continue;
+        };
+        let nal = annex_b.get(i + sc).copied().unwrap_or(0);
+        let nal_type = nal & 0x1f;
+        // IDR (5), SPS (7) often accompanies keyframe access units.
+        if nal_type == 5 {
+            return true;
+        }
+        i += sc + 1;
+    }
+    false
+}
+
 // --- media payload codec (matches live TCP kind-specific body) ---------------
 
 fn encode_video(n: &VideoNalu) -> Result<Vec<u8>> {
@@ -622,6 +808,7 @@ impl PeerTransport for WebrtcPeerTransport {
                 actual: self.role.as_str().into(),
             });
         }
+        self.ensure_offerer_tracks()?;
         self.ensure_offerer_channels()?;
         let pc = Arc::clone(&self.pc);
         let offer = block_on(async {
@@ -767,13 +954,67 @@ impl PeerTransport for WebrtcPeerTransport {
     }
 
     fn send_video_nalu(&mut self, nalu: VideoNalu) -> Result<()> {
+        // Prefer RTP H.264 track when present (real SRTP path).
+        // Note: write_sample is a silent no-op until the track is bound; always
+        // also mirror on the media-video DC so media is never dropped during
+        // the bind race. Receivers that only want RTP can ignore DC media.
+        let mut rtp_attempted = false;
+        if let Some(track) = self.video_track.clone() {
+            if self.connection_state_locked() == ConnectionState::Connected {
+                let annex_b = nalu_payload_annex_b(&nalu)?;
+                let sample = Sample {
+                    data: Bytes::from(annex_b),
+                    timestamp: SystemTime::now(),
+                    duration: Duration::from_millis(33),
+                    packet_timestamp: nalu.rtp_ts.unwrap_or(0),
+                    prev_dropped_packets: 0,
+                    prev_padding_packets: 0,
+                };
+                block_on(async {
+                    track
+                        .write_sample(&sample)
+                        .await
+                        .map_err(|e| NetError::SendFailed(format!("video track write: {e}")))
+                })?;
+                rtp_attempted = true;
+            }
+        }
+        // Mirror / fallback on media-video DataChannel (live-TCP payload layout).
         let body = encode_video(&nalu)?;
-        self.send_on_channel(LABEL_MEDIA_VIDEO, Bytes::from(body))
+        match self.send_on_channel(LABEL_MEDIA_VIDEO, Bytes::from(body)) {
+            Ok(()) => Ok(()),
+            Err(_e) if rtp_attempted => Ok(()), // RTP may still deliver
+            Err(e) => Err(e),
+        }
     }
 
     fn send_audio(&mut self, packet: AudioPacket) -> Result<()> {
+        let mut rtp_attempted = false;
+        if let Some(track) = self.audio_track.clone() {
+            if self.connection_state_locked() == ConnectionState::Connected {
+                let sample = Sample {
+                    data: Bytes::from(packet.data.clone()),
+                    timestamp: SystemTime::now(),
+                    duration: Duration::from_millis(10),
+                    packet_timestamp: packet.rtp_ts.unwrap_or(0),
+                    prev_dropped_packets: 0,
+                    prev_padding_packets: 0,
+                };
+                block_on(async {
+                    track
+                        .write_sample(&sample)
+                        .await
+                        .map_err(|e| NetError::SendFailed(format!("audio track write: {e}")))
+                })?;
+                rtp_attempted = true;
+            }
+        }
         let body = encode_audio(&packet)?;
-        self.send_on_channel(LABEL_MEDIA_AUDIO, Bytes::from(body))
+        match self.send_on_channel(LABEL_MEDIA_AUDIO, Bytes::from(body)) {
+            Ok(()) => Ok(()),
+            Err(_e) if rtp_attempted => Ok(()),
+            Err(e) => Err(e),
+        }
     }
 
     fn send_data(&mut self, message: DataMessage) -> Result<()> {
@@ -1070,18 +1311,26 @@ mod tests {
         }
         assert!(got, "answerer did not receive data channel echo");
 
-        // Interim media path: video NALU over media-video DC.
-        offerer
-            .send_video_nalu(VideoNalu {
-                pts_host_mono: Duration::from_millis(33),
-                rtp_ts: Some(2970),
-                keyframe: true,
-                format: NaluFormat::AnnexB,
-                data: vec![0, 0, 0, 1, 0x67],
-            })
-            .unwrap();
+        // Media path: RTP H.264 track (preferred) mirrored on media-video DC.
+        // IDR-looking annex-B AU so SampleBuilder/payloader have a complete NAL.
+        let idr = vec![0, 0, 0, 1, 0x65, 0x88, 0x84, 0x00, 0x10];
+        for i in 0..5 {
+            offerer
+                .send_video_nalu(VideoNalu {
+                    pts_host_mono: Duration::from_millis(33 * (i + 1)),
+                    rtp_ts: Some(2970 * (i as u32 + 1)),
+                    keyframe: i == 0,
+                    format: NaluFormat::AnnexB,
+                    data: idr.clone(),
+                })
+                .expect("send_video_nalu");
+            offerer.poll().unwrap();
+            answerer.poll().unwrap();
+            std::thread::sleep(Duration::from_millis(30));
+        }
         let mut got_video = false;
-        for _ in 0..100 {
+        for _ in 0..150 {
+            offerer.poll().unwrap();
             answerer.poll().unwrap();
             if let Ok(g) = answerer_rec.lock() {
                 if g.tracks
@@ -1094,7 +1343,10 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(20));
         }
-        assert!(got_video, "answerer did not receive media-video NALU");
+        assert!(
+            got_video,
+            "answerer did not receive video (RTP track and/or media-video DC)"
+        );
 
         offerer.close().unwrap();
         answerer.close().unwrap();
