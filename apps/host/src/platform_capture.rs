@@ -19,13 +19,17 @@ use remotelink_platform_linux::MonitorSource;
 /// Which video path the agent should use when starting media.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum VideoCaptureKind {
-    /// Media synthetic color bars (default on non-Linux; tests everywhere).
+    /// Media synthetic color bars (default on non-Windows/Linux; tests everywhere).
     #[default]
     Synthetic,
     /// Platform-linux mock frames (deterministic, no compositor).
     LinuxMock,
     /// Platform-linux PipeWire platform backend (errors until native is linked).
     LinuxPlatform,
+    /// Windows DXGI mock frames (CI-safe desktop-shaped BGRA).
+    WindowsMock,
+    /// Windows DXGI Desktop Duplication (interactive session; may fail headless).
+    WindowsDxgi,
 }
 
 /// Which audio path the agent should use when starting media.
@@ -51,6 +55,9 @@ pub enum PlatformCaptureError {
     /// Linux audio monitor open failed.
     #[error("linux audio monitor: {0}")]
     LinuxAudio(#[from] remotelink_platform_linux::MonitorError),
+    /// Windows DXGI / mock capture open failed.
+    #[error("windows video capture: {0}")]
+    WindowsVideo(#[from] remotelink_platform_windows::CaptureError),
     /// Requested backend is not available on this OS / build.
     #[error("capture backend unavailable: {0}")]
     Unavailable(&'static str),
@@ -62,6 +69,8 @@ pub enum HostVideoSource {
     Synthetic(SyntheticVideoBars),
     /// Linux platform display capture (mock or pipewire handle).
     Linux(remotelink_platform_linux::DisplayCapture),
+    /// Windows DXGI Desktop Duplication or mock BGRA frames.
+    Windows(remotelink_platform_windows::DisplayCapture),
 }
 
 impl fmt::Debug for HostVideoSource {
@@ -69,6 +78,7 @@ impl fmt::Debug for HostVideoSource {
         match self {
             Self::Synthetic(_) => f.write_str("HostVideoSource::Synthetic(..)"),
             Self::Linux(c) => write!(f, "HostVideoSource::Linux({})", c.backend_name()),
+            Self::Windows(_) => f.write_str("HostVideoSource::Windows(..)"),
         }
     }
 }
@@ -82,6 +92,14 @@ impl VideoSource for HostVideoSource {
                 .next_frame()
                 .map_err(|_| PlatformCaptureError::Unavailable("synthetic video source error")),
             Self::Linux(c) => c.next_frame().map_err(PlatformCaptureError::from),
+            Self::Windows(c) => {
+                use remotelink_platform_windows::CaptureVideoSource;
+                match c.next_frame() {
+                    Ok(None) => Ok(None),
+                    Ok(Some(f)) => Ok(Some(windows_frame_to_media(f)?)),
+                    Err(e) => Err(PlatformCaptureError::from(e)),
+                }
+            }
         }
     }
 }
@@ -92,8 +110,56 @@ impl HostVideoSource {
         match self {
             Self::Synthetic(_) => "synthetic",
             Self::Linux(c) => c.backend_name(),
+            Self::Windows(remotelink_platform_windows::DisplayCapture::Mock(_)) => "windows-mock",
+            #[cfg(windows)]
+            Self::Windows(remotelink_platform_windows::DisplayCapture::Dxgi(_)) => "dxgi",
+            #[cfg(not(windows))]
+            Self::Windows(_) => "windows",
         }
     }
+}
+
+/// Convert a platform-windows capture frame into a tightly packed media frame.
+fn windows_frame_to_media(
+    f: remotelink_platform_windows::CaptureVideoFrame,
+) -> Result<VideoFrame, PlatformCaptureError> {
+    if !f.is_well_formed() {
+        return Err(PlatformCaptureError::Unavailable(
+            "windows capture frame not well-formed",
+        ));
+    }
+    let format = match f.format {
+        remotelink_platform_windows::CapturePixelFormat::Bgra8 => {
+            remotelink_media::PixelFormat::Bgra8
+        }
+        remotelink_platform_windows::CapturePixelFormat::Rgba8 => {
+            remotelink_media::PixelFormat::Rgba8
+        }
+        remotelink_platform_windows::CapturePixelFormat::Rgb24 => {
+            remotelink_media::PixelFormat::Rgb24
+        }
+    };
+    let bpp = format.bytes_per_pixel();
+    let row_bytes = (f.width as usize).saturating_mul(bpp);
+    let stride = f.stride as usize;
+    let mut data = Vec::with_capacity(row_bytes.saturating_mul(f.height as usize));
+    for y in 0..f.height as usize {
+        let start = y.saturating_mul(stride);
+        let end = start.saturating_add(row_bytes);
+        if end > f.data.len() {
+            return Err(PlatformCaptureError::Unavailable(
+                "windows capture stride overflow",
+            ));
+        }
+        data.extend_from_slice(&f.data[start..end]);
+    }
+    Ok(VideoFrame {
+        pts_host_mono: f.pts_host_mono,
+        width: f.width,
+        height: f.height,
+        format,
+        data,
+    })
 }
 
 /// Opened audio source for the agent media plane.
@@ -138,10 +204,14 @@ impl HostAudioSource {
 
 /// Default video kind for this compile target.
 ///
-/// Linux → mock PipeWire path (native returns error until linked); elsewhere synthetic.
+/// - Linux → mock PipeWire path
+/// - Windows → DXGI mock (desktop-shaped BGRA; real DXGI via [`VideoCaptureKind::WindowsDxgi`])
+/// - Else → media synthetic bars
 pub fn default_video_kind() -> VideoCaptureKind {
     if cfg!(target_os = "linux") {
         VideoCaptureKind::LinuxMock
+    } else if cfg!(windows) {
+        VideoCaptureKind::WindowsMock
     } else {
         VideoCaptureKind::Synthetic
     }
@@ -202,6 +272,33 @@ pub fn open_video_source(
                 cfg,
             )?;
             Ok(HostVideoSource::Linux(cap))
+        }
+        VideoCaptureKind::WindowsMock => {
+            let cfg = remotelink_platform_windows::CaptureConfig {
+                display_index: 0,
+                timeout_ms: 16,
+                mock_width: width.max(1),
+                mock_height: height.max(1),
+                mock_fps: fps.max(1),
+                mock_start_pts_ms: duration_to_ms(start_pts),
+            };
+            let cap = remotelink_platform_windows::open_capture(
+                remotelink_platform_windows::CaptureBackend::Mock,
+                cfg,
+            )?;
+            Ok(HostVideoSource::Windows(cap))
+        }
+        VideoCaptureKind::WindowsDxgi => {
+            let cfg = remotelink_platform_windows::CaptureConfig {
+                display_index: 0,
+                timeout_ms: 16,
+                ..remotelink_platform_windows::CaptureConfig::default()
+            };
+            let cap = remotelink_platform_windows::open_capture(
+                remotelink_platform_windows::CaptureBackend::Platform,
+                cfg,
+            )?;
+            Ok(HostVideoSource::Windows(cap))
         }
     }
 }
@@ -276,10 +373,31 @@ mod tests {
         if cfg!(target_os = "linux") {
             assert_eq!(default_video_kind(), VideoCaptureKind::LinuxMock);
             assert_eq!(default_audio_kind(), AudioCaptureKind::LinuxPreferNative);
+        } else if cfg!(windows) {
+            assert_eq!(default_video_kind(), VideoCaptureKind::WindowsMock);
+            assert_eq!(default_audio_kind(), AudioCaptureKind::Synthetic);
         } else {
             assert_eq!(default_video_kind(), VideoCaptureKind::Synthetic);
             assert_eq!(default_audio_kind(), AudioCaptureKind::Synthetic);
         }
+    }
+
+    #[test]
+    fn windows_mock_video_works() {
+        let mut v = open_video_source(
+            VideoCaptureKind::WindowsMock,
+            64,
+            36,
+            30,
+            Duration::from_millis(5),
+        )
+        .unwrap();
+        assert_eq!(v.backend_name(), "windows-mock");
+        let f = v.next_frame().unwrap().unwrap();
+        assert_eq!(f.width, 64);
+        assert_eq!(f.height, 36);
+        assert_eq!(f.format, remotelink_media::PixelFormat::Bgra8);
+        assert!(f.is_well_formed());
     }
 
     #[test]

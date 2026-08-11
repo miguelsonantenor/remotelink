@@ -32,10 +32,7 @@ use remotelink_auth::{
     AuthError, DcIdentityChallenge, DcIdentityMessage, HostSecret, IdentityBindState, OtpRecord,
     SessionBindKey, IDENTITY_CHANNEL_LABEL,
 };
-use remotelink_media::{
-    AudioSource, MockOpusEncoder, OpusEncoder, RtpEpoch, SyntheticAudioTone, SyntheticVideoBars,
-    VideoSource,
-};
+use remotelink_media::{AudioSource, MockOpusEncoder, OpusEncoder, RtpEpoch, VideoSource};
 use remotelink_net::{
     create_peer_transport_with_config, AudioPacket, BoxPeerTransport, ConnectionState,
     DataMessage, LocalIceCandidate, MockPeerConfig, MockPeerTransport, NaluFormat, NetError,
@@ -145,14 +142,17 @@ pub enum InputProcessOutcome {
     InjectError,
 }
 
-/// Synthetic capture + mock encode state for one media start.
+/// Capture + mock encode state for one media start.
 struct MediaPlane {
-    video: SyntheticVideoBars,
-    audio: SyntheticAudioTone,
+    video: crate::platform_capture::HostVideoSource,
+    audio: crate::platform_capture::HostAudioSource,
     opus: MockOpusEncoder,
     epoch: RtpEpoch,
     video_frames_sent: u64,
     audio_packets_sent: u64,
+    /// Capture backend label for stats / logs.
+    video_backend: &'static str,
+    audio_backend: &'static str,
 }
 
 #[derive(Debug, Default)]
@@ -224,10 +224,14 @@ pub struct SessionManager {
     media: Option<MediaPlane>,
     /// Pending control SignalForward messages for the service (A→S).
     outbound_signals: Vec<SignalForward>,
-    /// Synthetic video geometry (tests / CLI without real display).
+    /// Capture geometry (mock / synthetic); DXGI uses desktop size.
     synth_width: u32,
     synth_height: u32,
     synth_fps: u32,
+    /// Video capture backend selection.
+    video_kind: crate::platform_capture::VideoCaptureKind,
+    /// Audio capture backend selection.
+    audio_kind: crate::platform_capture::AudioCaptureKind,
     /// Identity bind flags for the attached session.
     identity: IdentityBindState,
     /// Enrolled device signing key (host). Required for `fingerprint_sig`.
@@ -298,6 +302,8 @@ impl SessionManager {
             synth_width: 64,
             synth_height: 36,
             synth_fps: 30,
+            video_kind: crate::platform_capture::default_video_kind(),
+            audio_kind: crate::platform_capture::default_audio_kind(),
             identity: IdentityBindState::default(),
             device_signing_key: None,
             bind_key: None,
@@ -313,6 +319,26 @@ impl SessionManager {
             injector: open_injector(InjectorConfig::synthetic())
                 .expect("stub injector always opens"),
         }
+    }
+
+    /// Select video capture backend (call before [`Self::start_media`]).
+    pub fn set_video_kind(&mut self, kind: crate::platform_capture::VideoCaptureKind) {
+        self.video_kind = kind;
+    }
+
+    /// Select audio capture backend (call before [`Self::start_media`]).
+    pub fn set_audio_kind(&mut self, kind: crate::platform_capture::AudioCaptureKind) {
+        self.audio_kind = kind;
+    }
+
+    /// Current video capture kind.
+    pub fn video_kind(&self) -> crate::platform_capture::VideoCaptureKind {
+        self.video_kind
+    }
+
+    /// Current audio capture kind.
+    pub fn audio_kind(&self) -> crate::platform_capture::AudioCaptureKind {
+        self.audio_kind
     }
 
     /// Config that will be used to re-open the injector on the next attach.
@@ -738,13 +764,28 @@ impl SessionManager {
 
         let t0 = Duration::from_millis(0);
         let epoch = RtpEpoch::new(t0);
+        let (video, audio) = crate::platform_capture::open_video_source(
+            self.video_kind,
+            self.synth_width,
+            self.synth_height,
+            self.synth_fps,
+            t0,
+        )
+        .and_then(|v| {
+            crate::platform_capture::open_audio_source(self.audio_kind, t0).map(|a| (v, a))
+        })
+        .map_err(|e| SessionError::Media(e.to_string()))?;
+        let video_backend = video.backend_name();
+        let audio_backend = audio.backend_name();
         self.media = Some(MediaPlane {
-            video: SyntheticVideoBars::new(self.synth_width, self.synth_height, self.synth_fps, t0),
-            audio: SyntheticAudioTone::default_a440(t0),
+            video,
+            audio,
             opus: MockOpusEncoder::with_epoch(epoch),
             epoch,
             video_frames_sent: 0,
             audio_packets_sent: 0,
+            video_backend,
+            audio_backend,
         });
 
         if self.peer.connection_state() == ConnectionState::New {
@@ -873,11 +914,23 @@ impl SessionManager {
             }
 
             let media = self.media.as_mut().expect("media checked");
-            let frame = media
-                .video
-                .next_frame()
-                .map_err(|e| SessionError::Media(e.to_string()))?
-                .ok_or_else(|| SessionError::Media("video source ended".into()))?;
+            // DXGI may return Ok(None) when idle — retry a few times for mock/desktop.
+            let mut frame = None;
+            for _ in 0..8 {
+                match media
+                    .video
+                    .next_frame()
+                    .map_err(|e| SessionError::Media(e.to_string()))?
+                {
+                    Some(f) => {
+                        frame = Some(f);
+                        break;
+                    }
+                    None => continue,
+                }
+            }
+            let frame =
+                frame.ok_or_else(|| SessionError::Media("video source idle / ended".into()))?;
             let keyframe = media.video_frames_sent.is_multiple_of(30);
             let rtp_ts = media.epoch.video_ts(frame.pts_host_mono);
             let nalu = mock_encode_video_nalu(&frame, rtp_ts, keyframe);
@@ -905,6 +958,13 @@ impl SessionManager {
             Some(m) => (m.video_frames_sent, m.audio_packets_sent),
             None => (0, 0),
         }
+    }
+
+    /// Active capture backend names `(video, audio)` when media is started.
+    pub fn capture_backends(&self) -> Option<(&'static str, &'static str)> {
+        self.media
+            .as_ref()
+            .map(|m| (m.video_backend, m.audio_backend))
     }
 
     fn queue_pending_ice(&mut self, session_id: &str) {

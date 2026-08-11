@@ -11,7 +11,7 @@
 | PR plan | **PRs 1–27 complete** (8b optional skipped) |
 | **Integrated monorepo** | **Yes** — `cargo test --workspace` green (default features) |
 | PeerTransport backends | **mock** (CI default) · **live TCP** (default feature) · **webrtc-rs** (opt-in feature) |
-| Real AnyDesk product | **~96%** — control boot-secret auth; tray menu; package-release + WiX skeleton; named-pipe ACL; KD5 |
+| Real AnyDesk product | **~97%** — DXGI capture module + Windows mock default; boot-secret; tray; package-release; KD5 |
 
 ## Day-to-day development
 
@@ -54,9 +54,22 @@ docker compose -f deploy/docker-compose.yml up -d --build
 
 ## Next best steps
 
-1. Run WiX MSI in release pipeline + Authenticode  
-2. Real capture/encode polish for production hosts  
+1. WASAPI loopback audio + hardware H.264 encode path  
+2. Run WiX MSI in release pipeline + Authenticode  
 3. Optional: webrtc-rs e2e over WSS+agent IPC  
+
+### Capture (Windows)
+
+| Kind | Backend |
+|------|---------|
+| `WindowsMock` (default) | Desktop-shaped BGRA mock (CI-safe) |
+| `WindowsDxgi` | DXGI Desktop Duplication (interactive session) |
+| `Synthetic` | Media color bars |
+
+```rust
+// Agent SessionManager defaults to WindowsMock on Windows.
+mgr.set_video_kind(VideoCaptureKind::WindowsDxgi); // real desktop
+```
 
 ### Package stage
 

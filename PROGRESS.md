@@ -81,4 +81,10 @@ Plan PRs 1–27 done.
 - CLI/env: `--boot-secret` / `REMOTELINK_BOOT_SECRET` for agent + WSS service
 - `deploy/packaging/Product.wxs` WiX skeleton over package-release layout
 
-**Still open for product:** WiX/Authenticode in CI release pipeline, real capture polish.
+**Later same day (DXGI capture integration):**
+- Landed `packages/platform-windows/src/capture` (mock + DXGI Desktop Duplication)
+- Host `VideoCaptureKind::WindowsMock` / `WindowsDxgi`; Windows default is mock BGRA
+- `SessionManager::start_media` / `pump_media` open platform capture sources
+- Capture backend names via `capture_backends()`; DXGI idle frames retried
+
+**Still open for product:** WASAPI audio, HW H.264, WiX/Authenticode release pipeline.

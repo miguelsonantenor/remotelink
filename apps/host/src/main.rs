@@ -368,7 +368,11 @@ fn print_usage() {
          mock         In-process MockPeerTransport (default; ws role upgrades to live)\n  \
          live         TCP length-prefixed PeerTransport (multi-process demos)\n  \
          webrtc       webrtc-rs PeerConnection (requires remotelink-net feature webrtc-rs)\n  \
-         auto         Prefer webrtc (if feature on) → live → mock\n",
+         auto         Prefer webrtc (if feature on) → live → mock\n\n\
+         Capture (agent media; also REMOTELINK_CAPTURE):\n  \
+         synthetic    Color bars (media crate)\n  \
+         windows-mock Desktop-shaped BGRA mock (Windows default)\n  \
+         dxgi         Real DXGI Desktop Duplication (interactive Windows session)\n",
         remotelink_common::VERSION
     );
 }
