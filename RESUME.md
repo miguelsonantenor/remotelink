@@ -11,7 +11,7 @@
 | PR plan | **PRs 1–27 complete** (8b optional skipped) |
 | **Integrated monorepo** | **Yes** — `cargo test --workspace` green (default features) |
 | PeerTransport backends | **mock** (CI default) · **live TCP** (default feature) · **webrtc-rs** (opt-in feature) |
-| Real AnyDesk product | **~97%** — DXGI capture module + Windows mock default; boot-secret; tray; package-release; KD5 |
+| Real AnyDesk product | **~98%** — DXGI video + WASAPI loopback stub; boot-secret; tray; package-release; KD5 |
 
 ## Day-to-day development
 
@@ -54,7 +54,7 @@ docker compose -f deploy/docker-compose.yml up -d --build
 
 ## Next best steps
 
-1. WASAPI loopback audio + hardware H.264 encode path  
+1. Native WASAPI COM loopback + hardware H.264 encode  
 2. Run WiX MSI in release pipeline + Authenticode  
 3. Optional: webrtc-rs e2e over WSS+agent IPC  
 
@@ -62,13 +62,16 @@ docker compose -f deploy/docker-compose.yml up -d --build
 
 | Kind | Backend |
 |------|---------|
-| `WindowsMock` (default) | Desktop-shaped BGRA mock (CI-safe) |
+| `WindowsMock` (default video) | Desktop-shaped BGRA mock (CI-safe) |
 | `WindowsDxgi` | DXGI Desktop Duplication (interactive session) |
-| `Synthetic` | Media color bars |
+| `WindowsWasapiStub` (default audio) | Synthetic loopback PCM + exclusive-mode hooks |
+| `WindowsWasapiPreferNative` | Prefer COM WASAPI; falls back to stub until linked |
+| `Synthetic` | Media color bars / A440 |
 
 ```rust
-// Agent SessionManager defaults to WindowsMock on Windows.
-mgr.set_video_kind(VideoCaptureKind::WindowsDxgi); // real desktop
+// Agent SessionManager defaults on Windows: WindowsMock + WindowsWasapiStub
+mgr.set_video_kind(VideoCaptureKind::WindowsDxgi);
+mgr.set_audio_kind(AudioCaptureKind::WindowsWasapiPreferNative);
 ```
 
 ### Package stage

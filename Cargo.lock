@@ -3926,6 +3926,7 @@ name = "remotelink-platform-windows"
 version = "0.1.0"
 dependencies = [
  "remotelink-common",
+ "remotelink-media",
  "remotelink-protocol",
  "serde",
  "serde_json",

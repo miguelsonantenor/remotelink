@@ -35,7 +35,7 @@ pub enum VideoCaptureKind {
 /// Which audio path the agent should use when starting media.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AudioCaptureKind {
-    /// Media synthetic A440 tone (default on non-Linux; tests everywhere).
+    /// Media synthetic A440 tone (default on non-Windows/Linux; tests everywhere).
     #[default]
     Synthetic,
     /// Platform-linux mock monitor (PCM tone, no PipeWire).
@@ -44,6 +44,12 @@ pub enum AudioCaptureKind {
     LinuxPreferNative,
     /// Require native monitor (structured error until linked).
     LinuxNativeOnly,
+    /// Windows WASAPI loopback stub (CI-safe synthetic system audio).
+    WindowsWasapiStub,
+    /// Prefer native WASAPI loopback; fall back to stub when COM is unavailable.
+    WindowsWasapiPreferNative,
+    /// Require native WASAPI (errors until COM loopback is linked).
+    WindowsWasapiNativeOnly,
 }
 
 /// Errors opening a host capture backend.
@@ -58,6 +64,9 @@ pub enum PlatformCaptureError {
     /// Windows DXGI / mock capture open failed.
     #[error("windows video capture: {0}")]
     WindowsVideo(#[from] remotelink_platform_windows::CaptureError),
+    /// Windows WASAPI loopback open failed.
+    #[error("windows audio loopback: {0}")]
+    WindowsAudio(#[from] remotelink_platform_windows::LoopbackError),
     /// Requested backend is not available on this OS / build.
     #[error("capture backend unavailable: {0}")]
     Unavailable(&'static str),
@@ -168,6 +177,8 @@ pub enum HostAudioSource {
     Synthetic(SyntheticAudioTone),
     /// Linux platform monitor (mock or native handle).
     Linux(remotelink_platform_linux::AnyMonitor),
+    /// Windows WASAPI loopback (stub or native skeleton).
+    Windows(remotelink_platform_windows::AnyLoopback),
 }
 
 impl fmt::Debug for HostAudioSource {
@@ -175,6 +186,10 @@ impl fmt::Debug for HostAudioSource {
         match self {
             Self::Synthetic(_) => f.write_str("HostAudioSource::Synthetic(..)"),
             Self::Linux(m) => write!(f, "HostAudioSource::Linux({})", m.backend_name()),
+            Self::Windows(m) => {
+                use remotelink_platform_windows::LoopbackSource;
+                write!(f, "HostAudioSource::Windows({})", m.backend_name())
+            }
         }
     }
 }
@@ -188,6 +203,7 @@ impl AudioSource for HostAudioSource {
                 .next_frame()
                 .map_err(|_| PlatformCaptureError::Unavailable("synthetic audio source error")),
             Self::Linux(m) => m.next_frame().map_err(PlatformCaptureError::from),
+            Self::Windows(m) => m.next_frame().map_err(PlatformCaptureError::from),
         }
     }
 }
@@ -198,6 +214,10 @@ impl HostAudioSource {
         match self {
             Self::Synthetic(_) => "synthetic",
             Self::Linux(m) => m.backend_name(),
+            Self::Windows(m) => {
+                use remotelink_platform_windows::LoopbackSource;
+                m.backend_name()
+            }
         }
     }
 }
@@ -218,9 +238,15 @@ pub fn default_video_kind() -> VideoCaptureKind {
 }
 
 /// Default audio kind for this compile target.
+///
+/// - Linux → prefer native monitor (mock fallback)
+/// - Windows → WASAPI stub loopback (native COM not linked yet; PreferNative falls back)
+/// - Else → media synthetic tone
 pub fn default_audio_kind() -> AudioCaptureKind {
     if cfg!(target_os = "linux") {
         AudioCaptureKind::LinuxPreferNative
+    } else if cfg!(windows) {
+        AudioCaptureKind::WindowsWasapiStub
     } else {
         AudioCaptureKind::Synthetic
     }
@@ -340,6 +366,34 @@ pub fn open_audio_source(
             let m = remotelink_platform_linux::open_monitor(cfg)?;
             Ok(HostAudioSource::Linux(m))
         }
+        AudioCaptureKind::WindowsWasapiStub => {
+            let cfg = remotelink_platform_windows::LoopbackConfig {
+                open_mode: remotelink_platform_windows::LoopbackOpenMode::StubOnly,
+                start_pts_ms: duration_to_ms(start_pts),
+                channels: 1,
+                ..remotelink_platform_windows::LoopbackConfig::default()
+            };
+            let m = remotelink_platform_windows::open_loopback(cfg)?;
+            Ok(HostAudioSource::Windows(m))
+        }
+        AudioCaptureKind::WindowsWasapiPreferNative => {
+            let cfg = remotelink_platform_windows::LoopbackConfig {
+                open_mode: remotelink_platform_windows::LoopbackOpenMode::PreferNative,
+                start_pts_ms: duration_to_ms(start_pts),
+                ..remotelink_platform_windows::LoopbackConfig::default()
+            };
+            let m = remotelink_platform_windows::open_loopback(cfg)?;
+            Ok(HostAudioSource::Windows(m))
+        }
+        AudioCaptureKind::WindowsWasapiNativeOnly => {
+            let cfg = remotelink_platform_windows::LoopbackConfig {
+                open_mode: remotelink_platform_windows::LoopbackOpenMode::NativeOnly,
+                start_pts_ms: duration_to_ms(start_pts),
+                ..remotelink_platform_windows::LoopbackConfig::default()
+            };
+            let m = remotelink_platform_windows::open_loopback(cfg)?;
+            Ok(HostAudioSource::Windows(m))
+        }
     }
 }
 
@@ -375,11 +429,44 @@ mod tests {
             assert_eq!(default_audio_kind(), AudioCaptureKind::LinuxPreferNative);
         } else if cfg!(windows) {
             assert_eq!(default_video_kind(), VideoCaptureKind::WindowsMock);
-            assert_eq!(default_audio_kind(), AudioCaptureKind::Synthetic);
+            assert_eq!(default_audio_kind(), AudioCaptureKind::WindowsWasapiStub);
         } else {
             assert_eq!(default_video_kind(), VideoCaptureKind::Synthetic);
             assert_eq!(default_audio_kind(), AudioCaptureKind::Synthetic);
         }
+    }
+
+    #[test]
+    fn windows_wasapi_stub_audio_works() {
+        let mut a = open_audio_source(
+            AudioCaptureKind::WindowsWasapiStub,
+            Duration::from_millis(5),
+        )
+        .unwrap();
+        assert_eq!(a.backend_name(), "stub");
+        let f = a.next_frame().unwrap().unwrap();
+        assert_eq!(f.pts_host_mono, Duration::from_millis(5));
+        assert!(f.frame_count() > 0);
+    }
+
+    #[test]
+    fn windows_wasapi_prefer_native_falls_back_to_stub() {
+        let mut a = open_audio_source(
+            AudioCaptureKind::WindowsWasapiPreferNative,
+            Duration::ZERO,
+        )
+        .unwrap();
+        // Native COM not linked yet → stub fallback.
+        assert_eq!(a.backend_name(), "stub");
+        assert!(a.next_frame().unwrap().is_some());
+    }
+
+    #[test]
+    fn windows_wasapi_native_only_errors_until_linked() {
+        let err =
+            open_audio_source(AudioCaptureKind::WindowsWasapiNativeOnly, Duration::ZERO)
+                .unwrap_err();
+        assert!(matches!(err, PlatformCaptureError::WindowsAudio(_)));
     }
 
     #[test]

@@ -372,7 +372,10 @@ fn print_usage() {
          Capture (agent media; also REMOTELINK_CAPTURE):\n  \
          synthetic    Color bars (media crate)\n  \
          windows-mock Desktop-shaped BGRA mock (Windows default)\n  \
-         dxgi         Real DXGI Desktop Duplication (interactive Windows session)\n",
+         dxgi         Real DXGI Desktop Duplication (interactive Windows session)\n\n\
+         Audio loopback (Windows; also REMOTELINK_AUDIO):\n  \
+         wasapi-stub  Synthetic system-audio-shaped PCM (default)\n  \
+         wasapi       Prefer native WASAPI (falls back to stub until COM linked)\n",
         remotelink_common::VERSION
     );
 }

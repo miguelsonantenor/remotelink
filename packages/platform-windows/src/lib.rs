@@ -7,8 +7,8 @@
 //!
 //! Types and the length-prefixed JSON codec are cross-platform so unit tests
 //! and Linux CI can exercise framing without Windows named pipes. Windows-
-//! specific transports (named pipes, hotkeys), DXGI capture, and `SendInput`
-//! injection are gated with `cfg(windows)`.
+//! specific transports (named pipes, hotkeys), DXGI capture, WASAPI loopback,
+//! and `SendInput` injection are gated with `cfg(windows)`.
 //!
 //! # Secure desktop / UAC (v1 known gap)
 //!
@@ -22,6 +22,7 @@ pub mod capture;
 pub mod input;
 pub mod ipc;
 pub mod kill_switch;
+pub mod wasapi;
 
 pub use capture::{
     host_mono_now, open_capture, pump_frame, CaptureBackend, CaptureConfig, CaptureError,
@@ -46,3 +47,8 @@ pub use ipc::{
     },
 };
 pub use kill_switch::{KillSwitchError, KillSwitchHandle, KillSwitchRegistrar};
+pub use wasapi::{
+    open_loopback, open_loopback_with_hooks, pcm_is_near_silence, AnyLoopback, LoopbackConfig,
+    LoopbackError, LoopbackOpenMode, LoopbackSource, StubLoopbackCapture, DEFAULT_CHANNELS,
+    DEFAULT_PACKET_MS, DEFAULT_SAMPLE_RATE,
+};

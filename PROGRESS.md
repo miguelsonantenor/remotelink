@@ -87,4 +87,10 @@ Plan PRs 1–27 done.
 - `SessionManager::start_media` / `pump_media` open platform capture sources
 - Capture backend names via `capture_backends()`; DXGI idle frames retried
 
-**Still open for product:** WASAPI audio, HW H.264, WiX/Authenticode release pipeline.
+**Later same day (WASAPI loopback integration):**
+- Landed `packages/platform-windows/src/wasapi` (stub + native skeleton + exclusive-mode hooks)
+- Host audio kinds: `WindowsWasapiStub` (default), PreferNative, NativeOnly
+- SessionManager pumps WASAPI stub PCM through mock Opus encode
+- Native COM path documents full IAudioClient sequence; PreferNative falls back today
+
+**Still open for product:** Native WASAPI COM, HW H.264, WiX/Authenticode release pipeline.
