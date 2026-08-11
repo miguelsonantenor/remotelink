@@ -1,6 +1,6 @@
 //! [`PeerTransport`] trait — WebRTC (or mock) peer boundary for host/viewer.
 
-use crate::error::Result;
+use crate::error::{NetError, Result};
 use crate::types::{
     AudioPacket, ConnectionState, DataMessage, DtlsFingerprint, IncomingTrackData,
     LocalIceCandidate, ReceiverFeedback, SessionDescription, TransportIceCandidate, VideoNalu,
@@ -159,6 +159,36 @@ pub trait PeerTransport: Send {
     /// peer hangup (`Disconnected`). **Real backends:** default no-op (push model).
     fn poll(&mut self) -> Result<()> {
         Ok(())
+    }
+
+    /// Block until the transport can send media/data, or `timeout`.
+    ///
+    /// Default: wait for [`ConnectionState::Connected`]. WebRTC backends should
+    /// also wait for application DataChannels to report open (SCTP can lag DTLS).
+    fn wait_ready(&mut self, timeout: std::time::Duration) -> Result<()> {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            self.poll()?;
+            if self.connection_state() == ConnectionState::Connected {
+                return Ok(());
+            }
+            if matches!(
+                self.connection_state(),
+                ConnectionState::Failed | ConnectionState::Closed | ConnectionState::Disconnected
+            ) {
+                return Err(NetError::Internal(format!(
+                    "wait_ready: ended in {}",
+                    self.connection_state().as_str()
+                )));
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(NetError::Internal(format!(
+                    "wait_ready timeout (state={})",
+                    self.connection_state().as_str()
+                )));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 
     /// Close the peer connection and release resources.

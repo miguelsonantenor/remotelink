@@ -26,8 +26,9 @@ use remotelink_auth::{
 };
 use remotelink_media::{JitterConfig, SkewController, SkewSample, AUDIO_CLOCK_HZ, VIDEO_CLOCK_HZ};
 use remotelink_net::{
-    AudioPacket, BoxPeerTransport, ConnectionState, DataMessage, IncomingTrackData,
-    LocalIceCandidate, PeerTransport, PeerTransportCallbacks, SessionDescription, VideoNalu,
+    create_peer_transport_with_config, AudioPacket, BoxPeerTransport, ConnectionState,
+    DataMessage, IncomingTrackData, LocalIceCandidate, PeerRole, PeerTransport,
+    PeerTransportCallbacks, SessionDescription, TransportConfig, TransportMode, VideoNalu,
 };
 use remotelink_protocol::IceCandidate;
 
@@ -313,6 +314,21 @@ impl ViewerSession {
         self.teardown_transport();
         transport.set_callbacks(Box::new(self.callbacks.clone()));
         self.transport = Some(transport);
+    }
+
+    /// Attach a factory-selected **answerer** PeerTransport (`mock` / `live` / `webrtc`).
+    ///
+    /// Uses [`create_peer_transport_with_config`] so viewer wiring matches host
+    /// `SessionManager::from_transport_config` (offerer) selection.
+    pub fn attach_transport_from_config(&mut self, config: &TransportConfig) -> Result<()> {
+        let transport = create_peer_transport_with_config(PeerRole::Answerer, config)?;
+        self.attach_transport(transport);
+        Ok(())
+    }
+
+    /// [`Self::attach_transport_from_config`] with an explicit [`TransportMode`].
+    pub fn attach_transport_mode(&mut self, mode: TransportMode) -> Result<()> {
+        self.attach_transport_from_config(&TransportConfig { mode })
     }
 
     /// Whether a transport is attached.
@@ -1580,6 +1596,19 @@ mod tests {
         // Input not allowed until a new peer is connected.
         let err = session.send_mouse_move(0.1, 0.1).unwrap_err();
         assert!(matches!(err, ViewerError::InvalidState { .. }));
+    }
+
+    #[test]
+    fn attach_transport_mode_mock() {
+        let mut session = ViewerSession::new();
+        session
+            .begin_connect(&ConnectRequest::otp("h", "123456"))
+            .unwrap();
+        session
+            .attach_transport_mode(TransportMode::Mock)
+            .unwrap();
+        assert!(session.has_transport());
+        assert_eq!(session.transport_state(), Some(ConnectionState::New));
     }
 
     #[test]

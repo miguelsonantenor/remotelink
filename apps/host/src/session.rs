@@ -37,9 +37,10 @@ use remotelink_media::{
     VideoSource,
 };
 use remotelink_net::{
-    AudioPacket, BoxPeerTransport, ConnectionState, DataMessage, LocalIceCandidate, MockPeerConfig,
-    MockPeerTransport, NaluFormat, NetError, PeerTransport, PeerTransportCallbacks,
-    SessionDescription, TransportIceCandidate, VideoNalu,
+    create_peer_transport_with_config, AudioPacket, BoxPeerTransport, ConnectionState,
+    DataMessage, LocalIceCandidate, MockPeerConfig, MockPeerTransport, NaluFormat, NetError,
+    PeerRole, PeerTransport, PeerTransportCallbacks, SessionDescription, TransportConfig,
+    TransportIceCandidate, TransportMode, VideoNalu,
 };
 use remotelink_platform_windows::ipc::message::{SignalForward, SignalHop};
 use remotelink_platform_windows::{
@@ -262,6 +263,26 @@ impl SessionManager {
             label: "host-agent".into(),
             fingerprint: None,
         })))
+    }
+
+    /// Create a session manager for the host **offerer** role using the transport factory.
+    ///
+    /// Respects `REMOTELINK_TRANSPORT` / [`TransportConfig`] (`mock` / `live` /
+    /// `webrtc` / `auto`). Prefer this for production agent wiring so the media
+    /// plane is not hard-coded to the mock backend.
+    pub fn from_transport_config(config: &TransportConfig) -> Result<Self> {
+        let peer = create_peer_transport_with_config(PeerRole::Offerer, config)?;
+        Ok(Self::with_peer(peer))
+    }
+
+    /// [`Self::from_transport_config`] with [`TransportConfig::from_env`].
+    pub fn from_env() -> Result<Self> {
+        Self::from_transport_config(&TransportConfig::from_env())
+    }
+
+    /// [`Self::from_transport_config`] with an explicit [`TransportMode`].
+    pub fn from_mode(mode: TransportMode) -> Result<Self> {
+        Self::from_transport_config(&TransportConfig { mode })
     }
 
     /// Create a session manager that owns the given PeerTransport (e.g. mock pair side A).
@@ -680,6 +701,13 @@ impl SessionManager {
         self.peer.as_mut()
     }
 
+    /// Wait until the owned PeerTransport can send media/data (see
+    /// [`PeerTransport::wait_ready`]).
+    pub fn wait_ready(&mut self, timeout: Duration) -> Result<()> {
+        self.peer.wait_ready(timeout)?;
+        Ok(())
+    }
+
     /// Override synthetic capture geometry (default 64×36 @ 30 fps).
     pub fn set_synthetic_geometry(&mut self, width: u32, height: u32, fps: u32) {
         assert!(width > 0 && height > 0 && fps > 0);
@@ -1010,6 +1038,14 @@ mod tests {
         }
         assert_eq!(mgr.connection_state(), ConnectionState::Connected);
         sdp
+    }
+
+    #[test]
+    fn from_mode_mock_builds_offerer() {
+        let mut mgr = SessionManager::from_mode(TransportMode::Mock).unwrap();
+        assert_eq!(mgr.connection_state(), ConnectionState::New);
+        let fp = mgr.peer_mut().local_fingerprint().unwrap();
+        assert_eq!(fp.algorithm, "sha-256");
     }
 
     #[test]

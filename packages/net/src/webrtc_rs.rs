@@ -786,6 +786,12 @@ impl PeerTransport for WebrtcPeerTransport {
         self.send_on_channel(label, Bytes::from(message.data))
     }
 
+    fn wait_ready(&mut self, timeout: Duration) -> Result<()> {
+        // Connected first, then SCTP DataChannels (may lag DTLS).
+        self.wait_connected(timeout)?;
+        self.wait_data_channels_open(timeout)
+    }
+
     fn poll(&mut self) -> Result<()> {
         if self.closed {
             return Err(NetError::Closed);

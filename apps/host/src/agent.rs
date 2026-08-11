@@ -315,6 +315,23 @@ impl AgentSession {
         }
     }
 
+    /// New agent session with a factory-selected offerer PeerTransport.
+    ///
+    /// See [`SessionManager::from_transport_config`].
+    pub fn from_transport_config(
+        config: &remotelink_net::TransportConfig,
+    ) -> crate::session::Result<Self> {
+        Ok(Self {
+            state: AgentSessionState::default(),
+            manager: SessionManager::from_transport_config(config)?,
+        })
+    }
+
+    /// [`Self::from_transport_config`] with an explicit mode.
+    pub fn from_mode(mode: remotelink_net::TransportMode) -> crate::session::Result<Self> {
+        Self::from_transport_config(&remotelink_net::TransportConfig { mode })
+    }
+
     /// New agent session owning the given PeerTransport (tests / colocate).
     pub fn with_manager(manager: SessionManager) -> Self {
         Self {
@@ -484,16 +501,16 @@ pub fn run_with_transport(mode: remotelink_net::TransportMode) {
     }
 }
 
-/// Agent-only live TCP loopback: offerer (host) + answerer (viewer stand-in).
+/// Agent-only live TCP: real sockets + **SessionManager** synthetic A/V pump.
 ///
-/// Demonstrates real sockets and length-prefixed media/data without full
-/// WebRTC. Full control-IPC + SessionManager path remains on mock for CI.
+/// Handshakes a paired answerer, then drives the same media plane as mock
+/// (`attach` → `start_media` → `pump_media`) so demos exercise production code.
 fn run_agent_only_live_synthetic(session_id: &str) -> Result<String, String> {
     use std::time::Duration;
 
     use remotelink_net::{
-        live_handshake, AudioPacket, DataMessage, IncomingTrackData, LivePeerConfig,
-        LivePeerTransport, NaluFormat, PeerRole, PeerTransport, SharedRecording, VideoNalu,
+        live_handshake, LivePeerConfig, LivePeerTransport, PeerRole, PeerTransport,
+        SharedRecording,
     };
 
     let mut offerer = LivePeerTransport::new(PeerRole::Offerer, LivePeerConfig::default())
@@ -502,92 +519,32 @@ fn run_agent_only_live_synthetic(session_id: &str) -> Result<String, String> {
         .map_err(|e| e.to_string())?;
     let rec = SharedRecording::new();
     answerer.set_callbacks(Box::new(rec.clone()));
-
     live_handshake(&mut offerer, &mut answerer).map_err(|e| e.to_string())?;
 
-    let fp = offerer.local_fingerprint().map_err(|e| e.to_string())?;
-    offerer
-        .send_video_nalu(VideoNalu {
-            pts_host_mono: Duration::from_millis(0),
-            rtp_ts: Some(0),
-            keyframe: true,
-            format: NaluFormat::AnnexB,
-            data: vec![0, 0, 0, 1, 0x67],
-        })
-        .map_err(|e| e.to_string())?;
-    offerer
-        .send_audio(AudioPacket {
-            pts_host_mono: Duration::from_millis(0),
-            rtp_ts: Some(0),
-            sample_rate: 48_000,
-            channels: 2,
-            data: vec![0, 1, 2, 3],
-        })
-        .map_err(|e| e.to_string())?;
-    offerer
-        .send_data(DataMessage {
-            label: "control".into(),
-            data: format!("session={session_id}").into_bytes(),
-            unordered: false,
-        })
-        .map_err(|e| e.to_string())?;
-
-    let deadline = std::time::Instant::now() + Duration::from_secs(2);
-    loop {
-        answerer.poll().map_err(|e| e.to_string())?;
-        let snap = rec.snapshot();
-        if snap.tracks.len() >= 2 && !snap.data.is_empty() {
-            break;
-        }
-        if std::time::Instant::now() >= deadline {
-            return Err(format!(
-                "live demo timeout tracks={} data={}",
-                snap.tracks.len(),
-                snap.data.len()
-            ));
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-
-    let snap = rec.snapshot();
-    let video_n = snap
-        .tracks
-        .iter()
-        .filter(|t| matches!(t, IncomingTrackData::Video(_)))
-        .count();
-    let audio_n = snap
-        .tracks
-        .iter()
-        .filter(|t| matches!(t, IncomingTrackData::Audio(_)))
-        .count();
-
-    offerer.close().map_err(|e| e.to_string())?;
-    answerer.close().map_err(|e| e.to_string())?;
-
-    Ok(format!(
-        "live TCP session={session_id} fp={} video_rx={video_n} audio_rx={audio_n} data_rx={}",
-        fp.as_sign_material(),
-        snap.data.len()
-    ))
+    run_session_manager_preconnected(
+        session_id,
+        "live TCP",
+        Box::new(offerer),
+        Box::new(answerer),
+        rec,
+        Duration::from_secs(3),
+    )
 }
 
-/// Agent-only webrtc-rs loopback when feature `webrtc-rs` is enabled.
-///
-/// Without the feature, returns an error so the caller prints guidance
-/// (CI keeps default mock; demos opt in with `--features webrtc-rs`).
+/// Agent-only webrtc-rs: real ICE/DTLS + **SessionManager** synthetic A/V pump.
 fn run_agent_only_webrtc_synthetic(session_id: &str) -> Result<String, String> {
     #[cfg(feature = "webrtc-rs")]
     {
         use std::time::Duration;
 
         use remotelink_net::{
-            webrtc_handshake, AudioPacket, DataMessage, IncomingTrackData, NaluFormat, PeerRole,
-            PeerTransport, SharedRecording, VideoNalu, WebrtcPeerConfig, WebrtcPeerTransport,
-            LABEL_INPUT,
+            webrtc_handshake, PeerRole, PeerTransport, SharedRecording, WebrtcPeerConfig,
+            WebrtcPeerTransport,
         };
 
-        let mut offerer = WebrtcPeerTransport::new(PeerRole::Offerer, WebrtcPeerConfig::default())
-            .map_err(|e| e.to_string())?;
+        let mut offerer =
+            WebrtcPeerTransport::new(PeerRole::Offerer, WebrtcPeerConfig::default())
+                .map_err(|e| e.to_string())?;
         let mut answerer =
             WebrtcPeerTransport::new(PeerRole::Answerer, WebrtcPeerConfig::default())
                 .map_err(|e| e.to_string())?;
@@ -596,74 +553,15 @@ fn run_agent_only_webrtc_synthetic(session_id: &str) -> Result<String, String> {
 
         webrtc_handshake(&mut offerer, &mut answerer, Duration::from_secs(15))
             .map_err(|e| e.to_string())?;
-        offerer
-            .wait_data_channels_open(Duration::from_secs(5))
-            .map_err(|e| e.to_string())?;
 
-        let fp = offerer.local_fingerprint().map_err(|e| e.to_string())?;
-        offerer
-            .send_video_nalu(VideoNalu {
-                pts_host_mono: Duration::from_millis(0),
-                rtp_ts: Some(0),
-                keyframe: true,
-                format: NaluFormat::AnnexB,
-                data: vec![0, 0, 0, 1, 0x67],
-            })
-            .map_err(|e| e.to_string())?;
-        offerer
-            .send_audio(AudioPacket {
-                pts_host_mono: Duration::from_millis(0),
-                rtp_ts: Some(0),
-                sample_rate: 48_000,
-                channels: 2,
-                data: vec![0, 1, 2, 3],
-            })
-            .map_err(|e| e.to_string())?;
-        offerer
-            .send_data(DataMessage {
-                label: LABEL_INPUT.into(),
-                data: format!("session={session_id}").into_bytes(),
-                unordered: false,
-            })
-            .map_err(|e| e.to_string())?;
-
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        loop {
-            answerer.poll().map_err(|e| e.to_string())?;
-            let snap = rec.snapshot();
-            if snap.tracks.len() >= 2 && !snap.data.is_empty() {
-                break;
-            }
-            if std::time::Instant::now() >= deadline {
-                return Err(format!(
-                    "webrtc demo timeout tracks={} data={}",
-                    snap.tracks.len(),
-                    snap.data.len()
-                ));
-            }
-            std::thread::sleep(Duration::from_millis(15));
-        }
-
-        let snap = rec.snapshot();
-        let video_n = snap
-            .tracks
-            .iter()
-            .filter(|t| matches!(t, IncomingTrackData::Video(_)))
-            .count();
-        let audio_n = snap
-            .tracks
-            .iter()
-            .filter(|t| matches!(t, IncomingTrackData::Audio(_)))
-            .count();
-
-        offerer.close().map_err(|e| e.to_string())?;
-        answerer.close().map_err(|e| e.to_string())?;
-
-        Ok(format!(
-            "webrtc-rs session={session_id} fp={} video_rx={video_n} audio_rx={audio_n} data_rx={}",
-            fp.as_sign_material(),
-            snap.data.len()
-        ))
+        run_session_manager_preconnected(
+            session_id,
+            "webrtc-rs",
+            Box::new(offerer),
+            Box::new(answerer),
+            rec,
+            Duration::from_secs(8),
+        )
     }
     #[cfg(not(feature = "webrtc-rs"))]
     {
@@ -672,6 +570,79 @@ fn run_agent_only_webrtc_synthetic(session_id: &str) -> Result<String, String> {
             "webrtc backend not compiled: rebuild with `cargo run -p remotelink-host --features webrtc-rs -- --role=agent --transport=webrtc`"
                 .into(),
         )
+    }
+}
+
+/// Shared demo path: pre-connected offerer → SessionManager pump → answerer RX.
+fn run_session_manager_preconnected(
+    session_id: &str,
+    backend_label: &str,
+    offerer: remotelink_net::BoxPeerTransport,
+    mut answerer: remotelink_net::BoxPeerTransport,
+    rec: remotelink_net::SharedRecording,
+    wait_timeout: std::time::Duration,
+) -> Result<String, String> {
+    use remotelink_net::IncomingTrackData;
+
+    let mut mgr = SessionManager::with_peer(offerer);
+    mgr.attach(session_id);
+    mgr.wait_ready(wait_timeout).map_err(|e| e.to_string())?;
+    mgr.start_media().map_err(|e| e.to_string())?;
+
+    let fp = mgr
+        .peer_mut()
+        .local_fingerprint()
+        .map_err(|e| e.to_string())?;
+
+    let pump = mgr.pump_media(2).map_err(|e| e.to_string())?;
+    if pump.skipped_not_connected || pump.video_sent == 0 {
+        return Err(format!(
+            "{backend_label}: pump skipped or empty (connected? video_sent={})",
+            pump.video_sent
+        ));
+    }
+
+    // Optional control data on input channel for RX count.
+    let _ = mgr.peer_mut().send_data(remotelink_net::DataMessage {
+        label: crate::session::INPUT_CHANNEL_LABEL.into(),
+        data: format!("session={session_id}").into_bytes(),
+        unordered: false,
+    });
+
+    let deadline = std::time::Instant::now() + wait_timeout;
+    loop {
+        answerer.poll().map_err(|e| e.to_string())?;
+        let snap = rec.snapshot();
+        let videos = snap
+            .tracks
+            .iter()
+            .filter(|t| matches!(t, IncomingTrackData::Video(_)))
+            .count();
+        let audios = snap
+            .tracks
+            .iter()
+            .filter(|t| matches!(t, IncomingTrackData::Audio(_)))
+            .count();
+        if videos >= 1 && audios >= 1 {
+            let data_n = snap.data.len();
+            mgr.shutdown().map_err(|e| e.to_string())?;
+            let _ = answerer.close();
+            return Ok(format!(
+                "{backend_label} SessionManager session={session_id} fp={} \
+                 video_tx={} audio_tx={} video_rx={videos} audio_rx={audios} data_rx={data_n}",
+                fp.as_sign_material(),
+                pump.video_sent,
+                pump.audio_sent
+            ));
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(format!(
+                "{backend_label} SessionManager timeout tracks={} data={}",
+                snap.tracks.len(),
+                snap.data.len()
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(15));
     }
 }
 
