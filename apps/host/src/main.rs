@@ -256,6 +256,23 @@ fn parse_ws_host_config(args: &[String], transport: remotelink_net::TransportMod
             Err(e) => eprintln!("warning: {e}; ignoring --agent-control"),
         }
     }
+    if args.iter().any(|a| a == "--no-tray") {
+        cfg.tray = false;
+        cfg.os_tray = false;
+    }
+    if args.iter().any(|a| a == "--tray") {
+        cfg.tray = true;
+    }
+    if args.iter().any(|a| a == "--os-tray") {
+        cfg.os_tray = true;
+        cfg.tray = true;
+    }
+    if args.iter().any(|a| a == "--no-os-tray") {
+        cfg.os_tray = false;
+    }
+    if let Some(p) = flag_value(args, "--status-path") {
+        cfg.status_path = Some(std::path::PathBuf::from(p));
+    }
     cfg
 }
 
@@ -329,6 +346,9 @@ fn print_usage() {
          --mint-otp       Mint Mode A OTP and post hash (default on)\n  \
          --no-otp         Skip OTP mint\n  \
          --agent-control=tcp:PORT|pipe[:NAME]  KD5: dial agent control IPC\n  \
+         --tray / --no-tray   Host tray (console panel + status JSON; default on)\n  \
+         --os-tray / --no-os-tray  Windows NotifyIcon (default on Windows)\n  \
+         --status-path PATH   Tray JSON path (default .remotelink-host-status.json)\n  \
          --reconnect      Reconnect WSS after disconnect (service default on)\n  \
          --no-reconnect   Disable reconnect\n\n\
          Transport (also REMOTELINK_TRANSPORT; default mock — CI-safe):\n  \

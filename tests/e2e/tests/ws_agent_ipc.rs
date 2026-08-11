@@ -79,6 +79,9 @@ async fn wss_service_drives_agent_over_ipc_live() {
         save_creds: false,
         mint_otp: false,
         agent_control: Some(ControlEndpoint::tcp_localhost(control_port)),
+        tray: false,
+        os_tray: false,
+        status_path: None,
     };
 
     let host_task = tokio::spawn(async move { run_ws_host(host_cfg).await });

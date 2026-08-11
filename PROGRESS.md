@@ -62,4 +62,11 @@ Plan PRs 1–27 done.
 - CLI: `--control-listen=pipe` / `pipe:NAME` / `\\.\pipe\…` and matching `--agent-control`
 - Unit test `named_pipe_send_recv_with_acl` green on Windows
 
-**Still open for product:** tray OTP UI, MSI/codesign, boot-secret on control pipe.
+**Later same day (host tray OTP + session chrome):**
+- `HostTray` / `TrayState`: identity, Mode A OTP, G9 session chrome projection
+- Console panel + atomic `.remotelink-host-status.json` for tooling
+- Windows `Shell_NotifyIcon` tooltip + OTP balloon (message-only window thread)
+- Wired into `run_ws_host_service` (session begin/active/end + mint OTP)
+- Flags: `--tray` / `--no-tray`, `--os-tray` / `--no-os-tray`, `--status-path`
+
+**Still open for product:** MSI/codesign, tray context menu, boot-secret on control pipe.

@@ -34,6 +34,7 @@ use crate::control_loop::ServiceAgentClient;
 use crate::policy::{DEFAULT_HOST_OTP_PEPPER, DEFAULT_OTP_TTL_SECS};
 use crate::service::signal_to_agent;
 use crate::session::{parse_ice_payload, parse_sdp_payload, signal_kind, SdpPayload, SessionManager};
+use crate::tray::{default_status_path, HostTray};
 
 /// Configuration for [`run_ws_host`] / [`run_ws_host_service`].
 #[derive(Debug, Clone)]
@@ -67,6 +68,12 @@ pub struct WsHostConfig {
     /// When set, drive media via KD5 agent control IPC instead of in-process
     /// [`SessionManager`] (service owns WSS only).
     pub agent_control: Option<ControlEndpoint>,
+    /// Enable host tray surface (console panel + status JSON file).
+    pub tray: bool,
+    /// Enable Windows notification-area icon (ignored on non-Windows).
+    pub os_tray: bool,
+    /// Path for `.remotelink-host-status.json` (default next to `creds_path`).
+    pub status_path: Option<PathBuf>,
 }
 
 /// Pre-enrolled host credentials (from a prior [`register_device`] call).
@@ -97,6 +104,9 @@ impl Default for WsHostConfig {
             save_creds: true,
             mint_otp: true,
             agent_control: None,
+            tray: true,
+            os_tray: cfg!(windows),
+            status_path: None,
         }
     }
 }
@@ -215,10 +225,19 @@ async fn enroll_or_reuse(cfg: &WsHostConfig) -> Result<EnrolledHost, String> {
     })
 }
 
+/// Result of minting a Mode A OTP for the tray / CLI.
+struct MintedOtp {
+    code: String,
+    expires_at: String,
+}
+
 /// Mint Mode A OTP, post hash to server, print code for the viewer CLI.
-async fn maybe_mint_otp(cfg: &WsHostConfig, enrolled: &EnrolledHost) -> Result<(), String> {
+async fn maybe_mint_otp(
+    cfg: &WsHostConfig,
+    enrolled: &EnrolledHost,
+) -> Result<Option<MintedOtp>, String> {
     if !cfg.mint_otp {
-        return Ok(());
+        return Ok(None);
     }
     let (code, hash) = mint_otp(6, DEFAULT_HOST_OTP_PEPPER)
         .map_err(|e| format!("mint_otp: {e}"))?;
@@ -235,16 +254,19 @@ async fn maybe_mint_otp(cfg: &WsHostConfig, enrolled: &EnrolledHost) -> Result<(
     )
     .await
     .map_err(|e| format!("post otp hash: {e}"))?;
+    let expires_at = resp.expires_at.to_string();
     println!(
-        "ws-host: Mode A OTP for viewer (expires {}): {}",
-        resp.expires_at,
+        "ws-host: Mode A OTP for viewer (expires {expires_at}): {}",
         code.as_str()
     );
     println!(
         "ws-host: viewer example: remotelink-viewer --ws-connect --server={} --host {} --otp {} --transport=live",
         cfg.server, enrolled.public_id, code.as_str()
     );
-    Ok(())
+    Ok(Some(MintedOtp {
+        code: code.as_str().to_string(),
+        expires_at,
+    }))
 }
 
 /// Wait for intent, accept on WSS, return session id.
@@ -293,8 +315,12 @@ async fn handle_one_session_local(
     transport_cfg: &TransportConfig,
     video_frames: u32,
     wait_incoming: Duration,
+    tray: Option<&HostTray>,
 ) -> Result<String, String> {
     let session_id = accept_incoming_session(sig, wait_incoming).await?;
+    if let Some(t) = tray {
+        t.begin_session(&session_id, None);
+    }
 
     let offerer = create_peer_transport_with_config(PeerRole::Offerer, transport_cfg)
         .map_err(|e| format!("create offerer: {e}"))?;
@@ -314,16 +340,32 @@ async fn handle_one_session_local(
         .cloned()
         .collect();
 
-    relay_offer_answer_ice_local(sig, &session_id, &offer, &mut pending_host_ice, &mut mgr)
-        .await?;
+    let relay = relay_offer_answer_ice_local(sig, &session_id, &offer, &mut pending_host_ice, &mut mgr)
+        .await;
+    if let Err(e) = relay {
+        if let Some(t) = tray {
+            t.end_session();
+        }
+        return Err(e);
+    }
 
-    mgr.wait_ready(Duration::from_secs(10))
-        .map_err(|e| format!("wait_ready: {e}"))?;
+    if let Err(e) = mgr.wait_ready(Duration::from_secs(10)) {
+        if let Some(t) = tray {
+            t.end_session();
+        }
+        return Err(format!("wait_ready: {e}"));
+    }
+    if let Some(t) = tray {
+        t.mark_session_active();
+    }
     let pump = mgr
         .pump_media(video_frames)
         .map_err(|e| format!("pump: {e}"))?;
     if pump.skipped_not_connected || pump.video_sent == 0 {
         let _ = mgr.shutdown();
+        if let Some(t) = tray {
+            t.end_session();
+        }
         return Err(format!(
             "pump failed (skipped={} video_sent={})",
             pump.skipped_not_connected, pump.video_sent
@@ -344,6 +386,9 @@ async fn handle_one_session_local(
 
     end_wss_session(sig, &session_id).await;
     let _ = mgr.shutdown();
+    if let Some(t) = tray {
+        t.end_session();
+    }
     Ok(summary)
 }
 
@@ -355,8 +400,12 @@ async fn handle_one_session_agent(
     mode: TransportMode,
     video_frames: u32,
     wait_incoming: Duration,
+    tray: Option<&HostTray>,
 ) -> Result<String, String> {
     let session_id = accept_incoming_session(sig, wait_incoming).await?;
+    if let Some(t) = tray {
+        t.begin_session(&session_id, None);
+    }
 
     let outbound = agent
         .start_session(&session_id, false)
@@ -451,6 +500,9 @@ async fn handle_one_session_agent(
             session_id: session_id.clone(),
             reason: Some("answer_timeout".into()),
         }));
+        if let Some(t) = tray {
+            t.end_session();
+        }
         return Err("timeout waiting for session_answer".into());
     }
 
@@ -538,7 +590,13 @@ async fn handle_one_session_agent(
             session_id: session_id.clone(),
             reason: Some("agent_not_connected".into()),
         }));
+        if let Some(t) = tray {
+            t.end_session();
+        }
         return Err("agent media plane never reached Connected".into());
+    }
+    if let Some(t) = tray {
+        t.mark_session_active();
     }
     if agent_video == 0 && video_frames > 0 {
         // One last poke: QueryStats again after a short settle.
@@ -561,6 +619,9 @@ async fn handle_one_session_agent(
             session_id: session_id.clone(),
             reason: Some("agent_no_video".into()),
         }));
+        if let Some(t) = tray {
+            t.end_session();
+        }
         return Err("agent connected but pumped no video".into());
     }
 
@@ -571,6 +632,9 @@ async fn handle_one_session_agent(
     }));
 
     end_wss_session(sig, &session_id).await;
+    if let Some(t) = tray {
+        t.end_session();
+    }
     Ok(format!(
         "ws-host ok public_id={public_id} session={session_id} media=agent transport={} video_tx>={}",
         mode.as_str(),
@@ -747,10 +811,36 @@ pub async fn run_ws_host_service(cfg: WsHostConfig) -> Result<String, String> {
     let mode = coerce_transport(cfg.transport);
     let transport_cfg = TransportConfig { mode };
     let enrolled = enroll_or_reuse(&cfg).await?;
-    maybe_mint_otp(&cfg, &enrolled).await?;
     let public_id = enrolled.public_id.clone();
     let access_token = enrolled.access_token.clone();
     let ws_url = http_to_ws_url(&cfg.server).map_err(|e| format!("ws url: {e}"))?;
+
+    let status_path = cfg
+        .status_path
+        .clone()
+        .unwrap_or_else(|| default_status_path(&cfg.creds_path));
+    let tray = if cfg.tray {
+        let t = HostTray::new(
+            cfg.display_name.clone(),
+            status_path.clone(),
+            true,
+            cfg.os_tray,
+        );
+        t.set_identity(&public_id, Some(&cfg.display_name));
+        println!(
+            "ws-host: tray status file {}",
+            status_path.display()
+        );
+        Some(t)
+    } else {
+        None
+    };
+
+    if let Some(otp) = maybe_mint_otp(&cfg, &enrolled).await? {
+        if let Some(ref t) = tray {
+            t.set_otp(&otp.code, otp.expires_at);
+        }
+    }
 
     let mut agent_client = if let Some(ref ep) = cfg.agent_control {
         println!(
@@ -812,6 +902,7 @@ pub async fn run_ws_host_service(cfg: WsHostConfig) -> Result<String, String> {
                         mode,
                         cfg.video_frames,
                         cfg.wait_incoming,
+                        tray.as_ref(),
                     )
                     .await
                 } else {
@@ -822,6 +913,7 @@ pub async fn run_ws_host_service(cfg: WsHostConfig) -> Result<String, String> {
                         &transport_cfg,
                         cfg.video_frames,
                         cfg.wait_incoming,
+                        tray.as_ref(),
                     )
                     .await
                 };

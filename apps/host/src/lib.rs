@@ -14,6 +14,7 @@ pub mod platform_capture;
 pub mod policy;
 pub mod service;
 pub mod session;
+pub mod tray;
 pub mod ws_session;
 
 pub use agent::{
@@ -29,6 +30,7 @@ pub use remotelink_platform_windows::{
     listen_control, ControlEndpoint, ControlListener, ControlStream,
 };
 pub use chrome::{HostSessionUx, SessionChrome, SessionIndicator};
+pub use tray::{default_status_path, HostTray, TrayState};
 pub use platform_capture::{
     default_audio_kind, default_video_kind, open_audio_source, open_default_sources,
     open_video_source, AudioCaptureKind, HostAudioSource, HostVideoSource, PlatformCaptureError,

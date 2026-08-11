@@ -238,6 +238,9 @@ async fn ws_host_viewer_live_tcp_media() {
         save_creds: false,
         mint_otp: false, // viewer uses loose OTP when no server hash published
         agent_control: None,
+        tray: false,
+        os_tray: false,
+        status_path: None,
     };
 
     let host_handle = tokio::spawn(async move { run_ws_host(host_cfg).await });

@@ -11,7 +11,7 @@
 | PR plan | **PRs 1–27 complete** (8b optional skipped) |
 | **Integrated monorepo** | **Yes** — `cargo test --workspace` green (default features) |
 | PeerTransport backends | **mock** (CI default) · **live TCP** (default feature) · **webrtc-rs** (opt-in feature) |
-| Real AnyDesk product | **~92%** — named-pipe ACL control IPC (Windows); WSS↔agent KD5; live e2e; no MSI/tray yet |
+| Real AnyDesk product | **~94%** — host tray (OTP + session chrome + status JSON + Win NotifyIcon); named-pipe ACL; KD5; no MSI yet |
 
 ## Day-to-day development
 
@@ -54,8 +54,8 @@ docker compose -f deploy/docker-compose.yml up -d --build
 
 ## Next best steps
 
-1. Tray/GUI for OTP display and session indicator  
-2. MSI/codesign packaging  
+1. MSI/codesign packaging  
+2. Tray context menu (copy OTP / kill session) polish  
 3. Optional: webrtc-rs e2e over WSS+agent IPC; boot-secret on control pipe  
 
 ### Control IPC (KD5) — WSS service + agent media
