@@ -19,3 +19,6 @@ Thumbs.db
 # Agent / CI artifacts
 /artifacts/
 /inventory.json
+
+# Local package output (portable zip / MSI stage)
+/dist/
