@@ -1,9 +1,53 @@
 # RemoteLink — Resume handoff
 
-**Saved:** 2026-08-11  
-**Plan ID:** `35709e22`  
+**Saved:** 2026-08-11 (evening handoff — Phase 1 parked)  
 **Primary tree:** branch **`main`** at `C:\Users\Linked\Documents\remotelink`  
-**GitHub:** https://github.com/miguelsonantenor/remotelink
+**GitHub:** https://github.com/miguelsonantenor/remotelink  
+
+## Git policy (user)
+
+- **OK:** local `git commit` anytime  
+- **NOT OK without explicit permission:** `git push`, GitHub releases, remote tags  
+- At handoff: **`main` is ahead of `origin/main` by 2 local commits** (not pushed)
+
+| Local commit | Summary |
+|--------------|---------|
+| `6b3f1ae` | Phase 1 product shell (`remotelink-app` — This PC + Connect) |
+| `851982c` | Host runs as **child process** so WSS stays online (`host_offline` fix) |
+
+Remote still has older core release (`v0.1.0` portable zip **without** product shell).
+
+---
+
+## Where we stopped
+
+### Done
+
+| Item | Notes |
+|------|--------|
+| Core remote stack | Signaling, host, viewer CLI, DXGI/WASAPI/MF H.264, packaging |
+| GitHub release `v0.1.0` | Portable zip (pre–Phase-1 binaries) |
+| **Phase 1 shell** | `apps/desktop` → binary **`remotelink-app`** (egui) |
+| Host under app | Spawns `remotelink-host.exe` child; status JSON + OTP in UI |
+| Lab connect verified | `hello` → accept → offer/answer → `host_media_complete`; `video_rx`/`audio_rx` OK |
+| User saw successful log | Session ends quickly by design (short media burst, not live window) |
+
+### Not done (pick up later)
+
+| Priority | Work |
+|----------|------|
+| **Phase 3** (user deferred) | Live session **video window** (continuous remote desktop UI) |
+| **Phase 2** | Hosted signaling + STUN/TURN (internet / NAT) |
+| **Phase 4** | MSI + Authenticode; auto-start; updates |
+| Publish | Push local commits + re-release zip including `remotelink-app` (**ask first**) |
+
+### Lab quirks on this machine
+
+- **Port 8080 is taken** (unrelated `AgentService`) → use **`127.0.0.1:18080`**
+- Default app server is still `http://127.0.0.1:8080` → set Advanced or `--server=http://127.0.0.1:18080`
+- Connect is **session burst**, not always-on video (expected until Phase 3)
+
+---
 
 ## Status
 
@@ -12,9 +56,10 @@
 | PR plan | **PRs 1–27 complete** (8b optional skipped) |
 | **Integrated monorepo** | **Yes** |
 | PeerTransport backends | **mock** · **live TCP** · **webrtc-rs** (opt-in) |
-| **Core product** | **COMPLETE (~100%)** |
-| Shippable artifact | **Portable zip** (`scripts/package-release.ps1`) |
-| MSI | Optional via WiX (`scripts/build-msi.ps1`) — unsigned until release codesign |
+| **Core product** | **COMPLETE** |
+| **Phase 1 product shell** | **DONE** (local commits; not on origin) |
+| Shippable artifact | Portable zip (`scripts/package-release.ps1`) — rebuild to include app |
+| MSI | Optional via WiX — unsigned until codesign |
 
 ### Core product includes
 
@@ -22,15 +67,42 @@
 - Host: enrollment, tray (OTP / End session / Exit), Mode A OTP
 - KD5 service↔agent control IPC (TCP + named-pipe ACL + boot secret)
 - Media: DXGI capture, WASAPI COM loopback, Media Foundation H.264 (+ software fallback)
-- Viewer WSS connect path
+- Viewer WSS connect path (+ library export for desktop)
+- **`remotelink-app`** product shell (This PC + Connect)
 - E2E live media tests, Windows + Linux CI
 
-### Not required for “core done” (optional release polish)
+### Optional release polish
 
-- Authenticode / EV code signing certificate  
-- Direct NVENC/QSV/AMF SDKs (MF H.264 covers system encode)  
+- Authenticode / EV code signing  
+- Direct NVENC/QSV/AMF SDKs  
 - Full webrtc-rs multi-process e2e  
 - Secure desktop / UAC remote (documented v1 gap)
+
+---
+
+## Pick up later — product shell lab
+
+```powershell
+$env:Path = "C:\Users\Linked\tools\mingw64\bin;$env:USERPROFILE\.cargo\bin;" + $env:Path
+# or: C:\msys64\mingw64\bin
+$env:RUSTUP_TOOLCHAIN = "stable-x86_64-pc-windows-gnu"
+cd C:\Users\Linked\Documents\remotelink
+
+# Terminal 1 — signaling (use 18080 if 8080 is busy)
+$env:LISTEN_ADDR = "127.0.0.1:18080"
+cargo run -p remotelink-server
+
+# Terminal 2 — product shell (host + connect UI)
+cargo run -p remotelink-desktop -- --server=http://127.0.0.1:18080
+# binary: target\debug\remotelink-app.exe
+# needs sibling: target\debug\remotelink-host.exe
+```
+
+Two clients for view test: two app instances with different `REMOTELINK_DATA_DIR`, same server; copy ID+OTP from host instance into Connect on the other.
+
+Data/config: `%LOCALAPPDATA%\RemoteLink` or `REMOTELINK_DATA_DIR` (creds, `host-status.json`, `host-service.log`).
+
+---
 
 ## Ship the product
 
@@ -39,7 +111,7 @@ $env:Path = "C:\msys64\mingw64\bin;$env:USERPROFILE\.cargo\bin;" + $env:Path
 $env:RUSTUP_TOOLCHAIN = "stable-x86_64-pc-windows-gnu"
 cd C:\Users\Linked\Documents\remotelink
 
-# Build portable core product zip
+# Build portable core product zip (includes remotelink-app when rebuilt)
 .\scripts\package-release.ps1
 # → dist\RemoteLink-0.1.0-portable.zip
 # → dist\remotelink-0.1.0\  (QUICKSTART, install-portable, lab-start)
@@ -59,12 +131,13 @@ cargo test --workspace
 cargo test -p remotelink-e2e --test ws_cli_live --test ws_agent_ipc
 ```
 
-### Lab (from source)
+### Lab (CLI / advanced)
 
 ```powershell
+$env:LISTEN_ADDR = "127.0.0.1:18080"
 cargo run -p remotelink-server
-cargo run -p remotelink-host -- --role=service --server=http://127.0.0.1:8080 --transport=live
-cargo run -p remotelink-viewer -- --ws-connect --server=http://127.0.0.1:8080 --host PUBLIC_ID --otp CODE --transport=live
+cargo run -p remotelink-host -- --role=service --server=http://127.0.0.1:18080 --transport=live
+cargo run -p remotelink-viewer -- --ws-connect --server=http://127.0.0.1:18080 --host PUBLIC_ID --otp CODE --transport=live
 ```
 
 ### KD5 split (production-style)
