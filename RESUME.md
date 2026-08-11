@@ -11,7 +11,7 @@
 | PR plan | **PRs 1–27 complete** (8b optional skipped) |
 | **Integrated monorepo** | **Yes** — `cargo test --workspace` green (default features) |
 | PeerTransport backends | **mock** (CI default) · **live TCP** (default feature) · **webrtc-rs** (opt-in feature) |
-| Real AnyDesk product | **~98.5%** — H.264 encode module (SW mock + HW stub); DXGI + WASAPI stub; tray; KD5 |
+| Real AnyDesk product | **~99%** — native WASAPI COM loopback; DXGI; H.264 SW encode; tray; KD5 |
 
 ## Day-to-day development
 
@@ -54,9 +54,23 @@ docker compose -f deploy/docker-compose.yml up -d --build
 
 ## Next best steps
 
-1. Native WASAPI COM loopback + real HW H.264 (NVENC/QSV/AMF)  
+1. Real HW H.264 (NVENC/QSV/AMF)  
 2. Run WiX MSI in release pipeline + Authenticode  
 3. Optional: webrtc-rs e2e over WSS+agent IPC  
+
+### WASAPI (Windows)
+
+| Mode | Behavior |
+|------|----------|
+| `StubOnly` | Synthetic PCM (CI) |
+| `PreferNative` | Real COM loopback; stub if no render endpoint |
+| `NativeOnly` | Real COM only (`ClientOpenFailed` if no device) |
+
+```powershell
+# Prefer real system audio on host (falls back to stub headless)
+# SessionManager defaults: WindowsWasapiStub; set PreferNative for production:
+# mgr.set_audio_kind(AudioCaptureKind::WindowsWasapiPreferNative);
+```
 
 ### Encode
 

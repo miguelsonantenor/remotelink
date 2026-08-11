@@ -293,24 +293,35 @@ mod tests {
     }
 
     #[test]
-    fn native_only_reports_unavailable() {
+    fn native_only_open_or_client_error() {
         let cfg = LoopbackConfig {
             open_mode: LoopbackOpenMode::NativeOnly,
             ..LoopbackConfig::default()
         };
-        let err = open_loopback(cfg).unwrap_err();
-        assert!(matches!(err, LoopbackError::NativeUnavailable(_)));
+        match open_loopback(cfg) {
+            Ok(src) => {
+                assert_eq!(src.backend_name(), "wasapi");
+            }
+            Err(LoopbackError::ClientOpenFailed(_)) => {}
+            Err(LoopbackError::NativeUnavailable(_)) if !cfg!(windows) => {}
+            Err(e) => panic!("unexpected native-only error: {e}"),
+        }
     }
 
     #[test]
-    fn prefer_native_falls_back_to_stub() {
+    fn prefer_native_opens_wasapi_or_stub() {
         let cfg = LoopbackConfig {
             open_mode: LoopbackOpenMode::PreferNative,
             channels: 1,
             ..LoopbackConfig::default()
         };
         let src = open_loopback(cfg).unwrap();
-        assert_eq!(src.backend_name(), "stub");
+        // On Windows with a render device → wasapi; headless / non-Windows → stub.
+        assert!(
+            src.backend_name() == "wasapi" || src.backend_name() == "stub",
+            "backend={}",
+            src.backend_name()
+        );
     }
 
     #[test]

@@ -99,4 +99,10 @@ Plan PRs 1–27 done.
 - Keyframe request + bitrate feedback APIs for PLI/FIR/GCC
 - Hardware path documents NVENC/QSV/AMF; always falls back to software today
 
-**Still open for product:** Native WASAPI COM, real HW encode SDK, WiX/Authenticode release pipeline.
+**Later same day (native WASAPI COM loopback):**
+- `NativeLoopbackCapture::try_open` uses real COM: MMDeviceEnumerator → IAudioClient
+  shared loopback + AUTOCONVERTPCM → IAudioCaptureClient pump → 10 ms s16 packets
+- `is_available()` true on Windows; PreferNative opens wasapi when a render endpoint exists
+- Exclusive-mode near-silence detection on native PCM; device-change → ReopenRequired
+
+**Still open for product:** Real HW H.264 SDK, WiX/Authenticode release pipeline.
