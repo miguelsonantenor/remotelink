@@ -117,4 +117,9 @@ Plan PRs 1–27 done.
 - CI uploads portable zip (+ MSI if WiX on runner)
 - **Core product marked COMPLETE** — remaining work is optional codesign / vendor SDKs
 
+**Later same day (README + release checklist):**
+- Top-level README reflects core product complete + ship commands
+- `deploy/packaging/RELEASE_CHECKLIST.md` for MSI/codesign/smoke steps
+- WiX MSI remains optional (needs admin install of WiX Toolset)
+
 **Optional (post-core):** Authenticode EV signing, NVENC SDK, webrtc multi-process e2e.

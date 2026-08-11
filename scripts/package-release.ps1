@@ -86,6 +86,7 @@ Copy-Item -Force (Join-Path $Root "deploy\packaging\QUICKSTART.md") $OutDir
 Copy-Item -Force (Join-Path $Root "deploy\packaging\install-portable.ps1") $OutDir
 Copy-Item -Force (Join-Path $Root "deploy\packaging\uninstall-portable.ps1") $OutDir
 Copy-Item -Force (Join-Path $Root "deploy\packaging\lab-start.ps1") $OutDir
+Copy-Item -Force (Join-Path $Root "deploy\packaging\RELEASE_CHECKLIST.md") $OutDir
 
 $binList = @()
 foreach ($b in $bins) {
