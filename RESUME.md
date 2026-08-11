@@ -11,7 +11,7 @@
 | PR plan | **PRs 1–27 complete** (8b optional skipped) |
 | **Integrated monorepo** | **Yes** — `cargo test --workspace` green (default features) |
 | PeerTransport backends | **mock** (CI default) · **live TCP** (default feature) · **webrtc-rs** (opt-in feature) |
-| Real AnyDesk product | **~98%** — DXGI video + WASAPI loopback stub; boot-secret; tray; package-release; KD5 |
+| Real AnyDesk product | **~98.5%** — H.264 encode module (SW mock + HW stub); DXGI + WASAPI stub; tray; KD5 |
 
 ## Day-to-day development
 
@@ -54,9 +54,21 @@ docker compose -f deploy/docker-compose.yml up -d --build
 
 ## Next best steps
 
-1. Native WASAPI COM loopback + hardware H.264 encode  
+1. Native WASAPI COM loopback + real HW H.264 (NVENC/QSV/AMF)  
 2. Run WiX MSI in release pipeline + Authenticode  
 3. Optional: webrtc-rs e2e over WSS+agent IPC  
+
+### Encode
+
+| Backend | Status |
+|---------|--------|
+| `software_mock` (default) | MH264 Annex-B mock encoder (CI-safe) |
+| `hardware` | Stub — always falls back to software until SDK linked |
+
+```rust
+mgr.request_video_keyframe();      // PLI/FIR
+mgr.set_video_bitrate_bps(2_000_000); // GCC feedback
+```
 
 ### Capture (Windows)
 

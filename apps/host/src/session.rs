@@ -142,17 +142,21 @@ pub enum InputProcessOutcome {
     InjectError,
 }
 
-/// Capture + mock encode state for one media start.
+/// Capture + encode state for one media start.
 struct MediaPlane {
     video: crate::platform_capture::HostVideoSource,
     audio: crate::platform_capture::HostAudioSource,
     opus: MockOpusEncoder,
+    /// H.264 encoder (software mock today; HW falls back until linked).
+    h264: remotelink_platform_windows::AnyH264Encoder,
     epoch: RtpEpoch,
     video_frames_sent: u64,
     audio_packets_sent: u64,
     /// Capture backend label for stats / logs.
     video_backend: &'static str,
     audio_backend: &'static str,
+    /// Encoder backend label for stats / logs.
+    encode_backend: &'static str,
 }
 
 #[derive(Debug, Default)]
@@ -777,15 +781,29 @@ impl SessionManager {
         .map_err(|e| SessionError::Media(e.to_string()))?;
         let video_backend = video.backend_name();
         let audio_backend = audio.backend_name();
+        let enc_cfg = remotelink_platform_windows::EncoderConfig {
+            width: self.synth_width,
+            height: self.synth_height,
+            fps: self.synth_fps.max(1),
+            target_bitrate_bps: remotelink_platform_windows::DEFAULT_TARGET_BITRATE_BPS,
+            disable_hw_encode: false,
+            force_software: false,
+        };
+        let h264 = remotelink_platform_windows::open_encoder(&enc_cfg)
+            .map_err(|e| SessionError::Media(e.to_string()))?;
+        use remotelink_platform_windows::H264Encoder;
+        let encode_backend = h264.backend_kind().as_str();
         self.media = Some(MediaPlane {
             video,
             audio,
             opus: MockOpusEncoder::with_epoch(epoch),
+            h264,
             epoch,
             video_frames_sent: 0,
             audio_packets_sent: 0,
             video_backend,
             audio_backend,
+            encode_backend,
         });
 
         if self.peer.connection_state() == ConnectionState::New {
@@ -931,9 +949,24 @@ impl SessionManager {
             }
             let frame =
                 frame.ok_or_else(|| SessionError::Media("video source idle / ended".into()))?;
-            let keyframe = media.video_frames_sent.is_multiple_of(30);
+            let force_key = media.video_frames_sent.is_multiple_of(30);
             let rtp_ts = media.epoch.video_ts(frame.pts_host_mono);
-            let nalu = mock_encode_video_nalu(&frame, rtp_ts, keyframe);
+            let capture_frame = media_frame_to_capture(&frame)?;
+            use remotelink_platform_windows::H264Encoder;
+            let au = media
+                .h264
+                .encode(&capture_frame, force_key)
+                .map_err(|e| SessionError::Media(e.to_string()))?;
+            let nalu = VideoNalu {
+                pts_host_mono: au.pts_host_mono,
+                rtp_ts: Some(rtp_ts),
+                keyframe: au.keyframe,
+                format: match au.format {
+                    remotelink_platform_windows::EncodeNaluFormat::AnnexB => NaluFormat::AnnexB,
+                    remotelink_platform_windows::EncodeNaluFormat::Avcc => NaluFormat::Avcc,
+                },
+                data: au.data,
+            };
             media.video_frames_sent += 1;
             self.peer.send_video_nalu(nalu)?;
             video_sent += 1;
@@ -967,6 +1000,27 @@ impl SessionManager {
             .map(|m| (m.video_backend, m.audio_backend))
     }
 
+    /// Active H.264 encode backend label when media is started.
+    pub fn encode_backend(&self) -> Option<&'static str> {
+        self.media.as_ref().map(|m| m.encode_backend)
+    }
+
+    /// Request a video keyframe on the next pump (PLI / FIR).
+    pub fn request_video_keyframe(&mut self) {
+        if let Some(m) = self.media.as_mut() {
+            use remotelink_platform_windows::H264Encoder;
+            m.h264.request_keyframe();
+        }
+    }
+
+    /// Adapt encode bitrate from GCC / transport-cc feedback.
+    pub fn set_video_bitrate_bps(&mut self, bps: u32) {
+        if let Some(m) = self.media.as_mut() {
+            use remotelink_platform_windows::H264Encoder;
+            m.h264.set_target_bitrate_bps(bps);
+        }
+    }
+
     fn queue_pending_ice(&mut self, session_id: &str) {
         for ice in self.cb.take_ice() {
             let payload = match serde_json::to_string(&ice.candidate) {
@@ -983,25 +1037,28 @@ impl SessionManager {
     }
 }
 
-fn mock_encode_video_nalu(
+/// Convert a media crate frame into a platform-windows capture frame for encode.
+fn media_frame_to_capture(
     frame: &remotelink_media::VideoFrame,
-    rtp_ts: u32,
-    keyframe: bool,
-) -> VideoNalu {
-    // Mock Annex-B: start code + NAL type + compact header (not real H.264).
-    let nal_type: u8 = if keyframe { 0x65 } else { 0x41 };
-    let mut data = vec![0, 0, 0, 1, nal_type];
-    data.extend_from_slice(&frame.width.to_le_bytes());
-    data.extend_from_slice(&frame.height.to_le_bytes());
-    let sample = frame.data.len().min(32);
-    data.extend_from_slice(&frame.data[..sample]);
-    VideoNalu {
-        pts_host_mono: frame.pts_host_mono,
-        rtp_ts: Some(rtp_ts),
-        keyframe,
-        format: NaluFormat::AnnexB,
-        data,
-    }
+) -> std::result::Result<remotelink_platform_windows::CaptureVideoFrame, SessionError> {
+    use remotelink_platform_windows::{CapturePixelFormat, CaptureVideoFrame};
+    let format = match frame.format {
+        remotelink_media::PixelFormat::Bgra8 => CapturePixelFormat::Bgra8,
+        remotelink_media::PixelFormat::Rgba8 => CapturePixelFormat::Rgba8,
+        remotelink_media::PixelFormat::Rgb24 => CapturePixelFormat::Rgb24,
+        other => {
+            return Err(SessionError::Media(format!(
+                "unsupported pixel format for H.264 encode: {other:?}"
+            )));
+        }
+    };
+    Ok(CaptureVideoFrame::packed(
+        frame.pts_host_mono,
+        frame.width,
+        frame.height,
+        format,
+        frame.data.clone(),
+    ))
 }
 
 /// Parse SDP SignalForward payload (JSON [`SdpPayload`] or bare SDP text).

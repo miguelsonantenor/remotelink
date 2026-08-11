@@ -19,6 +19,7 @@
 #![deny(missing_docs)]
 
 pub mod capture;
+pub mod encode;
 pub mod input;
 pub mod ipc;
 pub mod kill_switch;
@@ -28,6 +29,10 @@ pub use capture::{
     host_mono_now, open_capture, pump_frame, CaptureBackend, CaptureConfig, CaptureError,
     CollectingFrameSink, DisplayCapture, FrameSink, MockVideoSource, PixelFormat as CapturePixelFormat,
     VideoFrame as CaptureVideoFrame, VideoSource as CaptureVideoSource,
+};
+pub use encode::{
+    open_encoder, AnyH264Encoder, EncodeError, EncodedAccessUnit, EncoderBackendKind, EncoderConfig,
+    H264Encoder, MockSoftwareEncoder, NaluFormat as EncodeNaluFormat, DEFAULT_TARGET_BITRATE_BPS,
 };
 #[cfg(windows)]
 pub use input::WindowsInjector;

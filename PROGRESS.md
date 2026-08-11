@@ -93,4 +93,10 @@ Plan PRs 1–27 done.
 - SessionManager pumps WASAPI stub PCM through mock Opus encode
 - Native COM path documents full IAudioClient sequence; PreferNative falls back today
 
-**Still open for product:** Native WASAPI COM, HW H.264, WiX/Authenticode release pipeline.
+**Later same day (H.264 encode integration):**
+- Landed `packages/platform-windows/src/encode` (MockSoftwareEncoder + HardwareEncoderStub)
+- SessionManager pumps capture frames through `open_encoder` → PeerTransport NALUs
+- Keyframe request + bitrate feedback APIs for PLI/FIR/GCC
+- Hardware path documents NVENC/QSV/AMF; always falls back to software today
+
+**Still open for product:** Native WASAPI COM, real HW encode SDK, WiX/Authenticode release pipeline.
