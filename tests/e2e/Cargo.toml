@@ -1,0 +1,21 @@
+[package]
+name = "remotelink-e2e"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Synthetic end-to-end tests: identity bind, A/V loopback, input mock (no GPU/network)"
+publish = false
+
+[dependencies]
+remotelink-auth = { workspace = true }
+remotelink-host = { path = "../../apps/host" }
+remotelink-net = { workspace = true }
+remotelink-protocol = { workspace = true }
+remotelink-server = { path = "../../apps/server" }
+remotelink-viewer-core = { workspace = true }
+axum = { workspace = true }
+chrono = { workspace = true }
+futures-util = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tokio-tungstenite = { workspace = true }

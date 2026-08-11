@@ -1,0 +1,34 @@
+# Bug-Hunt Agent configuration (PR 24).
+#
+# Pure tooling: chaos profiles + protocol hand-fuzz. No LLM required for nightly.
+# Profiles run without real network (MockPeerPair + SkewController injection).
+# Encoding: UTF-8 without BOM. Parsed with the `toml` crate (unknown [chaos] keys fail).
+#
+# CLI:
+#   cargo run -p bug-hunt-agent -- nightly --out agents/shared/artifacts
+#   cargo run -p bug-hunt-agent -- run --profile drop_packets
+#   cargo run -p bug-hunt-agent -- run --profile protocol_fuzz --seed <effective>
+#   cargo run -p bug-hunt-agent -- list
+#
+# Seed model:
+#   [chaos].seed is the ROOT seed.
+#   nightly / --profile all → derives per-profile effective seeds.
+#   single --profile → root is effective as-is.
+#   --seed N → effective = N, never derive (artifact repro path).
+#
+# See agents/bug-hunt-agent/README.md.
+
+# Optional: restrict nightly to a subset (empty / omitted = all profiles).
+# enabled_profiles = ["drop_packets", "reconnect", "audio_desync", "protocol_fuzz"]
+
+[chaos]
+# Root RNG seed.
+seed = 184853989
+# Random / mutated iterations for drop_packets and protocol_fuzz.
+iterations = 256
+# Target drop probability for drop_packets (0.0–1.0).
+drop_rate = 0.25
+# Forced |skew| in ms for audio_desync inject.
+skew_inject_ms = 80.0
+# Full teardown+restart cycles for reconnect.
+reconnect_cycles = 3

@@ -1,0 +1,18 @@
+[package]
+name = "remotelink-auth"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Device IDs, OTP, challenge-response, password hashing, and fingerprint binding"
+publish = false
+
+[dependencies]
+remotelink-common = { workspace = true }
+argon2 = { workspace = true }
+ed25519-dalek = { workspace = true }
+hmac = { workspace = true }
+rand = { workspace = true }
+sha2 = { workspace = true }
+subtle = { workspace = true }
+thiserror = { workspace = true }
+zeroize = { workspace = true }

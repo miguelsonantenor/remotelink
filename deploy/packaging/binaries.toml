@@ -1,0 +1,31 @@
+# Inventory of shippable RemoteLink binaries for MSI/MSIX and containers.
+# Consumed by scripts/list-package-binaries.ps1 (and future cargo-xtask).
+
+schema_version = 1
+
+[[binary]]
+name = "remotelink-host"
+crate = "remotelink-host"
+path = "apps/host"
+role = "Host service + session agent (KD5)"
+platforms = ["windows-x86_64"]
+packages = ["msi", "msix"]
+primary = true
+
+[[binary]]
+name = "remotelink-viewer"
+crate = "remotelink-viewer"
+path = "apps/viewer"
+role = "Viewer client"
+platforms = ["windows-x86_64"]
+packages = ["msi", "msix"]
+primary = true
+
+[[binary]]
+name = "remotelink-server"
+crate = "remotelink-server"
+path = "apps/server"
+role = "Signaling / device registry"
+platforms = ["windows-x86_64", "linux-x86_64"]
+packages = ["msi", "container"]
+primary = false

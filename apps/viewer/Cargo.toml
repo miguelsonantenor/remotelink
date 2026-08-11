@@ -1,0 +1,26 @@
+[package]
+name = "remotelink-viewer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "RemoteLink viewer client (connect shell + optional egui UI)"
+publish = false
+
+[[bin]]
+name = "remotelink-viewer"
+path = "src/main.rs"
+
+[features]
+default = []
+# Optional egui+winit shell. Disabled by default so windows-gnu / CI stay lean;
+# enable with `cargo run -p remotelink-viewer --features gui`.
+gui = ["dep:eframe", "dep:egui"]
+
+[dependencies]
+remotelink-common = { workspace = true }
+remotelink-viewer-core = { workspace = true }
+remotelink-protocol = { workspace = true }
+remotelink-net = { workspace = true }
+
+eframe = { version = "0.31", default-features = true, optional = true }
+egui = { version = "0.31", optional = true }

@@ -1,0 +1,25 @@
+# Minimal Postgres for local / self-host development (PR 4).
+# Usage from repo root:
+#   docker compose -f deploy/docker-compose.yml up -d
+#   $env:DATABASE_URL = "postgres://remotelink:remotelink@127.0.0.1:5432/remotelink"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: remotelink-postgres
+    environment:
+      POSTGRES_USER: remotelink
+      POSTGRES_PASSWORD: remotelink
+      POSTGRES_DB: remotelink
+    ports:
+      - "5432:5432"
+    volumes:
+      - remotelink_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U remotelink -d remotelink"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  remotelink_pgdata:

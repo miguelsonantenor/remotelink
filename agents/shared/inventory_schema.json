@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://remotelink.local/agents/shared/inventory_schema.json",
+  "title": "RemoteLink public-API inventory",
+  "description": "Output of unit-test-agent inventory. Draft-report only; never auto-merge. CI must run checked-in tests only.",
+  "type": "object",
+  "required": ["schema_version", "workspace_root", "generated_at", "items", "packages"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Format version of this document"
+    },
+    "workspace_root": {
+      "type": "string",
+      "description": "Workspace root that was scanned"
+    },
+    "generated_at": {
+      "type": "string",
+      "description": "Generation timestamp (unix seconds suffix or RFC 3339)"
+    },
+    "items": {
+      "type": "array",
+      "description": "Public (and restricted-pub) items discovered by source walk",
+      "items": { "$ref": "#/$defs/inventory_item" }
+    },
+    "packages": {
+      "type": "array",
+      "description": "Per-package rollup",
+      "items": { "$ref": "#/$defs/package_summary" }
+    }
+  },
+  "$defs": {
+    "inventory_item": {
+      "type": "object",
+      "required": ["crate_name", "path", "item", "kind", "visibility"],
+      "additionalProperties": false,
+      "properties": {
+        "crate_name": {
+          "type": "string",
+          "description": "Cargo package name (e.g. remotelink-auth)"
+        },
+        "path": {
+          "type": "string",
+          "description": "Source path relative to workspace root"
+        },
+        "item": {
+          "type": "string",
+          "description": "Item name, optionally Type::method"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "fn",
+            "struct",
+            "enum",
+            "trait",
+            "type",
+            "const",
+            "static",
+            "mod",
+            "use",
+            "macro"
+          ]
+        },
+        "visibility": {
+          "description": "pub or restricted pub(...)",
+          "oneOf": [
+            { "type": "string", "const": "pub" },
+            {
+              "type": "object",
+              "required": ["restricted"],
+              "additionalProperties": false,
+              "properties": {
+                "restricted": { "type": "string" }
+              }
+            }
+          ]
+        },
+        "line": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "1-based line number in path"
+        }
+      }
+    },
+    "package_summary": {
+      "type": "object",
+      "required": ["name", "manifest_path", "is_lib", "has_tests", "public_item_count"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string" },
+        "manifest_path": { "type": "string" },
+        "is_lib": { "type": "boolean" },
+        "has_tests": { "type": "boolean" },
+        "public_item_count": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

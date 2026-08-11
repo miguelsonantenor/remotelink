@@ -1,0 +1,13 @@
+[package]
+name = "remotelink-platform-linux"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Linux host platform layer: PipeWire capture + audio monitor (secondary)"
+publish = false
+
+[dependencies]
+remotelink-media = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]

@@ -1,0 +1,22 @@
+[package]
+name = "remotelink-net"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "RemoteLink PeerTransport trait, mock loopback, and WebRTC stack boundary"
+publish = false
+
+[features]
+default = ["mock"]
+# Synthetic in-process PeerTransport for unit tests and CI (no real WebRTC).
+mock = []
+# Placeholder for a future pure-Rust webrtc-rs backend. Not wired to crates.io
+# deps in v1: windows-gnu CI + external-NALU path (see docs/spike-webrtc.md).
+# Re-enable with real `dep:webrtc` only on a dedicated msvc/unix builder job.
+webrtc-rs = []
+
+[dependencies]
+remotelink-protocol = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]

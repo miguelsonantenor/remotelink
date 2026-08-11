@@ -1,0 +1,24 @@
+﻿[package]
+name = "bug-hunt-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Chaos profiles, protocol fuzz harness, and nightly bug-hunt artifacts (no LLM required)"
+publish = false
+
+[[bin]]
+name = "bug-hunt-agent"
+path = "src/main.rs"
+
+[dependencies]
+remotelink-media = { workspace = true }
+remotelink-net = { workspace = true }
+remotelink-protocol = { workspace = true }
+rand = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+
