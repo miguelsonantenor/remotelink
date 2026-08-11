@@ -54,8 +54,8 @@ docker compose -f deploy/docker-compose.yml up -d --build
 
 ## Next best steps
 
-1. Real HW H.264 (NVENC/QSV/AMF)  
-2. Run WiX MSI in release pipeline + Authenticode  
+1. WiX MSI + Authenticode (unsigned layout already staged in CI on `main`)  
+2. Optional direct NVENC/QSV/AMF SDKs (MF H.264 covers system encode today)  
 3. Optional: webrtc-rs e2e over WSS+agent IPC  
 
 ### WASAPI (Windows)
@@ -66,22 +66,17 @@ docker compose -f deploy/docker-compose.yml up -d --build
 | `PreferNative` | Real COM loopback; stub if no render endpoint |
 | `NativeOnly` | Real COM only (`ClientOpenFailed` if no device) |
 
-```powershell
-# Prefer real system audio on host (falls back to stub headless)
-# SessionManager defaults: WindowsWasapiStub; set PreferNative for production:
-# mgr.set_audio_kind(AudioCaptureKind::WindowsWasapiPreferNative);
-```
-
 ### Encode
 
 | Backend | Status |
 |---------|--------|
-| `software_mock` (default) | MH264 Annex-B mock encoder (CI-safe) |
-| `hardware` | Stub — always falls back to software until SDK linked |
+| Media Foundation H.264 MFT | Preferred on Windows (may use GPU) |
+| `software_mock` | MH264 Annex-B fallback (CI-safe) |
+| Vendor HW stub | NVENC/QSV/AMF not linked |
 
 ```rust
-mgr.request_video_keyframe();      // PLI/FIR
-mgr.set_video_bitrate_bps(2_000_000); // GCC feedback
+mgr.request_video_keyframe();
+mgr.set_video_bitrate_bps(2_000_000);
 ```
 
 ### Capture (Windows)
@@ -90,8 +85,8 @@ mgr.set_video_bitrate_bps(2_000_000); // GCC feedback
 |------|---------|
 | `WindowsMock` (default video) | Desktop-shaped BGRA mock (CI-safe) |
 | `WindowsDxgi` | DXGI Desktop Duplication (interactive session) |
-| `WindowsWasapiStub` (default audio) | Synthetic loopback PCM + exclusive-mode hooks |
-| `WindowsWasapiPreferNative` | Prefer COM WASAPI; falls back to stub until linked |
+| `WindowsWasapiStub` (default audio) | Synthetic loopback PCM |
+| `WindowsWasapiPreferNative` | Real COM WASAPI; stub fallback if no device |
 | `Synthetic` | Media color bars / A440 |
 
 ```rust
