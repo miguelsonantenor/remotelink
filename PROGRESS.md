@@ -69,4 +69,10 @@ Plan PRs 1–27 done.
 - Wired into `run_ws_host_service` (session begin/active/end + mint OTP)
 - Flags: `--tray` / `--no-tray`, `--os-tray` / `--no-os-tray`, `--status-path`
 
-**Still open for product:** MSI/codesign, tray context menu, boot-secret on control pipe.
+**Later same day (tray menu + package stage):**
+- Tray right-click: Copy OTP (clipboard), End session, Exit host
+- Double-click tray icon copies OTP when available
+- `TrayCommands` polled by WSS service (kill current session / graceful exit)
+- `scripts/package-release.ps1` stages unsigned `dist/remotelink-<ver>/` with SHA-256 manifest
+
+**Still open for product:** WiX MSI + Authenticode, boot-secret on control pipe, real capture polish.

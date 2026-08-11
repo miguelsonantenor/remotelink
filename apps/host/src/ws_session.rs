@@ -340,11 +340,16 @@ async fn handle_one_session_local(
         .cloned()
         .collect();
 
-    let relay = relay_offer_answer_ice_local(sig, &session_id, &offer, &mut pending_host_ice, &mut mgr)
-        .await;
+    let relay =
+        relay_offer_answer_ice_local(sig, &session_id, &offer, &mut pending_host_ice, &mut mgr, tray)
+            .await;
     if let Err(e) = relay {
         if let Some(t) = tray {
-            t.end_session();
+            if e.contains("tray") {
+                t.apply_kill();
+            } else {
+                t.end_session();
+            }
         }
         return Err(e);
     }
@@ -542,6 +547,16 @@ async fn handle_one_session_agent(
     let mut agent_video = 0u64;
     let mut agent_connected = false;
     while tokio::time::Instant::now() < ice_deadline {
+        if tray.map(|t| t.take_end_session()).unwrap_or(false) {
+            let _ = agent.request(&ControlMessage::DetachSession(DetachSession {
+                session_id: session_id.clone(),
+                reason: Some("tray_end_session".into()),
+            }));
+            if let Some(t) = tray {
+                t.apply_kill();
+            }
+            return Err("session ended from tray".into());
+        }
         if let Ok(msg) = sig.recv_timeout(Duration::from_millis(40)).await {
             if let SignalMessage::IceCandidate { candidate, .. } = msg {
                 let payload = serde_json::to_string(&candidate).map_err(|e| e.to_string())?;
@@ -672,6 +687,7 @@ async fn relay_offer_answer_ice_local(
     offer: &SdpPayload,
     pending_host_ice: &mut Vec<remotelink_platform_windows::ipc::message::SignalForward>,
     mgr: &mut SessionManager,
+    tray: Option<&HostTray>,
 ) -> Result<(), String> {
     let offer_seq = sig.take_seq();
     sig.send(&SignalMessage::SessionOffer {
@@ -752,6 +768,9 @@ async fn relay_offer_answer_ice_local(
 
     let ice_deadline = tokio::time::Instant::now() + Duration::from_secs(15);
     while tokio::time::Instant::now() < ice_deadline {
+        if tray.map(|t| t.take_end_session()).unwrap_or(false) {
+            return Err("session ended from tray".into());
+        }
         let _ = mgr.peer_mut().poll();
         for ice_sig in mgr.take_outbound_signals() {
             if ice_sig.kind == signal_kind::ICE_CANDIDATE {
@@ -924,6 +943,20 @@ pub async fn run_ws_host_service(cfg: WsHostConfig) -> Result<String, String> {
                         completed = completed.saturating_add(1);
                     }
                     Err(e) => {
+                        if e.contains("ended from tray") {
+                            eprintln!("ws-host: {e}");
+                            // "Exit host" sets both end_session and exit.
+                            if tray.as_ref().map(|t| t.take_exit()).unwrap_or(false) {
+                                let _ = sig.close().await;
+                                return Ok::<_, String>(());
+                            }
+                            // End-session only: accept the next viewer when multi-session.
+                            if cfg.reconnect || unlimited || cfg.max_sessions > 1 {
+                                continue;
+                            }
+                            let _ = sig.close().await;
+                            return Ok(());
+                        }
                         if cfg.reconnect || unlimited || cfg.max_sessions > 1 {
                             eprintln!("ws-host: session ended: {e}");
                             if e.contains("connection closed")
@@ -947,6 +980,12 @@ pub async fn run_ws_host_service(cfg: WsHostConfig) -> Result<String, String> {
                         let _ = sig.close().await;
                         return Err(e);
                     }
+                }
+                // Tray "Exit host" between sessions (idle).
+                if tray.as_ref().map(|t| t.take_exit()).unwrap_or(false) {
+                    println!("ws-host: exit requested from tray");
+                    let _ = sig.close().await;
+                    return Ok::<_, String>(());
                 }
             }
         }

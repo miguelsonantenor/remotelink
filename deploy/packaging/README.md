@@ -21,12 +21,16 @@ Inventory lives in [`binaries.toml`](binaries.toml). List them from a checkout:
 
 Server is primarily distributed via container (`deploy/docker-compose.yml`); an MSI is optional for air-gapped operators.
 
-## Build release binaries
+## Build release binaries + stage layout
 
 ```powershell
-$env:Path = "C:\Users\Linked\tools\mingw64\bin;$env:USERPROFILE\.cargo\bin;" + $env:Path
+$env:Path = "C:\msys64\mingw64\bin;$env:USERPROFILE\.cargo\bin;" + $env:Path
 $env:RUSTUP_TOOLCHAIN = "stable-x86_64-pc-windows-gnu"
 
+# One-shot: release build + dist/remotelink-<version>/ layout + package-manifest.json
+.\scripts\package-release.ps1
+
+# Or build only:
 cargo build --release -p remotelink-host -p remotelink-viewer -p remotelink-server
 ```
 
@@ -36,7 +40,15 @@ Outputs (GNU toolchain):
 target\release\remotelink-host.exe
 target\release\remotelink-viewer.exe
 target\release\remotelink-server.exe
+
+dist\remotelink-<version>\
+  bin\*.exe
+  LICENSE-*
+  binaries.toml
+  package-manifest.json   # version, SHA-256, unsigned=true
 ```
+
+The stage layout is **unsigned**. Authenticode / MSIX signing is release-pipeline only.
 
 ## MSI outline (WiX / cargo-wix)
 

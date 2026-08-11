@@ -11,7 +11,7 @@
 | PR plan | **PRs 1–27 complete** (8b optional skipped) |
 | **Integrated monorepo** | **Yes** — `cargo test --workspace` green (default features) |
 | PeerTransport backends | **mock** (CI default) · **live TCP** (default feature) · **webrtc-rs** (opt-in feature) |
-| Real AnyDesk product | **~94%** — host tray (OTP + session chrome + status JSON + Win NotifyIcon); named-pipe ACL; KD5; no MSI yet |
+| Real AnyDesk product | **~95%** — tray menu (Copy OTP / End session / Exit); package-release layout; named-pipe ACL; KD5; WiX MSI still manual |
 
 ## Day-to-day development
 
@@ -54,9 +54,16 @@ docker compose -f deploy/docker-compose.yml up -d --build
 
 ## Next best steps
 
-1. MSI/codesign packaging  
-2. Tray context menu (copy OTP / kill session) polish  
-3. Optional: webrtc-rs e2e over WSS+agent IPC; boot-secret on control pipe  
+1. WiX/cargo-wix MSI from `scripts/package-release.ps1` layout + Authenticode  
+2. Optional: webrtc-rs e2e over WSS+agent IPC; boot-secret on control pipe  
+3. Real capture/encode polish for production hosts  
+
+### Package stage
+
+```powershell
+.\scripts\package-release.ps1
+# → dist\remotelink-<version>\bin\*.exe + package-manifest.json
+```
 
 ### Control IPC (KD5) — WSS service + agent media
 
