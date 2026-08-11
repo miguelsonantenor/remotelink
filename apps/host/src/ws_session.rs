@@ -15,15 +15,20 @@
 //! Register once, keep a signaling WebSocket up, accept sessions back-to-back,
 //! and reconnect with backoff if the socket drops. `sessions=0` means unlimited.
 
+use std::path::PathBuf;
 use std::time::Duration;
 
-use remotelink_auth::generate_device_keypair;
+use remotelink_auth::{generate_device_keypair, mint_otp};
 use remotelink_net::{
     create_peer_transport_with_config, PeerRole, TransportConfig, TransportMode,
 };
 use remotelink_protocol::SignalMessage;
-use remotelink_signaling::{http_to_ws_url, register_device, SignalingClient};
+use remotelink_signaling::{
+    http_to_ws_url, post_otp_hash, refresh_device_token, register_device, HostCredentialFile,
+    SignalingClient, DEFAULT_CREDS_PATH,
+};
 
+use crate::policy::{DEFAULT_HOST_OTP_PEPPER, DEFAULT_OTP_TTL_SECS};
 use crate::session::{parse_ice_payload, parse_sdp_payload, signal_kind, SdpPayload, SessionManager};
 
 /// Configuration for [`run_ws_host`] / [`run_ws_host_service`].
@@ -47,6 +52,14 @@ pub struct WsHostConfig {
     pub reconnect: bool,
     /// Base backoff between reconnect attempts.
     pub reconnect_backoff: Duration,
+    /// Path to persist credentials (default [`.remotelink-host.json`](DEFAULT_CREDS_PATH)).
+    pub creds_path: PathBuf,
+    /// When true, load credentials from `creds_path` if present (skip re-register).
+    pub load_creds: bool,
+    /// When true, write credentials after register/refresh.
+    pub save_creds: bool,
+    /// Mint a Mode A OTP, post hash to server, print plaintext for the viewer.
+    pub mint_otp: bool,
 }
 
 /// Pre-enrolled host credentials (from a prior [`register_device`] call).
@@ -56,6 +69,8 @@ pub struct ExistingHostCreds {
     pub public_id: String,
     /// Access token for WSS hello.
     pub access_token: String,
+    /// Refresh token (optional; enables rotation when access expires).
+    pub refresh_token: Option<String>,
 }
 
 impl Default for WsHostConfig {
@@ -70,6 +85,10 @@ impl Default for WsHostConfig {
             max_sessions: 1,
             reconnect: false,
             reconnect_backoff: Duration::from_secs(2),
+            creds_path: PathBuf::from(DEFAULT_CREDS_PATH),
+            load_creds: true,
+            save_creds: true,
+            mint_otp: true,
         }
     }
 }
@@ -86,14 +105,86 @@ fn coerce_transport(mode: TransportMode) -> TransportMode {
     }
 }
 
-async fn enroll_or_reuse(cfg: &WsHostConfig) -> Result<(String, String), String> {
+/// Enrolled identity returned to the service loop.
+struct EnrolledHost {
+    public_id: String,
+    access_token: String,
+    /// Kept for future mid-session refresh / re-save after rotate.
+    #[allow(dead_code)]
+    refresh_token: Option<String>,
+}
+
+async fn enroll_or_reuse(cfg: &WsHostConfig) -> Result<EnrolledHost, String> {
     if let Some(ex) = &cfg.existing {
         println!(
             "ws-host: using existing public_id={} (viewer: --host {})",
             ex.public_id, ex.public_id
         );
-        return Ok((ex.public_id.clone(), ex.access_token.clone()));
+        return Ok(EnrolledHost {
+            public_id: ex.public_id.clone(),
+            access_token: ex.access_token.clone(),
+            refresh_token: ex.refresh_token.clone(),
+        });
     }
+
+    // Load from disk when enabled.
+    if cfg.load_creds && cfg.creds_path.exists() {
+        match HostCredentialFile::load(&cfg.creds_path) {
+            Ok(mut file) => {
+                // Prefer file server if caller left default; else keep CLI server.
+                let server = if cfg.server != "http://127.0.0.1:8080" {
+                    cfg.server.clone()
+                } else if !file.server.is_empty() {
+                    file.server.clone()
+                } else {
+                    cfg.server.clone()
+                };
+                // Best-effort refresh so restarts survive access expiry.
+                if !file.refresh_token.is_empty() {
+                    match refresh_device_token(&server, &file.public_id, &file.refresh_token).await
+                    {
+                        Ok(tokens) => {
+                            file.access_token = tokens.access_token;
+                            file.refresh_token = tokens.refresh_token;
+                            file.expires_at = Some(tokens.expires_at);
+                            file.server = server.clone();
+                            if cfg.save_creds {
+                                let _ = file.save(&cfg.creds_path);
+                            }
+                            println!(
+                                "ws-host: refreshed tokens for public_id={} (from {})",
+                                file.public_id,
+                                cfg.creds_path.display()
+                            );
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "ws-host: token refresh failed ({e}); using stored access token"
+                            );
+                        }
+                    }
+                }
+                println!(
+                    "ws-host: loaded public_id={} from {} (viewer: --host {})",
+                    file.public_id,
+                    cfg.creds_path.display(),
+                    file.public_id
+                );
+                return Ok(EnrolledHost {
+                    public_id: file.public_id,
+                    access_token: file.access_token,
+                    refresh_token: Some(file.refresh_token),
+                });
+            }
+            Err(e) => {
+                eprintln!(
+                    "ws-host: could not load {}: {e}; registering new device",
+                    cfg.creds_path.display()
+                );
+            }
+        }
+    }
+
     let (_sk, vk) = generate_device_keypair();
     let pk = vk.to_bytes();
     let reg = register_device(&cfg.server, &pk, Some(&cfg.display_name))
@@ -103,7 +194,49 @@ async fn enroll_or_reuse(cfg: &WsHostConfig) -> Result<(String, String), String>
         "ws-host: registered public_id={} (viewer: --host {} --ws-connect)",
         reg.public_id, reg.public_id
     );
-    Ok((reg.public_id, reg.access_token))
+    if cfg.save_creds {
+        let file = HostCredentialFile::from_registration(&cfg.server, &reg);
+        file.save(&cfg.creds_path)
+            .map_err(|e| format!("save creds: {e}"))?;
+        println!("ws-host: saved credentials to {}", cfg.creds_path.display());
+    }
+    Ok(EnrolledHost {
+        public_id: reg.public_id,
+        access_token: reg.access_token,
+        refresh_token: Some(reg.refresh_token),
+    })
+}
+
+/// Mint Mode A OTP, post hash to server, print code for the viewer CLI.
+async fn maybe_mint_otp(cfg: &WsHostConfig, enrolled: &EnrolledHost) -> Result<(), String> {
+    if !cfg.mint_otp {
+        return Ok(());
+    }
+    let (code, hash) = mint_otp(6, DEFAULT_HOST_OTP_PEPPER)
+        .map_err(|e| format!("mint_otp: {e}"))?;
+    let digest_hex = hex::encode(hash.digest);
+    let salt_hex = hex::encode(hash.salt);
+    let resp = post_otp_hash(
+        &cfg.server,
+        &enrolled.public_id,
+        &enrolled.access_token,
+        &digest_hex,
+        &salt_hex,
+        hash.keyed,
+        Some(DEFAULT_OTP_TTL_SECS),
+    )
+    .await
+    .map_err(|e| format!("post otp hash: {e}"))?;
+    println!(
+        "ws-host: Mode A OTP for viewer (expires {}): {}",
+        resp.expires_at,
+        code.as_str()
+    );
+    println!(
+        "ws-host: viewer example: remotelink-viewer --ws-connect --server={} --host {} --otp {} --transport=live",
+        cfg.server, enrolled.public_id, code.as_str()
+    );
+    Ok(())
 }
 
 /// Serve one media session on an already-authenticated signaling client.
@@ -331,7 +464,10 @@ pub async fn run_ws_host(cfg: WsHostConfig) -> Result<String, String> {
 pub async fn run_ws_host_service(cfg: WsHostConfig) -> Result<String, String> {
     let mode = coerce_transport(cfg.transport);
     let transport_cfg = TransportConfig { mode };
-    let (public_id, access_token) = enroll_or_reuse(&cfg).await?;
+    let enrolled = enroll_or_reuse(&cfg).await?;
+    maybe_mint_otp(&cfg, &enrolled).await?;
+    let public_id = enrolled.public_id.clone();
+    let access_token = enrolled.access_token.clone();
     let ws_url = http_to_ws_url(&cfg.server).map_err(|e| format!("ws url: {e}"))?;
 
     let unlimited = cfg.max_sessions == 0;
@@ -382,14 +518,10 @@ pub async fn run_ws_host_service(cfg: WsHostConfig) -> Result<String, String> {
                         println!("{summary}");
                         last_summary = summary;
                         completed = completed.saturating_add(1);
-                        // Reset seq observation soft-state is on the client;
-                        // next session continues on the same socket with higher seq.
                     }
                     Err(e) => {
-                        // Timeout waiting for next viewer is not fatal in service mode.
                         if cfg.reconnect || unlimited || cfg.max_sessions > 1 {
                             eprintln!("ws-host: session ended: {e}");
-                            // If the socket is dead, bubble up to reconnect.
                             if e.contains("connection closed")
                                 || e.contains("connect")
                                 || e.contains("ws ")
@@ -397,13 +529,11 @@ pub async fn run_ws_host_service(cfg: WsHostConfig) -> Result<String, String> {
                                 let _ = sig.close().await;
                                 return Err(e);
                             }
-                            // Idle timeout / session error: stay connected for the next viewer.
                             if e.contains("wait incoming") || e.contains("timeout") {
                                 if !cfg.reconnect && !unlimited && cfg.max_sessions <= 1 {
                                     let _ = sig.close().await;
                                     return Err(e);
                                 }
-                                // Service: keep waiting for the next intent.
                                 continue;
                             }
                             let _ = sig.close().await;

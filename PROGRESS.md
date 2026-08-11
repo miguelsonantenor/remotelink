@@ -36,4 +36,9 @@ Plan PRs 1–27 done.
 - `wait_ready` only requires input/identity DCs
 - Host `--role=service --server=…`: multi-session WSS + reconnect (`--sessions=0`)
 
-**Still open for product:** OTP mint UI, named-pipe agent IPC, MSI/codesign, GitHub remote.
+**Later same day (creds + OTP mint):**
+- `HostCredentialFile` save/load (`.remotelink-host.json`)
+- Token refresh on restart; Mode A OTP mint + server hash post
+- e2e `host_creds_otp` proves prefilter with real code
+
+**Still open for product:** named-pipe agent IPC, tray OTP UI, MSI/codesign, GitHub remote.

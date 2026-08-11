@@ -5,10 +5,16 @@
 #![deny(missing_docs)]
 
 mod client;
+mod creds;
+mod http_api;
 mod register;
 
 pub use client::{SignalingClient, SignalingError, SignalingResult};
-pub use register::{register_device, http_to_ws_url, DeviceRegistration, RegisterError};
+pub use creds::{HostCredentialFile, DEFAULT_CREDS_PATH};
+pub use http_api::{
+    apply_refresh, post_otp_hash, refresh_device_token, OtpMintHttpResponse, TokenHttpResponse,
+};
+pub use register::{http_to_ws_url, register_device, DeviceRegistration, RegisterError};
 
 /// Crate version from `Cargo.toml`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

@@ -185,6 +185,25 @@ fn parse_ws_host_config(args: &[String], transport: remotelink_net::TransportMod
             cfg.max_sessions = v;
         }
     }
+    if let Some(p) = flag_value(args, "--creds") {
+        cfg.creds_path = std::path::PathBuf::from(p);
+    } else if let Ok(p) = env::var("REMOTELINK_HOST_CREDS") {
+        if !p.is_empty() {
+            cfg.creds_path = std::path::PathBuf::from(p);
+        }
+    }
+    if args.iter().any(|a| a == "--no-save-creds") {
+        cfg.save_creds = false;
+    }
+    if args.iter().any(|a| a == "--no-load-creds" || a == "--fresh") {
+        cfg.load_creds = false;
+    }
+    if args.iter().any(|a| a == "--no-otp") {
+        cfg.mint_otp = false;
+    }
+    if args.iter().any(|a| a == "--mint-otp") {
+        cfg.mint_otp = true;
+    }
     if args.iter().any(|a| a == "--reconnect" || a == "--loop") {
         cfg.reconnect = true;
     }
@@ -252,6 +271,11 @@ fn print_usage() {
          --display-name N Enrollment display name\n  \
          --frames N       Synthetic video frames to pump after connect (default 5)\n  \
          --sessions N     Max sessions (0 = unlimited; service defaults to 0)\n  \
+         --creds PATH     Credential file (default .remotelink-host.json; REMOTELINK_HOST_CREDS)\n  \
+         --fresh          Ignore saved creds; register a new device\n  \
+         --no-save-creds  Do not write credential file\n  \
+         --mint-otp       Mint Mode A OTP and post hash (default on)\n  \
+         --no-otp         Skip OTP mint\n  \
          --reconnect      Reconnect WSS after disconnect (service default on)\n  \
          --no-reconnect   Disable reconnect\n\n\
          Transport (also REMOTELINK_TRANSPORT; default mock — CI-safe):\n  \

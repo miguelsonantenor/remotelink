@@ -17,3 +17,6 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-tungstenite = { workspace = true }
 url = "2"
+
+[dev-dependencies]
+# tempfile-style tests use std::env::temp_dir only

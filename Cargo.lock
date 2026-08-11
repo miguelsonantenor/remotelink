@@ -3857,6 +3857,7 @@ dependencies = [
  "axum",
  "chrono",
  "futures-util",
+ "hex",
  "remotelink-auth",
  "remotelink-host",
  "remotelink-net",
