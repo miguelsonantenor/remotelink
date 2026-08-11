@@ -32,7 +32,29 @@ fn main() {
                 remotelink_common::VERSION,
                 transport.mode.as_str()
             );
-            service::run();
+            // With --server, run the long-lived WSS host service; otherwise skeleton.
+            if flag_value(&args, "--server").is_some()
+                || env::var("REMOTELINK_SERVER").map(|s| !s.is_empty()).unwrap_or(false)
+            {
+                let mut cfg = parse_ws_host_config(&args, transport.mode);
+                if cfg.max_sessions == 1 && !args.iter().any(|a| a.starts_with("--sessions")) {
+                    // Service default: unlimited sessions + reconnect.
+                    cfg.max_sessions = 0;
+                    cfg.reconnect = true;
+                }
+                if !args.iter().any(|a| a == "--no-reconnect") {
+                    cfg.reconnect = true;
+                }
+                match run_ws_host_blocking(cfg) {
+                    Ok(summary) => println!("{summary}"),
+                    Err(e) => {
+                        eprintln!("service: failed: {e}");
+                        std::process::exit(1);
+                    }
+                }
+            } else {
+                service::run();
+            }
         }
         HostRole::Agent => {
             println!(
@@ -158,6 +180,17 @@ fn parse_ws_host_config(args: &[String], transport: remotelink_net::TransportMod
             cfg.video_frames = v;
         }
     }
+    if let Some(n) = flag_value(args, "--sessions") {
+        if let Ok(v) = n.parse() {
+            cfg.max_sessions = v;
+        }
+    }
+    if args.iter().any(|a| a == "--reconnect" || a == "--loop") {
+        cfg.reconnect = true;
+    }
+    if args.iter().any(|a| a == "--no-reconnect") {
+        cfg.reconnect = false;
+    }
     cfg
 }
 
@@ -209,15 +242,18 @@ fn print_usage() {
          remotelink-host --role=ws --server=http://127.0.0.1:8080 --transport=live\n  \
          remotelink-host --kill-switch\n\n\
          Roles (KD5 agent-media):\n  \
-         service      Enrollment, signaling, policy, kill-switch (default)\n  \
+         service      Long-lived WSS host when --server is set; else skeleton stubs\n  \
          agent        Session manager + PeerTransport synthetic A/V (in-process demos)\n  \
-         ws           Multi-process: register + WSS hello/accept + SDP/ICE + media\n  \
+         ws           One-shot multi-process: register + accept + media (default 1 session)\n  \
          colocate     CI/test: in-process service control + agent synthetic session\n  \
          kill-switch  G9 demo: mandatory session indicator + local kill-switch\n\n\
-         WSS host flags (role=ws):\n  \
+         WSS host flags (role=ws|service --server):\n  \
          --server URL     Signaling base (default http://127.0.0.1:8080; or REMOTELINK_SERVER)\n  \
          --display-name N Enrollment display name\n  \
-         --frames N       Synthetic video frames to pump after connect (default 5)\n\n\
+         --frames N       Synthetic video frames to pump after connect (default 5)\n  \
+         --sessions N     Max sessions (0 = unlimited; service defaults to 0)\n  \
+         --reconnect      Reconnect WSS after disconnect (service default on)\n  \
+         --no-reconnect   Disable reconnect\n\n\
          Transport (also REMOTELINK_TRANSPORT; default mock — CI-safe):\n  \
          mock         In-process MockPeerTransport (default; ws role upgrades to live)\n  \
          live         TCP length-prefixed PeerTransport (multi-process demos)\n  \

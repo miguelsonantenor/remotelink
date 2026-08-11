@@ -12,15 +12,17 @@
 //! on the offerer and [`SampleBuilder`](webrtc::media::io::sample_builder::SampleBuilder)
 //! on the answerer (`on_track` + `read_rtp`).
 //!
-//! **Fallback:** application DataChannels keep working for CI/debug and when
-//! tracks are not yet bound:
+//! **DataChannels** (always):
 //!
 //! | Label | Purpose |
 //! |-------|---------|
-//! | `input` | Input / control JSON (raw payload) |
-//! | `identity` | Identity bind challenge (raw payload) |
-//! | `media-video` | Interim H.264 NALU batches (live-TCP payload layout) |
-//! | `media-audio` | Interim Opus packets (live-TCP payload layout) |
+//! | `input` | Input / control JSON |
+//! | `identity` | Identity bind challenge |
+//!
+//! Optional **media DC fallback** (`media-video` / `media-audio`) is created for
+//! bind-race recovery; media **send prefers RTP-only** when local tracks exist
+//! and the peer is `Connected`. Set `REMOTELINK_WEBRTC_DUAL_MEDIA=1` to mirror
+//! RTP onto those DCs (debug).
 //!
 //! # Fingerprints
 //!
@@ -82,17 +84,31 @@ use crate::types::{
 pub const LABEL_INPUT: &str = "input";
 /// DataChannel label: identity bind.
 pub const LABEL_IDENTITY: &str = "identity";
-/// DataChannel label: interim H.264 NALU media (not RTP SampleBuilder).
+/// DataChannel label: optional H.264 NALU media fallback (live-TCP payload layout).
 pub const LABEL_MEDIA_VIDEO: &str = "media-video";
-/// DataChannel label: interim Opus media (not RTP SampleBuilder).
+/// DataChannel label: optional Opus media fallback (live-TCP payload layout).
 pub const LABEL_MEDIA_AUDIO: &str = "media-audio";
 
+/// Application DCs required for identity/input (wait_ready).
+const REQUIRED_CHANNEL_LABELS: &[&str] = &[LABEL_INPUT, LABEL_IDENTITY];
+
+/// All offerer-created DCs (input/identity + optional media fallback).
 const CHANNEL_LABELS: &[&str] = &[
     LABEL_INPUT,
     LABEL_IDENTITY,
     LABEL_MEDIA_VIDEO,
     LABEL_MEDIA_AUDIO,
 ];
+
+fn dual_media_enabled() -> bool {
+    match std::env::var("REMOTELINK_WEBRTC_DUAL_MEDIA") {
+        Ok(v) => {
+            let v = v.trim().to_ascii_lowercase();
+            matches!(v.as_str(), "1" | "true" | "yes" | "on")
+        }
+        Err(_) => false,
+    }
+}
 
 /// Process-wide tokio runtime for webrtc-rs.
 fn runtime() -> &'static Runtime {
@@ -465,22 +481,22 @@ impl WebrtcPeerTransport {
         Ok(())
     }
 
-    /// True when every application DataChannel label is registered and `Open`.
+    /// True when **input** and **identity** DataChannels are registered and `Open`.
     ///
-    /// PeerConnection `Connected` does **not** imply DCs are open; SCTP open
-    /// can lag DTLS by tens of milliseconds on localhost.
+    /// Media DCs are optional (RTP is preferred). PeerConnection `Connected`
+    /// does **not** imply DCs are open; SCTP can lag DTLS.
     pub fn data_channels_open(&self) -> bool {
         let Ok(map) = self.channels.lock() else {
             return false;
         };
-        CHANNEL_LABELS.iter().all(|label| {
+        REQUIRED_CHANNEL_LABELS.iter().all(|label| {
             map.get(*label)
                 .map(|dc| dc.ready_state() == RTCDataChannelState::Open)
                 .unwrap_or(false)
         })
     }
 
-    /// Block until all application DataChannels report `Open`, or `timeout`.
+    /// Block until input/identity DataChannels report `Open`, or `timeout`.
     pub fn wait_data_channels_open(&self, timeout: Duration) -> Result<()> {
         let deadline = std::time::Instant::now() + timeout;
         loop {
@@ -492,7 +508,7 @@ impl WebrtcPeerTransport {
                     .channels
                     .lock()
                     .map(|map| {
-                        CHANNEL_LABELS
+                        REQUIRED_CHANNEL_LABELS
                             .iter()
                             .map(|l| {
                                 let st = map
@@ -954,11 +970,11 @@ impl PeerTransport for WebrtcPeerTransport {
     }
 
     fn send_video_nalu(&mut self, nalu: VideoNalu) -> Result<()> {
-        // Prefer RTP H.264 track when present (real SRTP path).
-        // Note: write_sample is a silent no-op until the track is bound; always
-        // also mirror on the media-video DC so media is never dropped during
-        // the bind race. Receivers that only want RTP can ignore DC media.
-        let mut rtp_attempted = false;
+        // RTP-only when local track exists and Connected (default product path).
+        // Optional dual-write via REMOTELINK_WEBRTC_DUAL_MEDIA=1.
+        // DC fallback when tracks are not ready yet (bind race / answerer role).
+        let dual = dual_media_enabled();
+        let mut rtp_ok = false;
         if let Some(track) = self.video_track.clone() {
             if self.connection_state_locked() == ConnectionState::Connected {
                 let annex_b = nalu_payload_annex_b(&nalu)?;
@@ -976,20 +992,23 @@ impl PeerTransport for WebrtcPeerTransport {
                         .await
                         .map_err(|e| NetError::SendFailed(format!("video track write: {e}")))
                 })?;
-                rtp_attempted = true;
+                rtp_ok = true;
+                if !dual {
+                    return Ok(());
+                }
             }
         }
-        // Mirror / fallback on media-video DataChannel (live-TCP payload layout).
         let body = encode_video(&nalu)?;
         match self.send_on_channel(LABEL_MEDIA_VIDEO, Bytes::from(body)) {
             Ok(()) => Ok(()),
-            Err(_e) if rtp_attempted => Ok(()), // RTP may still deliver
+            Err(_e) if rtp_ok => Ok(()),
             Err(e) => Err(e),
         }
     }
 
     fn send_audio(&mut self, packet: AudioPacket) -> Result<()> {
-        let mut rtp_attempted = false;
+        let dual = dual_media_enabled();
+        let mut rtp_ok = false;
         if let Some(track) = self.audio_track.clone() {
             if self.connection_state_locked() == ConnectionState::Connected {
                 let sample = Sample {
@@ -1006,13 +1025,16 @@ impl PeerTransport for WebrtcPeerTransport {
                         .await
                         .map_err(|e| NetError::SendFailed(format!("audio track write: {e}")))
                 })?;
-                rtp_attempted = true;
+                rtp_ok = true;
+                if !dual {
+                    return Ok(());
+                }
             }
         }
         let body = encode_audio(&packet)?;
         match self.send_on_channel(LABEL_MEDIA_AUDIO, Bytes::from(body)) {
             Ok(()) => Ok(()),
-            Err(_e) if rtp_attempted => Ok(()),
+            Err(_e) if rtp_ok => Ok(()),
             Err(e) => Err(e),
         }
     }

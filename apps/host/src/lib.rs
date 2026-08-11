@@ -33,4 +33,6 @@ pub use session::{
     parse_ice_payload, parse_sdp_payload, signal_kind, InboundStats, InputProcessOutcome,
     PumpStats, SdpPayload, SessionError, SessionManager, INPUT_CHANNEL_LABEL,
 };
-pub use ws_session::{run_ws_host, run_ws_host_blocking, ExistingHostCreds, WsHostConfig};
+pub use ws_session::{
+    run_ws_host, run_ws_host_blocking, run_ws_host_service, ExistingHostCreds, WsHostConfig,
+};

@@ -25,13 +25,19 @@ use remotelink_platform_windows::{decode_control, encode_control};
 use crate::chrome::HostSessionUx;
 use crate::session::signal_kind;
 
-/// Run the service role skeleton (stdout-oriented for now).
+/// Run the service role skeleton when no `--server` is configured.
+///
+/// For a **live multi-process host**, pass `--server=http://…` on the binary so
+/// [`crate::ws_session::run_ws_host_service`] runs instead (enroll + WSS loop).
 pub fn run() {
     println!(
         "remotelink-host {} role=service",
         remotelink_common::VERSION
     );
-    println!("service: enrollment/signaling/policy stubs (not connected)");
+    println!(
+        "service: enrollment/signaling/policy stubs (not connected); \
+         pass --server=http://127.0.0.1:8080 for persistent WSS host"
+    );
 
     let ux = Arc::new(Mutex::new(HostSessionUx::new()));
     println!("service: {}", ux.lock().expect("ux").status_line());

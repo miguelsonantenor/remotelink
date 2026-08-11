@@ -1,13 +1,19 @@
-//! Host WSS session agent: register → hello → accept → SDP/ICE → SessionManager media.
+//! Host WSS session agent / long-lived service.
 //!
-//! Multi-process lab path (requires a running `remotelink-server`):
+//! # One-shot lab (default)
 //!
 //! ```text
 //! remotelink-host --role=ws --server=http://127.0.0.1:8080 --transport=live
 //! ```
 //!
-//! Prints `public_id` for the viewer. Uses **live** (or webrtc) PeerTransport —
-//! mock is single-process only and is auto-upgraded to live with a warning.
+//! # Persistent service (multi-session + reconnect)
+//!
+//! ```text
+//! remotelink-host --role=service --server=http://127.0.0.1:8080 --transport=live --sessions=0
+//! ```
+//!
+//! Register once, keep a signaling WebSocket up, accept sessions back-to-back,
+//! and reconnect with backoff if the socket drops. `sessions=0` means unlimited.
 
 use std::time::Duration;
 
@@ -20,7 +26,7 @@ use remotelink_signaling::{http_to_ws_url, register_device, SignalingClient};
 
 use crate::session::{parse_ice_payload, parse_sdp_payload, signal_kind, SdpPayload, SessionManager};
 
-/// Configuration for [`run_ws_host`].
+/// Configuration for [`run_ws_host`] / [`run_ws_host_service`].
 #[derive(Debug, Clone)]
 pub struct WsHostConfig {
     /// HTTP(S) base of the signaling server (`http://127.0.0.1:8080`).
@@ -29,12 +35,18 @@ pub struct WsHostConfig {
     pub display_name: String,
     /// Transport mode (mock is coerced to live).
     pub transport: TransportMode,
-    /// Synthetic video frames to pump after connect.
+    /// Synthetic video frames to pump after each connect.
     pub video_frames: u32,
-    /// How long to wait for `session_incoming`.
+    /// How long to wait for each `session_incoming`.
     pub wait_incoming: Duration,
     /// When set, skip HTTP register and use these credentials (tests / restarts).
     pub existing: Option<ExistingHostCreds>,
+    /// Max sessions to serve before exit. **`0` = unlimited** (service mode).
+    pub max_sessions: u32,
+    /// Reconnect the signaling WebSocket after disconnect (service mode).
+    pub reconnect: bool,
+    /// Base backoff between reconnect attempts.
+    pub reconnect_backoff: Duration,
 }
 
 /// Pre-enrolled host credentials (from a prior [`register_device`] call).
@@ -55,83 +67,79 @@ impl Default for WsHostConfig {
             video_frames: 5,
             wait_incoming: Duration::from_secs(120),
             existing: None,
+            max_sessions: 1,
+            reconnect: false,
+            reconnect_backoff: Duration::from_secs(2),
         }
     }
 }
 
-/// Register, connect WSS, accept one session, pump synthetic media.
-///
-/// Returns a human summary line on success.
-pub async fn run_ws_host(cfg: WsHostConfig) -> Result<String, String> {
-    let mut mode = cfg.transport;
+fn coerce_transport(mode: TransportMode) -> TransportMode {
     if mode == TransportMode::Mock || mode == TransportMode::Auto {
         eprintln!(
             "ws-host: transport `{}` is not multi-process safe; using live TCP",
             mode.as_str()
         );
-        mode = TransportMode::Live;
+        TransportMode::Live
+    } else {
+        mode
     }
-    let transport_cfg = TransportConfig { mode };
+}
 
-    let (public_id, access_token) = if let Some(ex) = &cfg.existing {
+async fn enroll_or_reuse(cfg: &WsHostConfig) -> Result<(String, String), String> {
+    if let Some(ex) = &cfg.existing {
         println!(
             "ws-host: using existing public_id={} (viewer: --host {})",
             ex.public_id, ex.public_id
         );
-        (ex.public_id.clone(), ex.access_token.clone())
-    } else {
-        let (_sk, vk) = generate_device_keypair();
-        let pk = vk.to_bytes();
-        let reg = register_device(&cfg.server, &pk, Some(&cfg.display_name))
-            .await
-            .map_err(|e| format!("register: {e}"))?;
-        println!(
-            "ws-host: registered public_id={} (viewer: --host {} --ws-connect)",
-            reg.public_id, reg.public_id
-        );
-        (reg.public_id, reg.access_token)
-    };
-
-    let ws_url = http_to_ws_url(&cfg.server).map_err(|e| format!("ws url: {e}"))?;
-    let mut sig = SignalingClient::connect(&ws_url)
-        .await
-        .map_err(|e| format!("ws connect: {e}"))?;
-    let hello = sig
-        .hello_host(&access_token)
-        .await
-        .map_err(|e| format!("hello: {e}"))?;
-    if let SignalMessage::HelloOk { feature_flags, .. } = &hello {
-        println!(
-            "ws-host: hello_ok sdp_relay={}",
-            feature_flags
-                .get("sdp_relay")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false)
-        );
+        return Ok((ex.public_id.clone(), ex.access_token.clone()));
     }
+    let (_sk, vk) = generate_device_keypair();
+    let pk = vk.to_bytes();
+    let reg = register_device(&cfg.server, &pk, Some(&cfg.display_name))
+        .await
+        .map_err(|e| format!("register: {e}"))?;
+    println!(
+        "ws-host: registered public_id={} (viewer: --host {} --ws-connect)",
+        reg.public_id, reg.public_id
+    );
+    Ok((reg.public_id, reg.access_token))
+}
 
+/// Serve one media session on an already-authenticated signaling client.
+async fn handle_one_session(
+    sig: &mut SignalingClient,
+    public_id: &str,
+    mode: TransportMode,
+    transport_cfg: &TransportConfig,
+    video_frames: u32,
+    wait_incoming: Duration,
+) -> Result<String, String> {
     println!(
         "ws-host: waiting for session_incoming (timeout {}s)…",
-        cfg.wait_incoming.as_secs()
+        wait_incoming.as_secs()
     );
     let incoming = sig
-        .recv_until(cfg.wait_incoming, |m| {
+        .recv_until(wait_incoming, |m| {
             matches!(m, SignalMessage::SessionIncoming { .. })
         })
         .await
         .map_err(|e| format!("wait incoming: {e}"))?;
 
-    let session_id = match &incoming {
-        SignalMessage::SessionIncoming { session_id, .. } => session_id.clone(),
+    let (session_id, incoming_seq) = match &incoming {
+        SignalMessage::SessionIncoming {
+            session_id,
+            signal_seq,
+            ..
+        } => (session_id.clone(), *signal_seq),
         _ => unreachable!(),
     };
     println!("ws-host: session_incoming session_id={session_id}");
 
-    // After intent(1)+incoming(2), client next_seq is 3 via observe_seq.
-    let accept_seq = sig.take_seq().max(3);
-    if sig.next_seq <= accept_seq {
-        sig.next_seq = accept_seq.saturating_add(1);
-    }
+    // Per-session seq: accept must be >= server next (incoming_seq + 1).
+    // Reset client cursor so multi-session service does not skip forever.
+    sig.next_seq = incoming_seq.saturating_add(1);
+    let accept_seq = sig.take_seq();
     sig.send(&SignalMessage::SessionAccept {
         session_id: session_id.clone(),
         signal_seq: accept_seq,
@@ -140,8 +148,7 @@ pub async fn run_ws_host(cfg: WsHostConfig) -> Result<String, String> {
     .map_err(|e| format!("accept: {e}"))?;
     println!("ws-host: session_accept seq={accept_seq}");
 
-    // Media plane: offerer PeerTransport + SessionManager.
-    let offerer = create_peer_transport_with_config(PeerRole::Offerer, &transport_cfg)
+    let offerer = create_peer_transport_with_config(PeerRole::Offerer, transport_cfg)
         .map_err(|e| format!("create offerer: {e}"))?;
     let mut mgr = SessionManager::with_peer(offerer);
     mgr.attach(&session_id);
@@ -163,18 +170,18 @@ pub async fn run_ws_host(cfg: WsHostConfig) -> Result<String, String> {
     })
     .await
     .map_err(|e| format!("send offer: {e}"))?;
-    println!("ws-host: session_offer seq={offer_seq} sdp_len={}", offer.sdp.len());
+    println!(
+        "ws-host: session_offer seq={offer_seq} sdp_len={}",
+        offer.sdp.len()
+    );
 
-    // Collect host ICE but **do not trickle until after session_answer**.
-    // Strict signal_seq is session-global; racing ICE with the viewer's answer
-    // causes stale_signal_seq (host ICE claims seq N while viewer still answers N).
+    // Do not trickle host ICE until after session_answer (strict signal_seq).
     let mut pending_host_ice: Vec<_> = outbound
         .iter()
         .filter(|s| s.kind == signal_kind::ICE_CANDIDATE)
         .cloned()
         .collect();
 
-    // Wait for answer first (viewer may also send ICE after its answer).
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     let mut got_answer = false;
     while tokio::time::Instant::now() < deadline {
@@ -182,7 +189,10 @@ pub async fn run_ws_host(cfg: WsHostConfig) -> Result<String, String> {
         if remaining.is_zero() {
             break;
         }
-        let msg = match sig.recv_timeout(remaining.min(Duration::from_millis(250))).await {
+        let msg = match sig
+            .recv_timeout(remaining.min(Duration::from_millis(250)))
+            .await
+        {
             Ok(m) => m,
             Err(remotelink_signaling::SignalingError::Timeout(_)) => continue,
             Err(e) => return Err(format!("recv: {e}")),
@@ -204,7 +214,6 @@ pub async fn run_ws_host(cfg: WsHostConfig) -> Result<String, String> {
                 break;
             }
             SignalMessage::IceCandidate { candidate, .. } => {
-                // Viewer ICE can arrive after its answer in the same poll window.
                 mgr.apply_signal(
                     signal_kind::ICE_CANDIDATE,
                     &serde_json::to_string(&candidate).map_err(|e| e.to_string())?,
@@ -218,10 +227,10 @@ pub async fn run_ws_host(cfg: WsHostConfig) -> Result<String, String> {
     }
 
     if !got_answer {
+        let _ = mgr.shutdown();
         return Err("timeout waiting for session_answer".into());
     }
 
-    // Now trickle host ICE (offer-time + any newly queued).
     let _ = mgr.peer_mut().poll();
     pending_host_ice.extend(
         mgr.take_outbound_signals()
@@ -240,7 +249,6 @@ pub async fn run_ws_host(cfg: WsHostConfig) -> Result<String, String> {
         .map_err(|e| format!("send host ice: {e}"))?;
     }
 
-    // Drain remaining ICE + wait Connected.
     let ice_deadline = tokio::time::Instant::now() + Duration::from_secs(15);
     while tokio::time::Instant::now() < ice_deadline {
         let _ = mgr.peer_mut().poll();
@@ -275,9 +283,10 @@ pub async fn run_ws_host(cfg: WsHostConfig) -> Result<String, String> {
     mgr.wait_ready(Duration::from_secs(10))
         .map_err(|e| format!("wait_ready: {e}"))?;
     let pump = mgr
-        .pump_media(cfg.video_frames)
+        .pump_media(video_frames)
         .map_err(|e| format!("pump: {e}"))?;
     if pump.skipped_not_connected || pump.video_sent == 0 {
+        let _ = mgr.shutdown();
         return Err(format!(
             "pump failed (skipped={} video_sent={})",
             pump.skipped_not_connected, pump.video_sent
@@ -289,25 +298,172 @@ pub async fn run_ws_host(cfg: WsHostConfig) -> Result<String, String> {
         .local_fingerprint()
         .map_err(|e| e.to_string())?;
     let summary = format!(
-        "ws-host ok public_id={} session={} transport={} video_tx={} audio_tx={} fp={}",
-        public_id,
-        session_id,
+        "ws-host ok public_id={public_id} session={session_id} transport={} video_tx={} audio_tx={} fp={}",
         mode.as_str(),
         pump.video_sent,
         pump.audio_sent,
         fp.as_sign_material()
     );
 
+    // End session on the media plane; keep WSS for the next viewer.
+    let end_seq = sig.take_seq();
+    let _ = sig
+        .send(&SignalMessage::SessionEnd {
+            session_id: session_id.clone(),
+            signal_seq: end_seq,
+            reason: "host_media_complete".into(),
+        })
+        .await;
     let _ = mgr.shutdown();
-    let _ = sig.close().await;
     Ok(summary)
 }
 
-/// Blocking entry for the host binary.
+/// One-shot: register, connect, serve **one** session, close.
+pub async fn run_ws_host(cfg: WsHostConfig) -> Result<String, String> {
+    let mut one = cfg;
+    one.max_sessions = 1;
+    one.reconnect = false;
+    run_ws_host_service(one).await
+}
+
+/// Long-lived host: enroll once, serve up to `max_sessions` (0 = unlimited),
+/// reconnect signaling on failure when `reconnect` is set.
+pub async fn run_ws_host_service(cfg: WsHostConfig) -> Result<String, String> {
+    let mode = coerce_transport(cfg.transport);
+    let transport_cfg = TransportConfig { mode };
+    let (public_id, access_token) = enroll_or_reuse(&cfg).await?;
+    let ws_url = http_to_ws_url(&cfg.server).map_err(|e| format!("ws url: {e}"))?;
+
+    let unlimited = cfg.max_sessions == 0;
+    let mut completed: u32 = 0;
+    let mut last_summary = String::new();
+    let mut backoff = cfg.reconnect_backoff;
+
+    loop {
+        if !unlimited && completed >= cfg.max_sessions {
+            break;
+        }
+
+        let connect_result = async {
+            let mut sig = SignalingClient::connect(&ws_url)
+                .await
+                .map_err(|e| format!("ws connect: {e}"))?;
+            let hello = sig
+                .hello_host(&access_token)
+                .await
+                .map_err(|e| format!("hello: {e}"))?;
+            if let SignalMessage::HelloOk { feature_flags, .. } = &hello {
+                println!(
+                    "ws-host: hello_ok sdp_relay={} public_id={public_id}",
+                    feature_flags
+                        .get("sdp_relay")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false)
+                );
+            }
+
+            // Serve sessions until max or WS dies.
+            loop {
+                if !unlimited && completed >= cfg.max_sessions {
+                    let _ = sig.close().await;
+                    return Ok::<_, String>(());
+                }
+                match handle_one_session(
+                    &mut sig,
+                    &public_id,
+                    mode,
+                    &transport_cfg,
+                    cfg.video_frames,
+                    cfg.wait_incoming,
+                )
+                .await
+                {
+                    Ok(summary) => {
+                        println!("{summary}");
+                        last_summary = summary;
+                        completed = completed.saturating_add(1);
+                        // Reset seq observation soft-state is on the client;
+                        // next session continues on the same socket with higher seq.
+                    }
+                    Err(e) => {
+                        // Timeout waiting for next viewer is not fatal in service mode.
+                        if cfg.reconnect || unlimited || cfg.max_sessions > 1 {
+                            eprintln!("ws-host: session ended: {e}");
+                            // If the socket is dead, bubble up to reconnect.
+                            if e.contains("connection closed")
+                                || e.contains("connect")
+                                || e.contains("ws ")
+                            {
+                                let _ = sig.close().await;
+                                return Err(e);
+                            }
+                            // Idle timeout / session error: stay connected for the next viewer.
+                            if e.contains("wait incoming") || e.contains("timeout") {
+                                if !cfg.reconnect && !unlimited && cfg.max_sessions <= 1 {
+                                    let _ = sig.close().await;
+                                    return Err(e);
+                                }
+                                // Service: keep waiting for the next intent.
+                                continue;
+                            }
+                            let _ = sig.close().await;
+                            return Err(e);
+                        }
+                        let _ = sig.close().await;
+                        return Err(e);
+                    }
+                }
+            }
+        }
+        .await;
+
+        match connect_result {
+            Ok(()) => {
+                if !unlimited && completed >= cfg.max_sessions {
+                    break;
+                }
+                if !cfg.reconnect {
+                    break;
+                }
+            }
+            Err(e) => {
+                if !cfg.reconnect {
+                    return Err(e);
+                }
+                eprintln!(
+                    "ws-host: signaling error: {e}; reconnecting in {}s…",
+                    backoff.as_secs()
+                );
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(Duration::from_secs(60));
+                continue;
+            }
+        }
+
+        // Successful drain of max sessions.
+        break;
+    }
+
+    if last_summary.is_empty() {
+        Ok(format!(
+            "ws-host service exit public_id={public_id} sessions={completed}"
+        ))
+    } else {
+        Ok(format!(
+            "{last_summary}; service sessions_completed={completed}"
+        ))
+    }
+}
+
+/// Blocking entry for the host binary (one-shot or service).
 pub fn run_ws_host_blocking(cfg: WsHostConfig) -> Result<String, String> {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(|e| format!("tokio runtime: {e}"))?;
-    rt.block_on(run_ws_host(cfg))
+    if cfg.reconnect || cfg.max_sessions != 1 {
+        rt.block_on(run_ws_host_service(cfg))
+    } else {
+        rt.block_on(run_ws_host(cfg))
+    }
 }

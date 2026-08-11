@@ -229,6 +229,9 @@ async fn ws_host_viewer_live_tcp_media() {
             public_id: reg.public_id.clone(),
             access_token: reg.access_token.clone(),
         }),
+        max_sessions: 1,
+        reconnect: false,
+        reconnect_backoff: Duration::from_secs(1),
     };
 
     let host_handle = tokio::spawn(async move { run_ws_host(host_cfg).await });

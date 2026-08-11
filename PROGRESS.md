@@ -31,4 +31,9 @@ Plan PRs 1–27 done.
 - answerer `on_track` + `SampleBuilder` → `IncomingTrackData`
 - default interceptors for RTP; media still mirrored on DC during bind races
 
-**Still open for product:** RTP-only media (drop DC mirror), long-lived host service, MSI/codesign, GitHub remote.
+**Later same day (RTP-only + service loop):**
+- Media send is RTP-primary when tracks bound (`REMOTELINK_WEBRTC_DUAL_MEDIA=1` for mirror)
+- `wait_ready` only requires input/identity DCs
+- Host `--role=service --server=…`: multi-session WSS + reconnect (`--sessions=0`)
+
+**Still open for product:** OTP mint UI, named-pipe agent IPC, MSI/codesign, GitHub remote.
