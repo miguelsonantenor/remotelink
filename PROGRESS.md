@@ -41,4 +41,10 @@ Plan PRs 1–27 done.
 - Token refresh on restart; Mode A OTP mint + server hash post
 - e2e `host_creds_otp` proves prefilter with real code
 
-**Still open for product:** named-pipe agent IPC, tray OTP UI, MSI/codesign, GitHub remote.
+**Later same day (KD5 control IPC):**
+- `ServiceAgentClient` + `run_agent_control_server` over TCP control framing
+- Request/reply + outbound SignalForward drain (`drain_complete` sentinel)
+- `--role=ipc-colocate` and `--role=agent --control-listen=tcp:PORT`
+- Auto pump after answer/ICE when Connected (no media on the wire)
+
+**Still open for product:** named-pipe ACL, WSS→agent IPC split, tray OTP, MSI/codesign, GitHub remote.

@@ -9,6 +9,7 @@
 
 pub mod agent;
 pub mod chrome;
+pub mod control_loop;
 pub mod platform_capture;
 pub mod policy;
 pub mod service;
@@ -17,6 +18,10 @@ pub mod ws_session;
 
 pub use agent::{
     local_confirm, run_agent_only_synthetic, run_with_transport, AgentSession, AgentSessionState,
+};
+pub use control_loop::{
+    format_endpoint, parse_control_endpoint, run_agent_control_server, run_ipc_colocate_demo,
+    serve_agent_connection, ServiceAgentClient, DRAIN_COMPLETE,
 };
 pub use chrome::{HostSessionUx, SessionChrome, SessionIndicator};
 pub use platform_capture::{

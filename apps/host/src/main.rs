@@ -14,7 +14,10 @@ use std::env;
 
 use remotelink_host::agent;
 use remotelink_host::service;
-use remotelink_host::{run_ws_host_blocking, WsHostConfig};
+use remotelink_host::{
+    parse_control_endpoint, run_agent_control_server, run_ipc_colocate_demo, run_ws_host_blocking,
+    WsHostConfig,
+};
 use remotelink_net::TransportConfig;
 #[cfg(test)]
 use remotelink_net::TransportMode;
@@ -62,7 +65,39 @@ fn main() {
                 remotelink_common::VERSION,
                 transport.mode.as_str()
             );
-            agent::run_with_transport(transport.mode);
+            // Control IPC server (KD5): service dials this endpoint.
+            if let Some(ep) = flag_value(&args, "--control-listen")
+                .or_else(|| env::var("REMOTELINK_CONTROL_LISTEN").ok())
+            {
+                match parse_control_endpoint(&ep) {
+                    Ok(endpoint) => {
+                        if let Err(e) = run_agent_control_server(endpoint, transport.mode) {
+                            eprintln!("agent control server: {e}");
+                            std::process::exit(1);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("agent: {e}");
+                        std::process::exit(2);
+                    }
+                }
+            } else {
+                agent::run_with_transport(transport.mode);
+            }
+        }
+        HostRole::IpcColocate => {
+            println!(
+                "remotelink-host {} role=ipc-colocate transport={}",
+                remotelink_common::VERSION,
+                transport.mode.as_str()
+            );
+            match run_ipc_colocate_demo("ipc-colocate-session") {
+                Ok(s) => println!("{s}"),
+                Err(e) => {
+                    eprintln!("ipc-colocate: {e}");
+                    std::process::exit(1);
+                }
+            }
         }
         HostRole::Ws => {
             println!(
@@ -119,6 +154,8 @@ enum HostRole {
     Ws,
     /// In-process service control + agent synthetic session (CI / dogfood).
     Colocate,
+    /// Service client + agent server over TCP control IPC (KD5).
+    IpcColocate,
     /// G9: attach session, show Active indicator, fire local kill-switch.
     KillSwitchDemo,
     Help,
@@ -149,11 +186,12 @@ fn role_from_str(s: &str) -> HostRole {
         "agent" => HostRole::Agent,
         "ws" | "ws-agent" | "signaling" => HostRole::Ws,
         "colocate" | "synthetic" => HostRole::Colocate,
+        "ipc-colocate" | "ipc_colocate" | "control-ipc" => HostRole::IpcColocate,
         "kill-switch" | "kill_switch" => HostRole::KillSwitchDemo,
         "help" => HostRole::Help,
         other => {
             eprintln!(
-                "unknown --role `{other}` (expected service|agent|ws|colocate|kill-switch)"
+                "unknown --role `{other}` (expected service|agent|ws|colocate|ipc-colocate|kill-switch)"
             );
             HostRole::Help
         }
@@ -262,10 +300,14 @@ fn print_usage() {
          remotelink-host --kill-switch\n\n\
          Roles (KD5 agent-media):\n  \
          service      Long-lived WSS host when --server is set; else skeleton stubs\n  \
-         agent        Session manager + PeerTransport synthetic A/V (in-process demos)\n  \
+         agent        Session agent; with --control-listen=tcp:PORT runs KD5 control server\n  \
          ws           One-shot multi-process: register + accept + media (default 1 session)\n  \
          colocate     CI/test: in-process service control + agent synthetic session\n  \
+         ipc-colocate KD5 demo: service↔agent over TCP control IPC (mock media)\n  \
          kill-switch  G9 demo: mandatory session indicator + local kill-switch\n\n\
+         Agent control IPC:\n  \
+         --control-listen=tcp:PORT   Agent listens for service (0 = ephemeral; prints CONTROL_LISTEN)\n  \
+         REMOTELINK_CONTROL_LISTEN   Same as --control-listen\n\n\
          WSS host flags (role=ws|service --server):\n  \
          --server URL     Signaling base (default http://127.0.0.1:8080; or REMOTELINK_SERVER)\n  \
          --display-name N Enrollment display name\n  \

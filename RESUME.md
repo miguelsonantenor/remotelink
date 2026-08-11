@@ -11,7 +11,7 @@
 | PR plan | **PRs 1–27 complete** (8b optional skipped) |
 | **Integrated monorepo** | **Yes** — `cargo test --workspace` green (default features) |
 | PeerTransport backends | **mock** (CI default) · **live TCP** (default feature) · **webrtc-rs** (opt-in feature) |
-| Real AnyDesk product | **~85%** — Host creds file + OTP mint; persistent WSS service; RTP media; multi-process lab; no MSI/codesign |
+| Real AnyDesk product | **~88%** — KD5 control IPC (TCP) service↔agent; host creds+OTP; WSS service; RTP; no MSI/named-pipe ACL yet |
 
 ## Day-to-day development
 
@@ -54,8 +54,21 @@ docker compose -f deploy/docker-compose.yml up -d --build
 
 ## Next best steps
 
-1. Named-pipe control IPC between service and interactive agent (KD5)  
-2. Tray/GUI for OTP display (replace stdout mint line)  
-3. Push to GitHub remote; real MSI/codesign (`deploy/packaging/`)  
+1. Windows named-pipe ACL backend for control IPC (TCP works for CI/dev)  
+2. Wire WSS service path to dial agent control IPC (split process)  
+3. Tray/GUI for OTP; MSI/codesign; GitHub remote  
+
+### Control IPC (KD5)
+
+```powershell
+# Demo: service client + agent server over TCP (mock media)
+cargo run -p remotelink-host -- --role=ipc-colocate
+
+# Split processes:
+# Terminal A — agent control server
+cargo run -p remotelink-host -- --role=agent --control-listen=tcp:0 --transport=mock
+# note CONTROL_LISTEN=tcp:PORT
+# Terminal B — service uses ServiceAgentClient::connect (WSS path wiring next)
+```
 
 Historical PR tips remain on `execute-plan/35709e22-pr-*` and `progress/*` branches / worktrees.
