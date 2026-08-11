@@ -14,7 +14,9 @@ pub mod policy;
 pub mod service;
 pub mod session;
 
-pub use agent::{local_confirm, run_agent_only_synthetic, AgentSession, AgentSessionState};
+pub use agent::{
+    local_confirm, run_agent_only_synthetic, run_with_transport, AgentSession, AgentSessionState,
+};
 pub use chrome::{HostSessionUx, SessionChrome, SessionIndicator};
 pub use platform_capture::{
     default_audio_kind, default_video_kind, open_audio_source, open_default_sources,

@@ -12,6 +12,7 @@
 
 use std::env;
 
+use remotelink_net::{TransportConfig, TransportMode};
 use remotelink_viewer_core::{
     connect_stub, run_mock_codec_loopback_ex, run_synthetic_loopback_ex, ConnectRequest,
     SessionStats, ViewerPhase, ViewerSession,
@@ -23,6 +24,10 @@ fn main() {
         print_usage();
         return;
     }
+
+    let transport = parse_transport(&args);
+    // SAFETY: single-threaded main; library paths that read env see CLI choice.
+    env::set_var("REMOTELINK_TRANSPORT", transport.mode.as_str());
 
     let dump_metrics = args.iter().any(|a| a == "--metrics");
 
@@ -78,10 +83,13 @@ fn print_usage() {
     eprintln!(
         "remotelink-viewer {} — connect shell (viewer-core)\n\n\
          Usage:\n  \
-         remotelink-viewer [--synthetic | --mock-codec] [--host ID] \
+         remotelink-viewer [--synthetic | --mock-codec | --live-demo] [--host ID] \
          [--password PW | --otp CODE | --unattended SECRET]\n  \
          remotelink-viewer --connect-stub --host ID --otp CODE\n  \
          remotelink-viewer --gui          (requires --features gui)\n\n\
+         Transport (also REMOTELINK_TRANSPORT; default mock — CI-safe):\n  \
+         --transport=mock|live|auto\n  \
+         --live-demo       localhost TCP PeerTransport answerer demo (real sockets)\n\n\
          Input (PR 19):\n  \
          --inject-input     after synthetic/mock media, send demo mouse/key events\n\
                             on DataChannel \"input\" (capture + scancode path)\n  \
@@ -103,6 +111,32 @@ fn print_usage() {
     );
 }
 
+fn parse_transport(args: &[String]) -> TransportConfig {
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if arg == "--transport" {
+            if let Some(v) = iter.next() {
+                return TransportConfig::parse(v).unwrap_or_else(|e| {
+                    eprintln!("warning: {e}; using mock");
+                    TransportConfig::default()
+                });
+            }
+        } else if let Some(rest) = arg.strip_prefix("--transport=") {
+            return TransportConfig::parse(rest).unwrap_or_else(|e| {
+                eprintln!("warning: {e}; using mock");
+                TransportConfig::default()
+            });
+        }
+    }
+    // --live-demo implies live transport mode for logging / factory defaults.
+    if args.iter().any(|a| a == "--live-demo") {
+        return TransportConfig {
+            mode: TransportMode::Live,
+        };
+    }
+    TransportConfig::from_env()
+}
+
 fn run_cli(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let host = flag_value(args, "--host").unwrap_or_else(|| "demo-host".into());
     let password = flag_value(args, "--password");
@@ -111,12 +145,24 @@ fn run_cli(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let connect_stub_only = args.iter().any(|a| a == "--connect-stub");
     let want_synthetic = args.iter().any(|a| a == "--synthetic");
     let want_mock_codec = args.iter().any(|a| a == "--mock-codec");
+    let want_live_demo = args.iter().any(|a| a == "--live-demo")
+        || (parse_transport(args).resolved_mode() == TransportMode::Live
+            && !want_synthetic
+            && !want_mock_codec
+            && !connect_stub_only
+            && (args
+                .iter()
+                .any(|a| a == "--transport" || a.starts_with("--transport="))));
     let inject_input = args.iter().any(|a| a == "--inject-input");
     let always_capture = args.iter().any(|a| a == "--always-capture");
     let hud_block = args.iter().any(|a| a == "--hud-block");
     let hud_interval = flag_value(args, "--hud-interval")
         .and_then(|s| s.parse::<u64>().ok())
         .unwrap_or(if want_mock_codec { 1 } else { 0 });
+
+    if want_live_demo {
+        return run_live_demo();
+    }
 
     // Default with no args: synthetic demo. Credentials / --connect-stub → stub path.
     let has_creds = password.is_some() || otp.is_some() || unattended.is_some();
@@ -248,6 +294,86 @@ fn print_hud(stats: &SessionStats, block: bool) {
     } else {
         println!("hud {}", stats.hud_line());
     }
+}
+
+/// Localhost TCP PeerTransport demo (answerer + in-process offerer).
+fn run_live_demo() -> Result<(), Box<dyn std::error::Error>> {
+    use std::time::Duration;
+
+    use remotelink_net::{
+        live_handshake, AudioPacket, DataMessage, IncomingTrackData, LivePeerConfig,
+        LivePeerTransport, NaluFormat, PeerRole, PeerTransport, SharedRecording, VideoNalu,
+    };
+
+    println!(
+        "remotelink-viewer {} live TCP PeerTransport demo (answerer)",
+        remotelink_common::VERSION
+    );
+
+    let mut offerer = LivePeerTransport::new(PeerRole::Offerer, LivePeerConfig::default())?;
+    let mut answerer = LivePeerTransport::new(PeerRole::Answerer, LivePeerConfig::default())?;
+    let rec = SharedRecording::new();
+    answerer.set_callbacks(Box::new(rec.clone()));
+
+    live_handshake(&mut offerer, &mut answerer)?;
+
+    offerer.send_video_nalu(VideoNalu {
+        pts_host_mono: Duration::from_millis(16),
+        rtp_ts: Some(1440),
+        keyframe: true,
+        format: NaluFormat::AnnexB,
+        data: vec![0, 0, 0, 1, 0x65],
+    })?;
+    offerer.send_audio(AudioPacket {
+        pts_host_mono: Duration::from_millis(16),
+        rtp_ts: Some(768),
+        sample_rate: 48_000,
+        channels: 2,
+        data: vec![9, 8, 7, 6],
+    })?;
+    offerer.send_data(DataMessage {
+        label: "input".into(),
+        data: b"{}".to_vec(),
+        unordered: true,
+    })?;
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        answerer.poll()?;
+        let snap = rec.snapshot();
+        if snap.tracks.len() >= 2 && !snap.data.is_empty() {
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err("live demo: timeout waiting for frames".into());
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    let snap = rec.snapshot();
+    let video_n = snap
+        .tracks
+        .iter()
+        .filter(|t| matches!(t, IncomingTrackData::Video(_)))
+        .count();
+    let audio_n = snap
+        .tracks
+        .iter()
+        .filter(|t| matches!(t, IncomingTrackData::Audio(_)))
+        .count();
+    let fp = answerer
+        .remote_fingerprint()?
+        .ok_or("missing remote fingerprint")?;
+
+    println!(
+        "live ok: video_rx={video_n} audio_rx={audio_n} data_rx={} remote_fp={}",
+        snap.data.len(),
+        fp.as_sign_material()
+    );
+
+    offerer.close()?;
+    answerer.close()?;
+    Ok(())
 }
 
 fn build_request(

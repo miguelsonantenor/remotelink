@@ -1,0 +1,27 @@
+# Multi-stage build for remotelink-server (Linux target for compose).
+# Build: docker compose -f deploy/docker-compose.yml build server
+
+FROM rust:1.85-bookworm AS builder
+WORKDIR /src
+
+# Cache deps: copy manifests first.
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+COPY packages ./packages
+COPY apps ./apps
+COPY tests ./tests
+COPY agents ./agents
+
+# Workspace members include host/viewer/platform; build only the server binary.
+RUN cargo build -p remotelink-server --release
+
+FROM debian:bookworm-slim
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /src/target/release/remotelink-server /usr/local/bin/remotelink-server
+
+ENV LISTEN_ADDR=0.0.0.0:8080
+EXPOSE 8080
+USER nobody
+ENTRYPOINT ["/usr/local/bin/remotelink-server"]

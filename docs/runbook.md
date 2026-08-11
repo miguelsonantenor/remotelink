@@ -4,7 +4,7 @@ Operational guide for self-hosting and running **server**, **host**, and **viewe
 
 **Audience:** operators deploying a single-node or small cluster self-host; on-call for session incidents.
 
-**Related docs:** [threat-model.md](threat-model.md) · [platform-limitations.md](platform-limitations.md)
+**Related docs:** [threat-model.md](threat-model.md) · [platform-limitations.md](platform-limitations.md) · [spike-webrtc.md](spike-webrtc.md)
 
 ---
 
@@ -41,21 +41,34 @@ Viewer <---- ICE / DTLS-SRTP (+ TURN if needed) ----> Host session agent
 
 ## 3. Self-host server stack
 
-### 3.1 Minimal local / lab (Postgres)
+### 3.1 Minimal local / lab (Postgres + server + coturn)
 
 From the repository root:
 
 ```bash
-docker compose -f deploy/docker-compose.yml up -d
+# Postgres + remotelink-server + bridge-network coturn
+docker compose -f deploy/docker-compose.yml up -d --build
+
+# Linux host-network coturn (better ICE addressing) — optional profile:
+# docker compose -f deploy/docker-compose.yml --profile turn up -d
 ```
 
-Set durable registry storage (PowerShell example):
+| Service | Ports | Notes |
+|---------|-------|--------|
+| `postgres` | `5432` | User/db/password `remotelink` (lab only) |
+| `server` | `8080` | Built from `deploy/Dockerfile.server` |
+| `coturn-bridge` | `3478`, `5349`, relay UDP range | Docker Desktop / Windows-friendly |
+| `coturn` (profile `turn`) | host network | Prefer on Linux for real STUN/TURN tests |
+
+Set durable registry storage when running the server **on the host** (PowerShell):
 
 ```powershell
 $env:DATABASE_URL = "postgres://remotelink:remotelink@127.0.0.1:5432/remotelink"
 ```
 
-> **Warning:** Compose defaults in `deploy/docker-compose.yml` are for **local development** only. Change DB user/password, bind addresses, and add TLS before any shared or internet-facing use.
+Compose already injects `DATABASE_URL` for the `server` service.
+
+> **Warning:** Compose defaults in `deploy/docker-compose.yml` are for **local development** only. Change DB user/password, `TURN_SHARED_SECRET`, bind addresses, and add TLS before any shared or internet-facing use.
 
 ### 3.2 Server process
 
@@ -153,6 +166,46 @@ WS messages are session-scoped with monotonic `signal_seq` (stale seq dropped). 
 | High cost / saturated uplink | Many relayed HD sessions | Cap bitrate flags; prefer P2P; scale TURN fleet |
 | Creds rejected | Clock skew, wrong secret, expired session | NTP; rotate secret carefully; check session TTL |
 | UDP blocked | Corporate firewall | TCP TURN if enabled; else document fail |
+
+---
+
+## 4b. PeerTransport modes (mock / live)
+
+Media-plane backends are selected by env or CLI. **Default is mock** so CI never requires sockets or WebRTC.
+
+| Mode | Env / flag | Behavior |
+|------|------------|----------|
+| **mock** (default) | `REMOTELINK_TRANSPORT=mock` or unset | In-process `MockPeerTransport` — unit tests, colocate CI |
+| **live** | `REMOTELINK_TRANSPORT=live` or `--transport=live` | TCP length-prefixed frames between peers — local multi-process demos |
+| **auto** | `REMOTELINK_TRANSPORT=auto` | Prefer live when compiled (`remotelink-net` feature `live`); else mock |
+
+```powershell
+# CI / default
+cargo run -p remotelink-host -- --role=agent
+cargo run -p remotelink-viewer -- --synthetic
+
+# Live TCP demos (localhost client–server inside one process)
+cargo run -p remotelink-host -- --role=agent --transport=live
+cargo run -p remotelink-viewer -- --live-demo
+
+# Env form
+$env:REMOTELINK_TRANSPORT = "live"
+$env:REMOTELINK_LIVE_BIND = "127.0.0.1:0"          # optional
+$env:REMOTELINK_LIVE_ADVERTISE = "127.0.0.1"       # optional SDP/ICE host
+```
+
+Factory API (library):
+
+```rust
+remotelink_net::create_peer_transport(remotelink_net::PeerRole::Offerer)?;
+// or
+remotelink_net::create_peer_transport_with_config(
+    remotelink_net::PeerRole::Answerer,
+    &remotelink_net::TransportConfig::parse("live")?,
+)?;
+```
+
+Live TCP is **not** DTLS-SRTP WebRTC. Production path remains spike-gated — see [spike-webrtc.md](spike-webrtc.md). coturn is for the future real ICE/TURN path, not for the live TCP demo.
 
 ---
 

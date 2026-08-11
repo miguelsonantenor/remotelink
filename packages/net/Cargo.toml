@@ -3,13 +3,17 @@ name = "remotelink-net"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "RemoteLink PeerTransport trait, mock loopback, and WebRTC stack boundary"
+description = "RemoteLink PeerTransport trait, mock loopback, live TCP, and WebRTC stack boundary"
 publish = false
 
 [features]
-default = ["mock"]
-# Synthetic in-process PeerTransport for unit tests and CI (no real WebRTC).
+default = ["mock", "live"]
+# Synthetic in-process PeerTransport for unit tests and CI (no real sockets).
 mock = []
+# Length-prefixed TCP PeerTransport for local multi-process demos (pure Rust).
+# Included in default so workspace tests cover loopback; apps still default to
+# mock via REMOTELINK_TRANSPORT / TransportConfig (CI-safe path).
+live = ["dep:serde", "dep:serde_json", "dep:sha2", "dep:rand", "dep:hex"]
 # Placeholder for a future pure-Rust webrtc-rs backend. Not wired to crates.io
 # deps in v1: windows-gnu CI + external-NALU path (see docs/spike-webrtc.md).
 # Re-enable with real `dep:webrtc` only on a dedicated msvc/unix builder job.
@@ -18,5 +22,10 @@ webrtc-rs = []
 [dependencies]
 remotelink-protocol = { workspace = true }
 thiserror = { workspace = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
+rand = { workspace = true, optional = true }
+hex = { workspace = true, optional = true }
 
 [dev-dependencies]

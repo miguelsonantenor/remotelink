@@ -1,7 +1,11 @@
-# Minimal Postgres for local / self-host development (PR 4).
+# RemoteLink self-host stack: signaling server + Postgres + coturn.
+#
 # Usage from repo root:
-#   docker compose -f deploy/docker-compose.yml up -d
+#   docker compose -f deploy/docker-compose.yml up -d --build
 #   $env:DATABASE_URL = "postgres://remotelink:remotelink@127.0.0.1:5432/remotelink"
+#
+# Lab defaults only — change passwords, secrets, and bind addresses before
+# any shared or internet-facing use. See docs/runbook.md.
 
 services:
   postgres:
@@ -20,6 +24,75 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    restart: unless-stopped
+
+  server:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.server
+    container_name: remotelink-server
+    environment:
+      LISTEN_ADDR: "0.0.0.0:8080"
+      DATABASE_URL: "postgres://remotelink:remotelink@postgres:5432/remotelink"
+      # Set TRUST_PROXY=1 only behind a reverse proxy that overwrites X-Forwarded-For.
+      # TRUST_PROXY: "1"
+      # ADMIN_TOKEN: "change-me"
+      RUST_LOG: "info"
+      # Shared with coturn for REST-style ephemeral TURN creds (server mint later).
+      TURN_REALM: "remotelink.local"
+      TURN_SHARED_SECRET: "remotelink-dev-turn-secret-change-me"
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -fsS http://127.0.0.1:8080/healthz >/dev/null || exit 1",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+
+  coturn:
+    image: coturn/coturn:4.6.2
+    container_name: remotelink-coturn
+    network_mode: host
+    # host network: STUN/TURN need correct public addressing; for lab LAN
+    # override external-ip in turnserver.conf or via command.
+    volumes:
+      - ./coturn/turnserver.conf:/etc/coturn/turnserver.conf:ro
+    command: ["-c", "/etc/coturn/turnserver.conf"]
+    depends_on:
+      - server
+    restart: unless-stopped
+    profiles:
+      # Opt-in: `docker compose --profile turn up` — host networking is Linux-oriented.
+      - turn
+
+  # Bridge-network coturn for Docker Desktop / Windows (UDP may be limited).
+  coturn-bridge:
+    image: coturn/coturn:4.6.2
+    container_name: remotelink-coturn-bridge
+    environment:
+      DETECT_EXTERNAL_IP: "no"
+    ports:
+      - "3478:3478"
+      - "3478:3478/udp"
+      - "5349:5349"
+      - "5349:5349/udp"
+      # Relay port range (narrow for lab)
+      - "49160-49200:49160-49200/udp"
+    volumes:
+      - ./coturn/turnserver-bridge.conf:/etc/coturn/turnserver.conf:ro
+    command: ["-c", "/etc/coturn/turnserver.conf"]
+    depends_on:
+      - server
+    restart: unless-stopped
 
 volumes:
   remotelink_pgdata:

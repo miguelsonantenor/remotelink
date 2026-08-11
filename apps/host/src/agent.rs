@@ -446,12 +446,30 @@ fn is_peer_signal_kind(kind: &str) -> bool {
 }
 
 /// Run the agent role (synthetic session demo without real display).
+///
+/// Uses mock PeerTransport (CI-safe default).
 pub fn run() {
-    println!("remotelink-host {} role=agent", remotelink_common::VERSION);
-    println!("agent: session manager + mock PeerTransport (synthetic A/V)");
+    run_with_transport(remotelink_net::TransportMode::Mock);
+}
 
-    // Agent-only synthetic path: in-process mock pair stands in for a viewer.
-    match run_agent_only_synthetic("agent-synthetic-session") {
+/// Run the agent role with an explicit transport mode (`mock` / `live` / `auto`).
+///
+/// - **mock** (default): in-process [`MockPeerPair`] stands in for a viewer.
+/// - **live**: localhost TCP offerer+answerer pair — real sockets, still
+///   single-process for the agent demo (`remotelink-net` feature `live`).
+pub fn run_with_transport(mode: remotelink_net::TransportMode) {
+    let resolved = remotelink_net::TransportConfig { mode }.resolved_mode();
+    println!(
+        "agent: session manager + {} PeerTransport (synthetic A/V)",
+        resolved.as_str()
+    );
+
+    let result = match resolved {
+        remotelink_net::TransportMode::Live => run_agent_only_live_synthetic("agent-live-session"),
+        _ => run_agent_only_synthetic("agent-synthetic-session"),
+    };
+
+    match result {
         Ok(summary) => {
             println!("agent: {summary}");
             println!("agent: idle exit (named pipe client loop later)");
@@ -460,6 +478,93 @@ pub fn run() {
             eprintln!("agent: synthetic session failed: {e}");
         }
     }
+}
+
+/// Agent-only live TCP loopback: offerer (host) + answerer (viewer stand-in).
+///
+/// Demonstrates real sockets and length-prefixed media/data without full
+/// WebRTC. Full control-IPC + SessionManager path remains on mock for CI.
+fn run_agent_only_live_synthetic(session_id: &str) -> Result<String, String> {
+    use std::time::Duration;
+
+    use remotelink_net::{
+        live_handshake, AudioPacket, DataMessage, IncomingTrackData, LivePeerConfig,
+        LivePeerTransport, NaluFormat, PeerRole, PeerTransport, SharedRecording, VideoNalu,
+    };
+
+    let mut offerer = LivePeerTransport::new(PeerRole::Offerer, LivePeerConfig::default())
+        .map_err(|e| e.to_string())?;
+    let mut answerer = LivePeerTransport::new(PeerRole::Answerer, LivePeerConfig::default())
+        .map_err(|e| e.to_string())?;
+    let rec = SharedRecording::new();
+    answerer.set_callbacks(Box::new(rec.clone()));
+
+    live_handshake(&mut offerer, &mut answerer).map_err(|e| e.to_string())?;
+
+    let fp = offerer.local_fingerprint().map_err(|e| e.to_string())?;
+    offerer
+        .send_video_nalu(VideoNalu {
+            pts_host_mono: Duration::from_millis(0),
+            rtp_ts: Some(0),
+            keyframe: true,
+            format: NaluFormat::AnnexB,
+            data: vec![0, 0, 0, 1, 0x67],
+        })
+        .map_err(|e| e.to_string())?;
+    offerer
+        .send_audio(AudioPacket {
+            pts_host_mono: Duration::from_millis(0),
+            rtp_ts: Some(0),
+            sample_rate: 48_000,
+            channels: 2,
+            data: vec![0, 1, 2, 3],
+        })
+        .map_err(|e| e.to_string())?;
+    offerer
+        .send_data(DataMessage {
+            label: "control".into(),
+            data: format!("session={session_id}").into_bytes(),
+            unordered: false,
+        })
+        .map_err(|e| e.to_string())?;
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        answerer.poll().map_err(|e| e.to_string())?;
+        let snap = rec.snapshot();
+        if snap.tracks.len() >= 2 && !snap.data.is_empty() {
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(format!(
+                "live demo timeout tracks={} data={}",
+                snap.tracks.len(),
+                snap.data.len()
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    let snap = rec.snapshot();
+    let video_n = snap
+        .tracks
+        .iter()
+        .filter(|t| matches!(t, IncomingTrackData::Video(_)))
+        .count();
+    let audio_n = snap
+        .tracks
+        .iter()
+        .filter(|t| matches!(t, IncomingTrackData::Audio(_)))
+        .count();
+
+    offerer.close().map_err(|e| e.to_string())?;
+    answerer.close().map_err(|e| e.to_string())?;
+
+    Ok(format!(
+        "live TCP session={session_id} fp={} video_rx={video_n} audio_rx={audio_n} data_rx={}",
+        fp.as_sign_material(),
+        snap.data.len()
+    ))
 }
 
 /// Agent-only synthetic session: mock viewer peer in-process, no real display.

@@ -2,40 +2,61 @@
 //!
 //! # PeerTransport
 //!
-//! Host session agent and viewer talk to ICE/DTLS-SRTP (or a CI mock) only
-//! through [`PeerTransport`]. External encoders push H.264 NALUs and Opus via
+//! Host session agent and viewer talk to ICE/DTLS-SRTP (or a CI mock / live TCP)
+//! only through [`PeerTransport`]. External encoders push H.264 NALUs and Opus via
 //! [`PeerTransport::send_video_nalu`] / [`PeerTransport::send_audio`]; input and
 //! identity challenges use DataChannel [`PeerTransport::send_data`].
 //! Install sinks with [`PeerTransport::set_callbacks`] (works on `dyn` /
-//! [`BoxPeerTransport`]). Pump mock inbound with [`PeerTransport::poll`].
+//! [`BoxPeerTransport`]). Pump inbound with [`PeerTransport::poll`].
 //!
-//! # Mock (default)
+//! # Transport factory
+//!
+//! [`create_peer_transport`] / [`TransportConfig::from_env`] select a backend:
+//!
+//! | `REMOTELINK_TRANSPORT` | Backend |
+//! |------------------------|---------|
+//! | unset / `mock` (default) | In-process mock — **CI path** |
+//! | `live` | TCP length-prefixed frames (feature `live`) |
+//! | `auto` | Prefer live when compiled; else mock |
+//!
+//! # Mock (default mode)
 //!
 //! Feature `mock` (default) provides [`mock::MockPeerTransport`] and
-//! [`mock::MockPeerPair`] — in-process loopback with no native WebRTC deps so
-//! CI and unit tests stay green on `windows-gnu`.
+//! [`mock::MockPeerPair`] — in-process loopback with no sockets so CI and unit
+//! tests stay green on `windows-gnu`.
+//!
+//! # Live TCP (feature `live`, default on)
+//!
+//! [`live_loopback::LivePeerTransport`] carries media/data over real TCP for
+//! local multi-process demos. Not DTLS-SRTP / WebRTC — see `docs/spike-webrtc.md`.
 //!
 //! # Real backends
 //!
 //! - Feature `webrtc-rs`: **name-only placeholder** (no crates.io deps wired).
-//!   Pure-Rust remains a tracked option, not the v1 default
-//!   (see `docs/spike-webrtc.md`).
 //! - Plan B: libwebrtc FFI in a follow-up crate (`packages/net-libwebrtc`)
 //!   behind the same trait.
 //!
-//! Spike decision: **GO for v1 with mock-first + Plan B libwebrtc**; pure-Rust
-//! remains a tracked option, not the v1 ship path (see `docs/spike-webrtc.md`).
+//! Spike decision: **GO for v1 with mock-first + live TCP step + Plan B
+//! libwebrtc**; pure-Rust WebRTC remains tracked, not the v1 ship path.
 
 #![deny(missing_docs)]
 
 pub mod error;
+pub mod factory;
 pub mod transport;
 pub mod types;
 
 #[cfg(feature = "mock")]
 pub mod mock;
 
+#[cfg(feature = "live")]
+pub mod live_loopback;
+
 pub use error::{NetError, Result};
+pub use factory::{
+    create_peer_transport, create_peer_transport_with_config, PeerRole, TransportConfig,
+    TransportMode,
+};
 pub use transport::{
     BoxPeerTransport, NullCallbacks, PeerTransport, PeerTransportCallbacks, RecordingCallbacks,
 };
@@ -48,6 +69,9 @@ pub use types::{
 #[cfg(feature = "mock")]
 pub use mock::{MockPeerConfig, MockPeerPair, MockPeerTransport, SharedRecording};
 
+#[cfg(feature = "live")]
+pub use live_loopback::{live_handshake, LivePeerConfig, LivePeerTransport, LiveSdp};
+
 /// Crate version from `Cargo.toml`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -56,6 +80,8 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub enum TransportBackend {
     /// In-process mock loopback.
     Mock,
+    /// Length-prefixed TCP live path (feature `live`).
+    Live,
     /// Pure-Rust webrtc crate (feature `webrtc-rs` placeholder).
     WebrtcRs,
     /// Placeholder for future libwebrtc FFI.
@@ -64,19 +90,16 @@ pub enum TransportBackend {
 
 /// Backends compiled into this binary.
 pub fn available_backends() -> Vec<TransportBackend> {
-    // Libwebrtc is never in-tree for this spike (Plan B follow-up crate).
     let _ = TransportBackend::Libwebrtc;
-    #[cfg(feature = "webrtc-rs")]
-    let _ = TransportBackend::WebrtcRs;
-
-    #[cfg(feature = "mock")]
-    {
-        vec![TransportBackend::Mock]
-    }
-    #[cfg(not(feature = "mock"))]
-    {
-        Vec::new()
-    }
+    [
+        #[cfg(feature = "mock")]
+        TransportBackend::Mock,
+        #[cfg(feature = "live")]
+        TransportBackend::Live,
+        #[cfg(feature = "webrtc-rs")]
+        TransportBackend::WebrtcRs,
+    ]
+    .into()
 }
 
 #[cfg(test)]
@@ -93,6 +116,13 @@ mod tests {
     fn mock_backend_listed_by_default() {
         let backends = available_backends();
         assert!(backends.contains(&TransportBackend::Mock));
+    }
+
+    #[cfg(feature = "live")]
+    #[test]
+    fn live_backend_listed_by_default() {
+        let backends = available_backends();
+        assert!(backends.contains(&TransportBackend::Live));
     }
 
     #[test]
@@ -200,5 +230,14 @@ mod tests {
         assert!(fp.as_sign_material().starts_with("sha-256 01:23:AB:"));
         assert_eq!(fp.digest_bytes().unwrap()[0], 0x01);
         assert_eq!(fp.digest_bytes().unwrap()[1], 0x23);
+    }
+
+    #[test]
+    fn factory_default_is_mock() {
+        let cfg = TransportConfig::default();
+        assert_eq!(cfg.mode, TransportMode::Mock);
+        let mut t = create_peer_transport_with_config(PeerRole::Offerer, &cfg).unwrap();
+        assert_eq!(t.connection_state(), ConnectionState::New);
+        t.close().unwrap();
     }
 }

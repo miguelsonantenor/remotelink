@@ -3232,7 +3232,12 @@ version = "0.1.0"
 name = "remotelink-net"
 version = "0.1.0"
 dependencies = [
+ "hex",
+ "rand 0.8.7",
  "remotelink-protocol",
+ "serde",
+ "serde_json",
+ "sha2",
  "thiserror 2.0.20",
 ]
 
