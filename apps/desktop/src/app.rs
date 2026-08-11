@@ -68,9 +68,11 @@ impl RemoteLinkApp {
     }
 
     fn start_host(&mut self) {
-        if self.host.as_ref().is_some_and(|h| h.is_running()) {
+        if self.host.as_mut().is_some_and(|h| h.poll()) {
             return;
         }
+        // Clear previous worker (kills old child if any).
+        self.host = None;
         let status_path = AppConfig::status_path();
         let creds_path = AppConfig::creds_path();
         if let Err(e) = ensure_parent(&status_path) {
@@ -81,26 +83,37 @@ impl RemoteLinkApp {
             self.host_error = Some(e);
             return;
         }
+        // Stale status confuses the UI until the new host rewrites it.
+        let _ = std::fs::remove_file(&status_path);
         self.host_error = None;
-        self.host = Some(HostWorker::start(
+        match HostWorker::start(
             self.config.server.clone(),
             self.config.display_name.clone(),
             self.transport_mode(),
             status_path,
             creds_path,
-        ));
+        ) {
+            Ok(w) => {
+                self.footer_note = format!("Host started ({})", w.host_exe().display());
+                self.host = Some(w);
+                self.allow_access = true;
+            }
+            Err(e) => {
+                self.host_error = Some(e);
+                self.allow_access = false;
+            }
+        }
         self.connect_status.clear();
     }
 
     fn stop_host_ui(&mut self) {
-        // Cooperative host stop is not wired in the service loop yet.
-        // Dropping the handle detaches the thread; full stop needs process exit
-        // or a future kill-switch IPC. Mark UI as disabled for now.
-        self.host = None;
+        if let Some(mut h) = self.host.take() {
+            h.stop();
+        }
         self.allow_access = false;
         self.host_status = HostStatusSnapshot::default();
-        self.footer_note =
-            "Host stop is best-effort in Phase 1 — quit the app to fully end the host.".into();
+        let _ = std::fs::remove_file(AppConfig::status_path());
+        self.footer_note = "Remote access stopped.".into();
     }
 
     fn poll_host_status(&mut self, ctx: &egui::Context) {
@@ -113,25 +126,24 @@ impl RemoteLinkApp {
         if let Some(snap) = read_status(&path) {
             self.host_status = snap;
         }
-        if let Some(ref h) = self.host {
+        if let Some(ref mut h) = self.host {
+            let alive = h.poll();
             if let Some(e) = h.take_error() {
                 self.host_error = Some(e);
             }
-            if !h.is_running() && self.allow_access {
-                // Host thread exited unexpectedly.
+            if !alive && self.allow_access {
                 if self.host_error.is_none() {
                     self.host_error = Some(
-                        "Host service stopped. Check signaling server, then toggle Allow access."
+                        "Host service stopped. Check the signaling server URL, then toggle Allow access."
                             .into(),
                     );
                 }
                 self.allow_access = false;
+                self.host = None;
             }
         }
         // Keep animating while host/viewer work.
-        if self.host.as_ref().is_some_and(|h| h.is_running())
-            || self.viewer.as_ref().is_some_and(|v| !v.is_finished())
-        {
+        if self.allow_access || self.viewer.as_ref().is_some_and(|v| !v.is_finished()) {
             ctx.request_repaint_after(std::time::Duration::from_millis(250));
         }
     }
@@ -323,11 +335,19 @@ impl eframe::App for RemoteLinkApp {
                     } else {
                         self.host_status.chrome.as_str()
                     };
-                    let host_alive = self.host.as_ref().is_some_and(|h| h.is_running());
-                    ui.label(format!(
-                        "Status: {chrome} · host {}",
-                        if host_alive { "running" } else { "stopped" }
-                    ));
+                    let host_alive = self.allow_access
+                        && self.host.is_some()
+                        && self.host_error.is_none();
+                    let online_hint = if host_alive {
+                        if self.host_status.public_id.is_some() {
+                            "online (waiting for viewers)"
+                        } else {
+                            "starting…"
+                        }
+                    } else {
+                        "stopped"
+                    };
+                    ui.label(format!("Status: {chrome} · host {online_hint}"));
                     if let Some(sid) = &self.host_status.session_id {
                         let who = self
                             .host_status
