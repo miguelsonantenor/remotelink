@@ -25,6 +25,8 @@ pub struct AppState {
     pub otp_pepper: Arc<Vec<u8>>,
     /// Client IP trust policy (`TRUST_PROXY`).
     pub client_ip: ClientIpConfig,
+    /// Operator admin token (`ADMIN_TOKEN`). `None` / empty disables admin routes.
+    pub admin_token: Option<Arc<str>>,
 }
 
 impl AppState {
@@ -39,6 +41,7 @@ impl AppState {
             otp: Arc::new(MemoryOtpStore::new()),
             otp_pepper: Arc::new(DEFAULT_OTP_PEPPER.to_vec()),
             client_ip: ClientIpConfig::default(),
+            admin_token: None,
         }
     }
 
@@ -54,6 +57,7 @@ impl AppState {
             otp: Arc::new(MemoryOtpStore::new()),
             otp_pepper: Arc::new(DEFAULT_OTP_PEPPER.to_vec()),
             client_ip: ClientIpConfig::default(),
+            admin_token: None,
         }
     }
 
@@ -76,6 +80,40 @@ impl AppState {
             otp: Arc::new(MemoryOtpStore::new()),
             otp_pepper: Arc::new(DEFAULT_OTP_PEPPER.to_vec()),
             client_ip: ClientIpConfig::default(),
+            admin_token: None,
+        }
+    }
+
+    /// Minimum accepted length for `ADMIN_TOKEN` (weak secrets are rejected).
+    pub const ADMIN_TOKEN_MIN_LEN: usize = 16;
+
+    /// Set operator admin token (`ADMIN_TOKEN`).
+    ///
+    /// Empty or shorter than [`Self::ADMIN_TOKEN_MIN_LEN`] clears the token
+    /// (admin routes stay disabled / unauthorized).
+    pub fn with_admin_token(mut self, token: impl Into<String>) -> Self {
+        let t = token.into();
+        self.admin_token = if t.len() >= Self::ADMIN_TOKEN_MIN_LEN {
+            Some(Arc::from(t))
+        } else {
+            None
+        };
+        self
+    }
+
+    /// Load `ADMIN_TOKEN` from the environment when present and long enough.
+    pub fn with_admin_token_from_env(self) -> Self {
+        match std::env::var("ADMIN_TOKEN") {
+            Ok(t) if t.len() >= Self::ADMIN_TOKEN_MIN_LEN => self.with_admin_token(t),
+            Ok(t) if !t.is_empty() => {
+                tracing::warn!(
+                    len = t.len(),
+                    min = Self::ADMIN_TOKEN_MIN_LEN,
+                    "ADMIN_TOKEN too short; admin routes disabled"
+                );
+                self
+            }
+            _ => self,
         }
     }
 

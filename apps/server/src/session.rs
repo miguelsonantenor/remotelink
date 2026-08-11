@@ -401,6 +401,8 @@ impl SessionRegistry {
             session_id: session_id.clone(),
             signal_seq: incoming_seq,
             viewer_info,
+            mode,
+            otp_prefilter: remotelink_protocol::OtpPrefilterStatus::Skipped,
         };
 
         if let Some(tx) = g.conns.get(&host_conn) {
@@ -558,6 +560,27 @@ impl SessionRegistry {
             let _ = tx.send(msg);
         }
         Ok(())
+    }
+
+    /// Operator force-disconnect: close session and notify **both** peers.
+    ///
+    /// Used by `POST /v1/admin/sessions/{id}/force-disconnect`. Returns `Ok(true)`
+    /// when a live (non-closed) session was closed, `Ok(false)` if unknown.
+    pub async fn force_disconnect(&self, session_id: &str, reason: &str) -> Result<bool, String> {
+        let mut g = self.inner.lock().await;
+        let now = Utc::now();
+        Self::reap_expired_locked(&mut g, now);
+
+        let Some(session) = g.sessions.get(session_id) else {
+            return Ok(false);
+        };
+        if session.state == SessionState::Closed {
+            // Treat terminal row as gone for admin API.
+            g.sessions.remove(session_id);
+            return Ok(false);
+        }
+        Self::close_session_locked(&mut g, session_id, reason);
+        Ok(true)
     }
 
     /// Test/helper: current busy session for a host, if any (after reap).

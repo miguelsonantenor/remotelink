@@ -1,0 +1,18 @@
+[package]
+name = "unit-test-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Public-API inventory and draft test PR reports (never auto-merge)"
+publish = false
+
+[[bin]]
+name = "unit-test-agent"
+path = "src/main.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

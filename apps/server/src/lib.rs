@@ -9,9 +9,9 @@
 //! - `POST|GET /v1/devices/{id}/blocklist` — host blocklist of viewers/IPs
 //! - `GET /v1/devices/{id}/blocklist/check` — check if a subject is blocked
 //! - `GET /v1/devices/{id}/audit` — host owner audit list
+//! - `POST /v1/admin/sessions/{id}/force-disconnect` — operator disconnect (`ADMIN_TOKEN`)
 //! - `GET /v1/ws` — signaling WebSocket (`hello`, `session_intent`, accept/reject)
 //! - `GET /healthz` / `GET /readyz` — probes
-//! - `GET /metrics` — Prometheus text exposition
 //!
 //! Storage is abstracted via [`repo::DeviceRepository`] with in-memory and
 //! Postgres implementations. Session presence/busy-lock lives in

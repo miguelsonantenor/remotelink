@@ -20,8 +20,6 @@ use remotelink_protocol::{
 };
 use serde_json::json;
 
-use remotelink_common::{process_registry, SessionResult};
-
 use crate::credentials::hash_token;
 use crate::models::DeviceStatus;
 use crate::otp::OtpPrefilterResult;
@@ -183,7 +181,6 @@ async fn expect_hello(
             // Only count unauthorized (not protocol) as auth failures.
             if matches!(&e, SignalMessage::Error { code, .. } if code == "unauthorized") {
                 state.auth_attempts.record_failure_now(&ip_key);
-                process_registry().inc_auth_fail();
                 audit_best_effort(
                     state.audit.as_ref(),
                     NewAuditEvent {
@@ -475,12 +472,6 @@ async fn handle_text(
                 .await;
 
             if result.is_ok() {
-                // session_id field for structured logs (EnteredSpan is !Send across await).
-                tracing::info!(
-                    session_id = %session_id,
-                    host = %host_device.public_id,
-                    "session intent pending"
-                );
                 audit_best_effort(
                     state.audit.as_ref(),
                     NewAuditEvent {
@@ -514,8 +505,6 @@ async fn handle_text(
                 .accept_session(conn_id, &session_id, signal_seq)
                 .await;
             if result.is_ok() {
-                process_registry().inc_sessions(SessionResult::Accept);
-                tracing::info!(session_id = %session_id, "session accepted");
                 // Consume Mode A OTP bound to this session (if any).
                 if let Some(device_id) = identity.device_id {
                     let _ = state
@@ -552,12 +541,6 @@ async fn handle_text(
                 .reject_session(conn_id, &session_id, signal_seq, reason)
                 .await;
             if result.is_ok() {
-                process_registry().inc_sessions(SessionResult::Reject);
-                tracing::info!(
-                    session_id = %session_id,
-                    reason = %reason_meta,
-                    "session rejected"
-                );
                 audit_best_effort(
                     state.audit.as_ref(),
                     NewAuditEvent {
@@ -590,11 +573,9 @@ async fn handle_text(
         } => {
             let result = state
                 .sessions
-                .end_session(conn_id, &session_id, signal_seq, reason.clone())
+                .end_session(conn_id, &session_id, signal_seq, reason)
                 .await;
             if result.is_ok() {
-                process_registry().inc_sessions(SessionResult::End);
-                tracing::info!(session_id = %session_id, %reason, "session ended");
                 audit_best_effort(
                     state.audit.as_ref(),
                     NewAuditEvent {

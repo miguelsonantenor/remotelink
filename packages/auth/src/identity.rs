@@ -36,6 +36,15 @@
 //! - Host → viewer: `{"type":"dc_challenge","nonce":"<hex>"}`
 //! - Viewer → host: `{"type":"dc_response","mac":"<hex>"}` where
 //!   `mac = HMAC-SHA256(bind_key, domain || session_id || nonce || fp_host || fp_viewer)`.
+//!
+//! # Mode A bind key (viewer-computable)
+//!
+//! The host/server OTP **storage pepper** is used only for hashing OTP rows
+//! ([`crate::otp`]). The post-DTLS DC bind key is derived from the **OTP digits
+//! alone** with a public domain salt ([`OTP_BIND_KEY_SALT`]):
+//! `HMAC-SHA256(key = OTP_BIND_KEY_SALT, message = otp_utf8)`.
+//! Both host (after Mode A accept) and viewer (after user enters the code) can
+//! compute the same key without shipping host-only pepper to the viewer.
 
 use crate::challenge::{
     respond_to_challenge, verify_challenge_mac, AuthChallenge, ChallengeTranscript, HostSecret,
@@ -60,8 +69,13 @@ pub const IDENTITY_CHANNEL_LABEL: &str = "identity";
 /// Domain separator for the DC identity bind MAC.
 const DC_BIND_DOMAIN: &[u8] = b"remotelink-dc-identity-bind-v1";
 
-/// Domain separator when deriving a bind key from Mode A OTP material.
-const OTP_BIND_KEY_DOMAIN: &[u8] = b"remotelink-otp-bind-key-v1";
+/// Public domain salt for Mode A DC bind-key derivation.
+///
+/// This is **not** a secret and is **not** the host/server OTP storage pepper.
+/// Both host and viewer derive
+/// `HMAC-SHA256(key = OTP_BIND_KEY_SALT, message = otp_utf8)` from the
+/// plaintext OTP digits the user typed / host accepted.
+pub const OTP_BIND_KEY_SALT: &[u8] = b"remotelink-otp-bind-key-v1";
 
 /// Nonce length for DC identity challenges (bytes).
 pub const DC_CHALLENGE_NONCE_LEN: usize = 32;
@@ -87,17 +101,21 @@ impl SessionBindKey {
         Ok(Self { bytes })
     }
 
-    /// Derive a bind key from a Mode A OTP plaintext and host/server pepper.
+    /// Derive a Mode A DC bind key from OTP digits alone (viewer-computable).
     ///
-    /// Layout: `HMAC-SHA256(pepper, domain || otp_utf8)`.
-    pub fn from_mode_a_otp(otp: &str, pepper: &[u8]) -> Result<Self> {
-        if pepper.is_empty() {
-            return Err(AuthError::Crypto(
-                "OTP pepper must be non-empty for bind key".into(),
-            ));
-        }
-        let mut mac = HmacSha256::new_from_slice(pepper).expect("HMAC accepts any key length");
-        mac.update(OTP_BIND_KEY_DOMAIN);
+    /// Layout: `HMAC-SHA256(key = `[`OTP_BIND_KEY_SALT`]`, message = otp_utf8)`.
+    ///
+    /// The host/server OTP **storage pepper** is intentionally not an input:
+    /// the viewer only knows the on-screen code. Pepper remains for
+    /// [`crate::otp::hash_otp`] row storage only.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AuthError::InvalidOtpFormat`] when `otp` fails format checks.
+    pub fn from_mode_a_otp(otp: &str) -> Result<Self> {
+        crate::otp::validate_otp_format(otp)?;
+        let mut mac =
+            HmacSha256::new_from_slice(OTP_BIND_KEY_SALT).expect("HMAC accepts any key length");
         mac.update(otp.as_bytes());
         let result = mac.finalize().into_bytes();
         Ok(Self {
@@ -460,6 +478,8 @@ pub fn complete_dc_bind(
 /// Mode A (OTP): verify plaintext code against a host-side record and consume once.
 ///
 /// On success, returns a [`SessionBindKey`] for the post-DTLS DC challenge.
+/// The bind key is derived from **OTP digits alone** (public domain salt);
+/// `pepper` is used only for OTP hash verification/storage, not the bind key.
 pub fn authorize_mode_a(
     record: &mut OtpRecord,
     code: &str,
@@ -467,7 +487,7 @@ pub fn authorize_mode_a(
     now_unix: u64,
 ) -> Result<SessionBindKey> {
     record.verify_and_consume(code, pepper, now_unix)?;
-    SessionBindKey::from_mode_a_otp(code, pepper)
+    SessionBindKey::from_mode_a_otp(code)
 }
 
 /// Mode B (unattended): verify challenge-response MAC with host-only secret.
@@ -616,19 +636,35 @@ mod tests {
         let pepper = b"pepper-material-for-otp!!";
         let (otp, mut rec) = mint_otp_record(6, pepper, u64::MAX).unwrap();
         let bind_key = authorize_mode_a(&mut rec, otp.as_str(), pepper, 0).unwrap();
+        // Viewer derives the same key from OTP digits alone (no pepper).
+        let viewer_key = SessionBindKey::from_mode_a_otp(otp.as_str()).unwrap();
+        assert_eq!(bind_key.as_bytes(), viewer_key.as_bytes());
 
         let mut state = IdentityBindState::new("sess-dc");
         state.mark_authorized();
         assert!(!state.input_allowed());
 
         let challenge = DcIdentityChallenge::issue();
-        let response = respond_dc_challenge(&bind_key, "sess-dc", &challenge, FP_HOST, FP_VIEWER);
+        let response = respond_dc_challenge(&viewer_key, "sess-dc", &challenge, FP_HOST, FP_VIEWER);
         complete_dc_bind(
             &mut state, &bind_key, &challenge, &response, FP_HOST, FP_VIEWER,
         )
         .unwrap();
         assert!(state.identity_bound);
         assert!(state.input_allowed());
+    }
+
+    #[test]
+    fn mode_a_bind_key_independent_of_storage_pepper() {
+        let otp = "123456";
+        let k1 = SessionBindKey::from_mode_a_otp(otp).unwrap();
+        let k2 = SessionBindKey::from_mode_a_otp(otp).unwrap();
+        assert_eq!(k1.as_bytes(), k2.as_bytes());
+        // Different OTP → different key.
+        let k3 = SessionBindKey::from_mode_a_otp("654321").unwrap();
+        assert_ne!(k1.as_bytes(), k3.as_bytes());
+        // Invalid format rejected.
+        assert!(SessionBindKey::from_mode_a_otp("12").is_err());
     }
 
     #[test]

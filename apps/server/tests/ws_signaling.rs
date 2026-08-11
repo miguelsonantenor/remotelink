@@ -1,4 +1,4 @@
-//! Integration tests for `/v1/ws` hello + session_intent + accept/reject.
+﻿//! Integration tests for `/v1/ws` hello + session_intent + accept/reject.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -217,6 +217,7 @@ async fn session_intent_accept_flow() {
             session_id: sid,
             signal_seq,
             viewer_info,
+            ..
         } => {
             assert_eq!(sid, session_id);
             assert_eq!(signal_seq, 2);
@@ -795,7 +796,7 @@ async fn duplicate_session_id_conflicts() {
     // Same session_id from another viewer while first is still pending.
     // Busy rejects first when same host; use reject path by ending first?
     // Actually host is busy so we get busy not conflict. Force conflict by
-    // same session_id on a free host — register second host.
+    // same session_id on a free host â€” register second host.
     let (host2_id, access2) = register_host(&repo).await;
     let mut host2 = connect_ws(addr).await;
     send_msg(&mut host2, &hello_host(&access2)).await;
@@ -832,7 +833,7 @@ async fn stale_signal_seq_rejected_on_accept() {
         recv_msg(&mut host).await,
         SignalMessage::SessionIncoming { .. }
     ));
-    // next_signal_seq is 3 after intent(1) → incoming(2)
+    // next_signal_seq is 3 after intent(1) â†’ incoming(2)
     assert_eq!(sessions.next_signal_seq("sess-stale-seq").await, Some(3));
 
     send_msg(
@@ -847,7 +848,7 @@ async fn stale_signal_seq_rejected_on_accept() {
         SignalMessage::Error { code, .. } => assert_eq!(code, "stale_signal_seq"),
         other => panic!("expected stale_signal_seq, got {other:?}"),
     }
-    // Still pending — not advanced.
+    // Still pending â€” not advanced.
     assert_eq!(
         sessions.session_state("sess-stale-seq").await,
         Some(remotelink_server::SessionState::Pending)
@@ -909,10 +910,7 @@ async fn pending_session_ttl_releases_busy() {
     intent(&mut viewer, "sess-after-ttl", &host_public_id, 1).await;
     assert!(matches!(
         recv_msg(&mut host).await,
-        SignalMessage::SessionIncoming {
-            session_id: ref sid,
-            ..
-        } if sid == "sess-after-ttl"
+        SignalMessage::SessionIncoming { session_id: sid, .. } if sid == "sess-after-ttl"
     ));
 }
 
@@ -1115,7 +1113,7 @@ async fn session_intent_rate_limited() {
     ));
 
     // Second intent from same peer IP (ConnectInfo 127.0.0.1) should hit rate limit.
-    // Host is busy so we might get busy first — free the host.
+    // Host is busy so we might get busy first â€” free the host.
     send_msg(
         &mut host_ws,
         &SignalMessage::SessionReject {
@@ -1133,3 +1131,6 @@ async fn session_intent_rate_limited() {
         other => panic!("expected rate_limited, got {other:?}"),
     }
 }
+
+
+

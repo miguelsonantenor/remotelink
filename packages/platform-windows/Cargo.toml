@@ -3,11 +3,12 @@ name = "remotelink-platform-windows"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Windows host platform layer: service/agent control IPC (KD5)"
+description = "Windows host platform layer: control IPC + input inject (KD5)"
 publish = false
 
 [dependencies]
 remotelink-common = { workspace = true }
+remotelink-protocol = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

@@ -7,6 +7,12 @@ description = "Shared types and utilities for RemoteLink"
 publish = false
 
 [dependencies]
+base64 = { workspace = true }
+ed25519-dalek = { workspace = true }
+rand = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]

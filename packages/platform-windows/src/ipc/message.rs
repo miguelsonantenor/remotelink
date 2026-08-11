@@ -277,6 +277,12 @@ pub mod error_codes {
     pub const SESSION_MISMATCH: &str = "session_mismatch";
     /// Kill-switch is latched; media/input commands are refused.
     pub const KILLED: &str = "killed";
+    /// Host already has an active session (single-controller / G9).
+    pub const BUSY: &str = "busy";
+    /// Mandatory session chrome cannot be hidden while a session is live (G9).
+    pub const CHROME_MANDATORY: &str = "chrome_mandatory";
+    /// Unattended Mode B is latched off by local kill-switch until re-enabled.
+    pub const UNATTENDED_DISABLED: &str = "unattended_disabled";
     /// Message not expected in this role/direction.
     pub const UNEXPECTED: &str = "unexpected";
 }

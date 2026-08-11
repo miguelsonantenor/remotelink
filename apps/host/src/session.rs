@@ -10,6 +10,15 @@
 //! (`identity_bound && session_authorized`). Mode A/B authorization and the
 //! post-DTLS DataChannel challenge are driven through this manager.
 //!
+//! # Input injection (PR 18)
+//!
+//! Inbound DataChannel messages on [`INPUT_CHANNEL_LABEL`] are decoded as
+//! [`InputEvent`](remotelink_protocol::InputEvent) and passed to a
+//! [`AnyInjector`](remotelink_platform_windows::AnyInjector) **only** when the
+//! identity gate is open and the policy/kill gate (see
+//! [`SessionManager::set_input_policy_enabled`]) allows inject. Rate limit:
+//! 200 events/s with drop metric on the injector.
+//!
 //! Real DTLS certificates are deferred; the mock PeerTransport uses synthetic
 //! [`DtlsFingerprint::sha256`](remotelink_net::DtlsFingerprint::sha256) values
 //! exported via [`PeerTransport::local_fingerprint`].
@@ -23,7 +32,6 @@ use remotelink_auth::{
     AuthError, DcIdentityChallenge, DcIdentityMessage, HostSecret, IdentityBindState, OtpRecord,
     SessionBindKey, IDENTITY_CHANNEL_LABEL,
 };
-use remotelink_common::process_registry;
 use remotelink_media::{
     AudioSource, MockOpusEncoder, OpusEncoder, RtpEpoch, SyntheticAudioTone, SyntheticVideoBars,
     VideoSource,
@@ -34,14 +42,20 @@ use remotelink_net::{
     SessionDescription, TransportIceCandidate, VideoNalu,
 };
 use remotelink_platform_windows::ipc::message::{SignalForward, SignalHop};
-use remotelink_protocol::IceCandidate;
+use remotelink_platform_windows::{
+    open_injector, AnyInjector, InjectError, InjectorConfig, InputMetrics, StubInjector,
+};
+use remotelink_protocol::{decode_input, IceCandidate, InputEvent};
 use serde::{Deserialize, Serialize};
+
+/// Max decoded events retained for diagnostics / tests (`take_accepted_input`).
+///
+/// Prevents unbounded growth on the hot inject path; older events are dropped
+/// first (ring). Production should use injector metrics + stub recordings.
+const ACCEPTED_INPUT_CAP: usize = 64;
 
 /// DataChannel label for viewer → host input events.
 pub const INPUT_CHANNEL_LABEL: &str = "input";
-
-/// DESIGN.md host input cap: max events accepted per second; excess dropped with metric.
-pub const MAX_INPUT_EVENTS_PER_SEC: u32 = 200;
 
 /// Signaling kinds carried on control IPC [`SignalForward::kind`].
 pub mod signal_kind {
@@ -105,10 +119,29 @@ pub struct PumpStats {
 pub struct InboundStats {
     /// Identity DC messages handled.
     pub identity_messages: u32,
-    /// Input events accepted (gate open).
+    /// Input events decoded and injected (or accepted into the inject path).
     pub input_accepted: u32,
-    /// Input events rejected (not bound / not authorized).
+    /// Input events rejected (not bound / not authorized / policy / kill).
     pub input_rejected: u32,
+    /// Input messages that failed JSON decode.
+    pub input_decode_errors: u32,
+    /// Input events dropped by the 200 events/s rate limiter.
+    pub input_rate_limited: u32,
+}
+
+/// Result of handling one input DataChannel payload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputProcessOutcome {
+    /// Decoded and injected into the OS / stub.
+    Injected,
+    /// Gate closed (`!identity_bound || !authorized || !policy`).
+    RejectedGate,
+    /// Payload was not valid [`InputEvent`] JSON.
+    DecodeError,
+    /// Gate open but dropped by the host rate limiter.
+    RateLimited,
+    /// Injector backend returned an error.
+    InjectError,
 }
 
 /// Synthetic capture + mock encode state for one media start.
@@ -181,7 +214,8 @@ impl PeerTransportCallbacks for SharedAgentCallbacks {
 /// Media bytes never leave this process via control IPC.
 ///
 /// Identity (PR 13): after Mode A/B auth and a successful DataChannel bind,
-/// [`Self::input_allowed`] is true and input DataChannel messages are accepted.
+/// [`Self::input_allowed`] is true. Input inject (PR 18) also requires
+/// [`Self::set_input_policy_enabled`] (policy + not killed).
 pub struct SessionManager {
     session_id: Option<String>,
     peer: BoxPeerTransport,
@@ -201,14 +235,24 @@ pub struct SessionManager {
     bind_key: Option<SessionBindKey>,
     /// Outstanding DC identity challenge awaiting viewer response.
     pending_dc_challenge: Option<DcIdentityChallenge>,
-    /// Accepted input DataChannel messages (tests / inject path later).
-    accepted_input: Vec<DataMessage>,
-    /// Count of rejected input messages.
+    /// Recent decoded+injected events (capped ring for tests / diagnostics).
+    accepted_input: Vec<InputEvent>,
+    /// Count of rejected input messages (gate closed).
     rejected_input_count: u64,
-    /// Rate-limit window: accepted events in the current second.
-    input_rate_count: u32,
-    /// Unix second of [`Self::input_rate_count`].
-    input_rate_sec: u64,
+    /// Count of input messages that failed decode.
+    input_decode_errors: u64,
+    /// Count of events dropped by the rate limiter.
+    input_rate_limited: u64,
+    /// Policy + kill gate from the agent control plane (`enable_input && !killed`).
+    policy_input_enabled: bool,
+    /// Config used to (re)open the injector on each [`Self::attach`].
+    ///
+    /// Defaults to [`InjectorConfig::synthetic`] (StubOnly). Production should
+    /// call [`Self::set_injector_config`] with PreferNative open mode so attach
+    /// preserves the native backend instead of forcing the stub.
+    injector_config: InjectorConfig,
+    /// OS / stub injector (rate-limited); re-opened from `injector_config` on attach.
+    injector: AnyInjector,
 }
 
 impl SessionManager {
@@ -239,9 +283,86 @@ impl SessionManager {
             pending_dc_challenge: None,
             accepted_input: Vec::new(),
             rejected_input_count: 0,
-            input_rate_count: 0,
-            input_rate_sec: 0,
+            input_decode_errors: 0,
+            input_rate_limited: 0,
+            policy_input_enabled: false,
+            // CI-safe recording stub by default; use set_injector_config(PreferNative)
+            // so attach re-opens the same mode (does not silently force StubOnly).
+            injector_config: InjectorConfig::synthetic(),
+            injector: open_injector(InjectorConfig::synthetic())
+                .expect("stub injector always opens"),
         }
+    }
+
+    /// Config that will be used to re-open the injector on the next attach.
+    pub fn injector_config(&self) -> InjectorConfig {
+        self.injector_config
+    }
+
+    /// Open (or re-open) the injector from `config` and remember it for attach.
+    ///
+    /// Prefer this over [`Self::set_injector`] so session re-attach preserves
+    /// `PreferNative` / rate-limit settings instead of resetting to StubOnly.
+    pub fn set_injector_config(
+        &mut self,
+        config: InjectorConfig,
+    ) -> std::result::Result<(), InjectError> {
+        self.injector = open_injector(config)?;
+        self.injector_config = config;
+        Ok(())
+    }
+
+    /// Replace the live injector without changing the attach re-open config.
+    ///
+    /// For production wiring that must survive attach, use
+    /// [`Self::set_injector_config`] instead.
+    pub fn set_injector(&mut self, injector: AnyInjector) {
+        self.injector = injector;
+    }
+
+    /// Policy/kill gate: agent sets this from `enable_input && !killed`.
+    ///
+    /// Even when identity-bound, inject is refused while this is `false`.
+    pub fn set_input_policy_enabled(&mut self, enabled: bool) {
+        self.policy_input_enabled = enabled;
+    }
+
+    /// Whether the agent policy currently allows inject (independent of identity).
+    pub fn policy_input_enabled(&self) -> bool {
+        self.policy_input_enabled
+    }
+
+    /// True when identity bind **and** policy/kill gate allow inject.
+    pub fn injection_allowed(&self) -> bool {
+        self.policy_input_enabled && self.identity.input_allowed()
+    }
+
+    /// Test/harness helper: mark session authorized + identity bound without DC.
+    ///
+    /// Production code must complete Mode A/B + DataChannel bind instead.
+    pub fn force_identity_bound_for_tests(&mut self) {
+        self.identity.mark_authorized();
+        self.identity.mark_identity_bound();
+    }
+
+    /// Injector metrics (accepted + rate-limit drops).
+    pub fn input_metrics(&self) -> InputMetrics {
+        self.injector.metrics()
+    }
+
+    /// Injector backend name (`"stub"` / `"sendinput"`).
+    pub fn input_backend_name(&self) -> &'static str {
+        self.injector.backend_name()
+    }
+
+    /// Access the recording stub when the injector is stub-backed (tests).
+    pub fn input_stub(&self) -> Option<&StubInjector> {
+        self.injector.stub()
+    }
+
+    /// Mutable access to the recording stub when stub-backed (tests).
+    pub fn input_stub_mut(&mut self) -> Option<&mut StubInjector> {
+        self.injector.stub_mut()
     }
 
     /// Install the enrolled device signing key used for `fingerprint_sig`.
@@ -259,14 +380,39 @@ impl SessionManager {
         self.identity.input_allowed()
     }
 
-    /// Accepted input messages (drain for inject path / tests).
-    pub fn take_accepted_input(&mut self) -> Vec<DataMessage> {
+    /// Recent accepted (decoded + injected) events (drain for tests).
+    ///
+    /// At most [`ACCEPTED_INPUT_CAP`] events are retained; older ones are dropped.
+    pub fn take_accepted_input(&mut self) -> Vec<InputEvent> {
         std::mem::take(&mut self.accepted_input)
     }
 
-    /// Number of input messages rejected by the identity gate.
+    /// Diagnostic ring capacity for accepted input events.
+    pub const fn accepted_input_cap() -> usize {
+        ACCEPTED_INPUT_CAP
+    }
+
+    fn push_accepted_input(&mut self, event: InputEvent) {
+        if self.accepted_input.len() >= ACCEPTED_INPUT_CAP {
+            let overflow = self.accepted_input.len() + 1 - ACCEPTED_INPUT_CAP;
+            self.accepted_input.drain(0..overflow);
+        }
+        self.accepted_input.push(event);
+    }
+
+    /// Number of input messages rejected by the identity/policy gate.
     pub fn rejected_input_count(&self) -> u64 {
         self.rejected_input_count
+    }
+
+    /// Number of input messages that failed protocol decode.
+    pub fn input_decode_errors(&self) -> u64 {
+        self.input_decode_errors
+    }
+
+    /// Number of events dropped by the host rate limiter.
+    pub fn input_rate_limited(&self) -> u64 {
+        self.input_rate_limited
     }
 
     /// Bind to a session id (does not start media). Resets identity flags.
@@ -275,14 +421,20 @@ impl SessionManager {
         self.session_id = Some(sid.clone());
         self.media = None;
         self.outbound_signals.clear();
-        self.identity = IdentityBindState::new(sid.clone());
+        self.identity = IdentityBindState::new(sid);
         self.bind_key = None;
         self.pending_dc_challenge = None;
         self.accepted_input.clear();
         self.rejected_input_count = 0;
-        // Sync path: EnteredSpan is fine (host agent is not multi-threaded async).
-        let _span = remotelink_common::session_span("attach_session", &sid).entered();
-        tracing::info!(session_id = %sid, "session attached");
+        self.input_decode_errors = 0;
+        self.input_rate_limited = 0;
+        self.policy_input_enabled = false;
+        // Fresh metrics window; preserve open mode / rate cap from injector_config
+        // (PreferNative stays PreferNative — not forced back to StubOnly).
+        self.injector = open_injector(self.injector_config).unwrap_or_else(|_| {
+            // PreferNative can fail only if NativeOnly; synthetic always opens.
+            open_injector(InjectorConfig::synthetic()).expect("stub injector always opens")
+        });
     }
 
     /// Clear session binding and stop media.
@@ -295,6 +447,9 @@ impl SessionManager {
         self.pending_dc_challenge = None;
         self.accepted_input.clear();
         self.rejected_input_count = 0;
+        self.input_decode_errors = 0;
+        self.input_rate_limited = 0;
+        self.policy_input_enabled = false;
     }
 
     /// Mode A (OTP): verify + consume host OTP; mark `session_authorized`.
@@ -378,10 +533,19 @@ impl SessionManager {
                 self.handle_identity_data(&msg.data)?;
                 stats.identity_messages = stats.identity_messages.saturating_add(1);
             } else if msg.label == INPUT_CHANNEL_LABEL {
-                if self.try_accept_input(msg) {
-                    stats.input_accepted = stats.input_accepted.saturating_add(1);
-                } else {
-                    stats.input_rejected = stats.input_rejected.saturating_add(1);
+                match self.process_input_message(&msg) {
+                    InputProcessOutcome::Injected => {
+                        stats.input_accepted = stats.input_accepted.saturating_add(1);
+                    }
+                    InputProcessOutcome::RateLimited => {
+                        stats.input_rate_limited = stats.input_rate_limited.saturating_add(1);
+                    }
+                    InputProcessOutcome::RejectedGate | InputProcessOutcome::InjectError => {
+                        stats.input_rejected = stats.input_rejected.saturating_add(1);
+                    }
+                    InputProcessOutcome::DecodeError => {
+                        stats.input_decode_errors = stats.input_decode_errors.saturating_add(1);
+                    }
                 }
             }
             // Other labels ignored at this layer.
@@ -389,40 +553,76 @@ impl SessionManager {
         Ok(stats)
     }
 
-    /// Accept a single input message if the identity gate is open.
+    /// Accept a single input DataChannel message if gates are open.
     ///
-    /// Returns `true` when accepted, `false` when rejected (and counted).
-    /// Enforces [`MAX_INPUT_EVENTS_PER_SEC`]; excess counts as input drops
-    /// (`remotelink_input_drops_total` / `remotelink_input_drop_rate`).
+    /// Steps: policy+identity gate → JSON decode → rate-limited inject.
+    /// Returns `true` **only** when the event was actually injected into the
+    /// backend. Rate-limit drops, decode errors, and gate rejects return
+    /// `false` (use [`Self::process_input_message`] for the full outcome).
     pub fn try_accept_input(&mut self, msg: DataMessage) -> bool {
-        if !self.identity.input_allowed() {
-            self.rejected_input_count = self.rejected_input_count.saturating_add(1);
-            return false;
-        }
-        let now_sec = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        if self.input_rate_sec != now_sec {
-            self.input_rate_sec = now_sec;
-            self.input_rate_count = 0;
-        }
-        if self.input_rate_count >= MAX_INPUT_EVENTS_PER_SEC {
-            process_registry().inc_input_drop();
-            return false;
-        }
-        self.input_rate_count = self.input_rate_count.saturating_add(1);
-        self.accepted_input.push(msg);
-        process_registry().inc_input_event();
-        true
+        matches!(
+            self.process_input_message(&msg),
+            InputProcessOutcome::Injected
+        )
     }
 
-    /// Explicit gate: return error unless input is allowed.
+    /// Process one input DataChannel message with full outcome classification.
+    pub fn process_input_message(&mut self, msg: &DataMessage) -> InputProcessOutcome {
+        if !self.injection_allowed() {
+            self.rejected_input_count = self.rejected_input_count.saturating_add(1);
+            return InputProcessOutcome::RejectedGate;
+        }
+        let text = match std::str::from_utf8(&msg.data) {
+            Ok(s) => s,
+            Err(_) => {
+                self.input_decode_errors = self.input_decode_errors.saturating_add(1);
+                return InputProcessOutcome::DecodeError;
+            }
+        };
+        let event = match decode_input(text) {
+            Ok(e) => e,
+            Err(_) => {
+                self.input_decode_errors = self.input_decode_errors.saturating_add(1);
+                return InputProcessOutcome::DecodeError;
+            }
+        };
+        match self.injector.try_inject(&event) {
+            Ok(true) => {
+                self.push_accepted_input(event);
+                InputProcessOutcome::Injected
+            }
+            Ok(false) => {
+                self.input_rate_limited = self.input_rate_limited.saturating_add(1);
+                InputProcessOutcome::RateLimited
+            }
+            Err(e) => {
+                // Treat OS inject failure as rejected for stats; keep session alive.
+                self.rejected_input_count = self.rejected_input_count.saturating_add(1);
+                let _ = e;
+                InputProcessOutcome::InjectError
+            }
+        }
+    }
+
+    /// Explicit gate: return error unless identity bind allows input.
     pub fn ensure_input_allowed(&self) -> Result<()> {
         if self.identity.input_allowed() {
             Ok(())
         } else {
             Err(SessionError::Auth(self.identity.input_gate_error()))
+        }
+    }
+
+    /// Explicit full inject gate (identity + policy/kill).
+    pub fn ensure_injection_allowed(&self) -> Result<()> {
+        if self.injection_allowed() {
+            Ok(())
+        } else if !self.identity.input_allowed() {
+            Err(SessionError::Auth(self.identity.input_gate_error()))
+        } else {
+            Err(SessionError::InputRejected(
+                "input disabled by policy or kill-switch".into(),
+            ))
         }
     }
 
@@ -577,12 +777,14 @@ impl SessionManager {
     pub fn create_local_offer_and_queue(&mut self, session_id: &str) -> Result<()> {
         let offer = self.peer.create_offer()?;
         self.peer.set_local_description(offer.clone())?;
+        // Omit fingerprint_sig when unsigned (None), never emit empty string —
+        // viewers with an enrolled host key fail closed on missing sig.
         let fingerprint_sig = match &self.device_signing_key {
             Some(sk) => {
                 let fp = self.peer.local_fingerprint()?.as_sign_material();
                 Some(sign_session_fingerprint(sk, session_id, &fp))
             }
-            None => Some(String::new()),
+            None => None,
         };
         let payload = serde_json::to_string(&SdpPayload {
             sdp: offer.sdp,
@@ -766,6 +968,7 @@ mod tests {
     };
     use remotelink_net::{IncomingTrackData, MockPeerPair, PeerTransport, SharedRecording};
     use remotelink_platform_windows::ipc::message::FORBIDDEN_MEDIA_METHODS;
+    use remotelink_platform_windows::InjectorOpenMode;
 
     fn handshake_mgr_with_viewer(
         mgr: &mut SessionManager,
@@ -915,9 +1118,8 @@ mod tests {
             .as_sign_material();
         verify_session_fingerprint(&vk, "sess-bind-ok", &host_fp, &sig).unwrap();
 
-        // Viewer bind key + respond to DC challenge.
-        let bind_key =
-            remotelink_auth::SessionBindKey::from_mode_a_otp(otp.as_str(), pepper).unwrap();
+        // Viewer bind key from OTP digits alone (no host pepper).
+        let bind_key = remotelink_auth::SessionBindKey::from_mode_a_otp(otp.as_str()).unwrap();
         let rec = SharedRecording::new();
         peer_b.set_callbacks(Box::new(rec.clone()));
         mgr.start_identity_challenge().unwrap();
@@ -949,12 +1151,25 @@ mod tests {
         let stats = mgr.poll_inbound().unwrap();
         assert_eq!(stats.identity_messages, 1);
         assert!(mgr.input_allowed());
+        // Policy must also enable inject (agent SetPolicy / enable_input).
+        mgr.set_input_policy_enabled(true);
+        assert!(mgr.injection_allowed());
 
-        // Input accepted after bind.
+        // Input accepted after bind + policy.
+        let event_json = remotelink_protocol::encode_input(&remotelink_protocol::InputEvent {
+            client_ts_us: 1,
+            seq: 1,
+            payload: remotelink_protocol::InputPayload::MouseMove(remotelink_protocol::MouseMove {
+                x: 0.5,
+                y: 0.5,
+                display_id: 0,
+            }),
+        })
+        .unwrap();
         peer_b
             .send_data(DataMessage {
                 label: INPUT_CHANNEL_LABEL.into(),
-                data: b"{\"type\":\"mouse_move\"}".to_vec(),
+                data: event_json.into_bytes(),
                 unordered: true,
             })
             .unwrap();
@@ -962,6 +1177,7 @@ mod tests {
         assert_eq!(stats.input_accepted, 1);
         assert_eq!(stats.input_rejected, 0);
         assert_eq!(mgr.take_accepted_input().len(), 1);
+        assert_eq!(mgr.input_stub().map(|s| s.len()), Some(1));
     }
 
     #[test]
@@ -971,13 +1187,25 @@ mod tests {
         let MockPeerPair { peer_a, mut peer_b } = pair;
         let mut mgr = SessionManager::with_peer(Box::new(peer_a));
         mgr.attach("sess-early");
+        mgr.set_input_policy_enabled(true);
         assert!(!mgr.input_allowed());
+        assert!(!mgr.injection_allowed());
         mgr.ensure_input_allowed().unwrap_err();
 
+        let event_json = remotelink_protocol::encode_input(&remotelink_protocol::InputEvent {
+            client_ts_us: 1,
+            seq: 1,
+            payload: remotelink_protocol::InputPayload::MouseMove(remotelink_protocol::MouseMove {
+                x: 0.1,
+                y: 0.2,
+                display_id: 0,
+            }),
+        })
+        .unwrap();
         peer_b
             .send_data(DataMessage {
                 label: INPUT_CHANNEL_LABEL.into(),
-                data: b"{}".to_vec(),
+                data: event_json.into_bytes(),
                 unordered: false,
             })
             .unwrap();
@@ -986,6 +1214,7 @@ mod tests {
         assert_eq!(stats.input_accepted, 0);
         assert_eq!(mgr.rejected_input_count(), 1);
         assert!(mgr.take_accepted_input().is_empty());
+        assert!(mgr.input_stub().map(|s| s.is_empty()).unwrap_or(false));
     }
 
     #[test]
@@ -1034,16 +1263,208 @@ mod tests {
         let err = mgr.poll_inbound().unwrap_err();
         assert!(matches!(err, SessionError::Auth(_)));
         assert!(!mgr.input_allowed());
+        mgr.set_input_policy_enabled(true);
 
+        let event_json = remotelink_protocol::encode_input(&remotelink_protocol::InputEvent {
+            client_ts_us: 1,
+            seq: 1,
+            payload: remotelink_protocol::InputPayload::Key(remotelink_protocol::KeyEvent {
+                scancode: 0x1C,
+                extended: false,
+                pressed: true,
+                modifiers: 0,
+            }),
+        })
+        .unwrap();
         peer_b
             .send_data(DataMessage {
                 label: INPUT_CHANNEL_LABEL.into(),
-                data: b"{}".to_vec(),
+                data: event_json.into_bytes(),
                 unordered: false,
             })
             .unwrap();
         let stats = mgr.poll_inbound().unwrap();
         assert_eq!(stats.input_rejected, 1);
+        assert!(mgr.input_stub().map(|s| s.is_empty()).unwrap_or(true));
+    }
+
+    #[test]
+    fn gate_rejects_when_policy_disabled_after_bind() {
+        // Minimal path: force identity flags without full DC handshake.
+        let mut mgr = SessionManager::new_mock();
+        mgr.attach("policy-gate");
+        mgr.force_identity_bound_for_tests();
+        assert!(mgr.input_allowed());
+        assert!(!mgr.injection_allowed());
+
+        let msg = DataMessage {
+            label: INPUT_CHANNEL_LABEL.into(),
+            data: remotelink_protocol::encode_input(&remotelink_protocol::InputEvent {
+                client_ts_us: 1,
+                seq: 1,
+                payload: remotelink_protocol::InputPayload::MouseMove(
+                    remotelink_protocol::MouseMove {
+                        x: 0.0,
+                        y: 0.0,
+                        display_id: 0,
+                    },
+                ),
+            })
+            .unwrap()
+            .into_bytes(),
+            unordered: true,
+        };
+        assert!(!mgr.try_accept_input(msg));
+        assert_eq!(mgr.rejected_input_count(), 1);
+        assert!(mgr.input_stub().unwrap().is_empty());
+    }
+
+    #[test]
+    fn after_bind_stub_records_events() {
+        let mut mgr = SessionManager::new_mock();
+        mgr.attach("stub-record");
+        mgr.force_identity_bound_for_tests();
+        mgr.set_input_policy_enabled(true);
+
+        let key = remotelink_protocol::InputEvent {
+            client_ts_us: 10,
+            seq: 7,
+            payload: remotelink_protocol::InputPayload::Key(remotelink_protocol::KeyEvent {
+                scancode: 0x48,
+                extended: true,
+                pressed: true,
+                modifiers: 0,
+            }),
+        };
+        let msg = DataMessage {
+            label: INPUT_CHANNEL_LABEL.into(),
+            data: remotelink_protocol::encode_input(&key)
+                .unwrap()
+                .into_bytes(),
+            unordered: false,
+        };
+        assert!(mgr.try_accept_input(msg));
+        let recorded = mgr.input_stub().unwrap().recorded();
+        assert_eq!(recorded.len(), 1);
+        match &recorded[0].payload {
+            remotelink_protocol::InputPayload::Key(k) => {
+                assert_eq!(k.scancode, 0x48);
+                assert!(k.extended);
+                assert!(k.pressed);
+            }
+            other => panic!("expected key, got {other:?}"),
+        }
+        assert_eq!(mgr.take_accepted_input().len(), 1);
+    }
+
+    #[test]
+    fn rate_limit_drops_excess_events() {
+        let mut mgr = SessionManager::new_mock();
+        mgr.attach("rate-limit");
+        mgr.force_identity_bound_for_tests();
+        mgr.set_input_policy_enabled(true);
+
+        let mut cfg = InjectorConfig::synthetic();
+        cfg.max_events_per_sec = 3;
+        mgr.set_injector_config(cfg).unwrap();
+
+        let mut injected = 0u32;
+        let mut limited = 0u32;
+        for i in 0..10 {
+            let msg = DataMessage {
+                label: INPUT_CHANNEL_LABEL.into(),
+                data: remotelink_protocol::encode_input(&remotelink_protocol::InputEvent {
+                    client_ts_us: u64::from(i),
+                    seq: i,
+                    payload: remotelink_protocol::InputPayload::MouseMove(
+                        remotelink_protocol::MouseMove {
+                            x: 0.5,
+                            y: 0.5,
+                            display_id: 0,
+                        },
+                    ),
+                })
+                .unwrap()
+                .into_bytes(),
+                unordered: true,
+            };
+            // try_accept_input is honest: true only when actually injected.
+            if mgr.try_accept_input(msg) {
+                injected += 1;
+            } else {
+                limited += 1;
+            }
+        }
+        assert_eq!(injected, 3);
+        assert_eq!(limited, 7);
+        assert_eq!(mgr.input_rate_limited(), 7);
+        assert_eq!(mgr.input_metrics().dropped_rate_limit, 7);
+        assert_eq!(mgr.input_stub().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn attach_preserves_injector_open_mode() {
+        let mut mgr = SessionManager::new_mock();
+        assert_eq!(mgr.injector_config().open_mode, InjectorOpenMode::StubOnly);
+
+        let cfg = InjectorConfig {
+            open_mode: InjectorOpenMode::PreferNative,
+            max_events_per_sec: 100,
+            ..InjectorConfig::default()
+        };
+        mgr.set_injector_config(cfg).unwrap();
+        assert_eq!(
+            mgr.injector_config().open_mode,
+            InjectorOpenMode::PreferNative
+        );
+        assert_eq!(mgr.injector_config().max_events_per_sec, 100);
+        let backend_before = mgr.input_backend_name();
+
+        // attach re-opens with the same config (not forced StubOnly).
+        mgr.attach("preserve-mode");
+        assert_eq!(
+            mgr.injector_config().open_mode,
+            InjectorOpenMode::PreferNative
+        );
+        assert_eq!(mgr.injector_config().max_events_per_sec, 100);
+        // Backend kind is preserved for PreferNative (sendinput on Windows, stub elsewhere).
+        assert_eq!(mgr.input_backend_name(), backend_before);
+        assert_eq!(mgr.input_metrics().accepted, 0);
+    }
+
+    #[test]
+    fn accepted_input_ring_is_bounded() {
+        let mut mgr = SessionManager::new_mock();
+        mgr.attach("ring");
+        mgr.force_identity_bound_for_tests();
+        mgr.set_input_policy_enabled(true);
+
+        let cap = SessionManager::accepted_input_cap();
+        for i in 0..(cap as u32 + 20) {
+            let msg = DataMessage {
+                label: INPUT_CHANNEL_LABEL.into(),
+                data: remotelink_protocol::encode_input(&remotelink_protocol::InputEvent {
+                    client_ts_us: u64::from(i),
+                    seq: i,
+                    payload: remotelink_protocol::InputPayload::MouseMove(
+                        remotelink_protocol::MouseMove {
+                            x: 0.0,
+                            y: 0.0,
+                            display_id: 0,
+                        },
+                    ),
+                })
+                .unwrap()
+                .into_bytes(),
+                unordered: true,
+            };
+            assert!(mgr.try_accept_input(msg));
+        }
+        let taken = mgr.take_accepted_input();
+        assert_eq!(taken.len(), cap);
+        // Oldest dropped: first retained seq is 20.
+        assert_eq!(taken[0].seq, 20);
+        assert_eq!(taken[cap - 1].seq, cap as u32 + 19);
     }
 
     #[test]

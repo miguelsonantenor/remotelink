@@ -128,6 +128,14 @@ impl MemoryAuditStore {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    /// Snapshot of all events oldest-first (tests / admin auth checks).
+    pub fn events_snapshot(&self) -> Vec<AuditEvent> {
+        self.events
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
 }
 
 #[async_trait]

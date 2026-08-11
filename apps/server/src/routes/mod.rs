@@ -1,5 +1,6 @@
-//! HTTP route handlers.
+﻿//! HTTP route handlers.
 
+mod admin;
 mod blocklist;
 mod devices;
 mod health;
@@ -14,6 +15,7 @@ use axum::Router;
 use crate::repo::DeviceRepository;
 use crate::state::AppState;
 
+pub use admin::{force_disconnect, ForceDisconnectResponse};
 pub use blocklist::{
     add_blocklist, check_blocklist, list_audit, list_blocklist, remove_blocklist,
     AuditListResponse, BlocklistAddRequest, BlocklistCheckResponse, BlocklistListResponse,
@@ -46,6 +48,10 @@ pub fn router(state: AppState) -> Router {
             delete(remove_blocklist),
         )
         .route("/v1/devices/{id}/audit", get(list_audit))
+        .route(
+            "/v1/admin/sessions/{id}/force-disconnect",
+            post(force_disconnect),
+        )
         .route("/v1/ws", get(ws_handler))
         .with_state(state)
 }

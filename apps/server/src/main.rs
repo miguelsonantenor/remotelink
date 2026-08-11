@@ -23,20 +23,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Ok(url) if !url.is_empty() => {
             tracing::info!("using Postgres repository");
             let repo = PostgresDeviceRepo::connect(&url).await?;
-            AppState::new(Arc::new(repo)).with_client_ip(client_ip)
+            AppState::new(Arc::new(repo))
+                .with_client_ip(client_ip)
+                .with_admin_token_from_env()
         }
         _ => {
             tracing::warn!("DATABASE_URL unset; using in-memory repository (not durable)");
-            AppState::new(Arc::new(MemoryDeviceRepo::new())).with_client_ip(client_ip)
+            AppState::new(Arc::new(MemoryDeviceRepo::new()))
+                .with_client_ip(client_ip)
+                .with_admin_token_from_env()
         }
     };
 
+    let admin_enabled = state.admin_token.is_some();
     let app = router(state);
     tracing::info!(
         %addr,
         version = remotelink_server::VERSION,
         trust_proxy = client_ip.trust_proxy,
-        "remotelink-server listening (set TRUST_PROXY=1 only behind a reverse proxy that overwrites X-Forwarded-For)"
+        admin_enabled,
+        "remotelink-server listening (set TRUST_PROXY=1 only behind a reverse proxy that overwrites X-Forwarded-For; set ADMIN_TOKEN for force-disconnect)"
     );
 
     let listener = tokio::net::TcpListener::bind(addr).await?;

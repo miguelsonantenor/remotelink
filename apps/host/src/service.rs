@@ -8,9 +8,12 @@
 //!
 //! Signaling from the server WS is forwarded into the agent as
 //! [`ControlMessage::SignalForward`] (SDP/ICE only on the control plane).
+//!
+//! G9: owns [`crate::chrome::HostSessionUx`] (mandatory session indicator +
+//! tray chrome); local kill-switch ends the session and cannot be remote-disabled.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use remotelink_platform_windows::ipc::message::{
     AttachSession, ControlMessage, FeatureFlags, KillSwitch, KillSwitchSource, SetPolicy,
@@ -19,6 +22,7 @@ use remotelink_platform_windows::ipc::message::{
 use remotelink_platform_windows::kill_switch::KillSwitchRegistrar;
 use remotelink_platform_windows::{decode_control, encode_control};
 
+use crate::chrome::HostSessionUx;
 use crate::session::signal_kind;
 
 /// Run the service role skeleton (stdout-oriented for now).
@@ -29,12 +33,20 @@ pub fn run() {
     );
     println!("service: enrollment/signaling/policy stubs (not connected)");
 
+    let ux = Arc::new(Mutex::new(HostSessionUx::new()));
+    println!("service: {}", ux.lock().expect("ux").status_line());
+
     let registrar = KillSwitchRegistrar::new();
     let kill_fired = Arc::new(AtomicBool::new(false));
     let kill_flag = Arc::clone(&kill_fired);
+    let ux_for_kill = Arc::clone(&ux);
 
     let handle = match registrar.register(move |ev: KillSwitch| {
         kill_flag.store(true, Ordering::SeqCst);
+        if let Ok(mut guard) = ux_for_kill.lock() {
+            guard.apply_kill();
+            println!("service: kill-switch → {}", guard.status_line());
+        }
         println!(
             "service: kill-switch armed event source={:?} disable_unattended={}",
             ev.source, ev.disable_unattended
@@ -74,6 +86,136 @@ pub fn run() {
     println!("service: skeleton idle exit (wire WS + named pipe in later PRs)");
     let _ = handle;
     let _ = kill_fired;
+    let _ = ux;
+}
+
+/// CLI / CI demo: attach → mark indicator active → local kill-switch ends session.
+///
+/// Proves G9: indicator is Active only while the session is live; kill-switch
+/// clears media/input on the agent and returns chrome to Inactive.
+pub fn run_kill_switch_demo(session_id: &str) -> Result<String, String> {
+    use crate::agent::AgentSession;
+    use remotelink_platform_windows::ipc::message::error_codes;
+    use remotelink_platform_windows::kill_switch::KillSwitchRegistrar;
+
+    let mut ux = HostSessionUx::new();
+    let mut agent = AgentSession::new_mock();
+
+    // --- begin session (service-owned indicator) ---
+    ux.begin_session(session_id, Some("kill-demo-viewer".into()))
+        .map_err(|busy| format!("begin_session busy with {busy}"))?;
+
+    let sequence = build_session_start_sequence(session_id, true);
+    for msg in &sequence {
+        let frame = encode_control(msg).map_err(|e| format!("encode: {e}"))?;
+        let (decoded, _) = decode_control(&frame).map_err(|e| format!("decode: {e}"))?;
+        let reply = agent.handle(&decoded);
+        if !matches!(reply, ControlMessage::Ack(_)) {
+            return Err(format!(
+                "agent rejected {}: {reply:?}",
+                decoded.method_name()
+            ));
+        }
+    }
+    ux.mark_active();
+
+    if !ux.indicator().is_active() {
+        return Err("indicator should be active after attach+start".into());
+    }
+    if !ux.chrome().is_active() {
+        return Err("chrome should be Active while session live".into());
+    }
+    if !agent.state.chrome_visible {
+        return Err("agent mandatory chrome should be visible".into());
+    }
+    if !agent.state.media_started {
+        return Err("media should be started before kill".into());
+    }
+
+    let status_live = ux.status_line();
+    println!("kill-switch-demo: live {status_live}");
+    println!("kill-switch-demo: tray {}", ux.chrome());
+
+    // Host-side busy: second attach rejected while session active.
+    let second = ControlMessage::AttachSession(AttachSession {
+        session_id: "other-session".into(),
+        viewer_label: None,
+        feature_flags: FeatureFlags::default(),
+        turn_uris: vec![],
+        boot_secret: None,
+    });
+    let busy_reply = agent.handle(&second);
+    match busy_reply {
+        ControlMessage::Error(e) if e.code == error_codes::BUSY => {}
+        other => return Err(format!("expected busy reject, got {other:?}")),
+    }
+    if ux.begin_session("other-session", None).is_ok() {
+        return Err("service indicator must reject second begin_session".into());
+    }
+
+    // --- local kill-switch via registrar ---
+    let registrar = KillSwitchRegistrar::new();
+    let kill_msg = Arc::new(Mutex::new(None::<ControlMessage>));
+    let kill_slot = Arc::clone(&kill_msg);
+    let _handle = registrar
+        .register(move |ev: KillSwitch| {
+            *kill_slot.lock().expect("kill slot") = Some(ControlMessage::KillSwitch(ev));
+        })
+        .map_err(|e| format!("register kill-switch: {e}"))?;
+
+    registrar
+        .trigger(KillSwitch {
+            session_id: Some(session_id.into()),
+            disable_unattended: true,
+            source: KillSwitchSource::Hotkey,
+        })
+        .map_err(|e| format!("trigger: {e}"))?;
+
+    let kill = kill_msg
+        .lock()
+        .expect("kill slot")
+        .take()
+        .ok_or_else(|| "kill-switch callback did not fire".to_string())?;
+
+    let frame = encode_control(&kill).map_err(|e| format!("encode kill: {e}"))?;
+    let (decoded, _) = decode_control(&frame).map_err(|e| format!("decode kill: {e}"))?;
+    let reply = agent.handle(&decoded);
+    if !matches!(reply, ControlMessage::Ack(_)) {
+        return Err(format!("agent rejected kill_switch: {reply:?}"));
+    }
+
+    // Service-owned indicator cleared only by local kill.
+    ux.apply_kill();
+
+    if agent.state.media_started {
+        return Err("kill-switch must clear media".into());
+    }
+    if agent.state.enable_input {
+        return Err("kill-switch must disable input".into());
+    }
+    if !agent.state.killed {
+        return Err("kill-switch must latch killed".into());
+    }
+    if agent.state.chrome_visible {
+        return Err("kill-switch must clear agent chrome".into());
+    }
+    if agent.manager.session_id().is_some() {
+        return Err("kill-switch must detach media session manager".into());
+    }
+    if ux.indicator().is_active() {
+        return Err("indicator must not be active after kill".into());
+    }
+    if ux.chrome().is_active() {
+        return Err("chrome must be Inactive after kill".into());
+    }
+
+    let status_dead = ux.status_line();
+    println!("kill-switch-demo: after kill {status_dead}");
+    println!("kill-switch-demo: tray {}", ux.chrome());
+
+    Ok(format!(
+        "kill-switch demo ok session={session_id} indicator_active_after=false chrome=Inactive"
+    ))
 }
 
 /// Colocate service control plane with an in-process agent for CI / synthetic demos.
@@ -333,5 +475,35 @@ mod tests {
         let summary = run_colocate_synthetic("colocate-s1").unwrap();
         assert!(summary.contains("viewer_video="), "{summary}");
         assert!(summary.contains("colocate ok"), "{summary}");
+    }
+
+    #[test]
+    fn kill_switch_demo_ends_session_and_indicator() {
+        let summary = run_kill_switch_demo("kill-demo-s1").unwrap();
+        assert!(
+            summary.contains("indicator_active_after=false"),
+            "{summary}"
+        );
+        assert!(summary.contains("chrome=Inactive"), "{summary}");
+        assert!(summary.contains("kill-switch demo ok"), "{summary}");
+    }
+
+    #[test]
+    fn service_indicator_tracks_session_lifecycle() {
+        let mut ux = HostSessionUx::new();
+        assert!(!ux.indicator().is_active());
+        assert_eq!(ux.chrome().status_label(), "Inactive");
+
+        ux.begin_session("s-lifecycle", Some("v1".into())).unwrap();
+        assert!(ux.indicator().is_connected());
+        assert!(!ux.indicator().is_active());
+        ux.mark_active();
+        assert!(ux.indicator().is_active());
+        assert_eq!(ux.chrome().status_label(), "Active");
+
+        // Local kill only.
+        ux.apply_kill();
+        assert!(!ux.indicator().is_active());
+        assert_eq!(ux.chrome().status_label(), "Inactive");
     }
 }

@@ -23,6 +23,21 @@ pub enum SessionMode {
     Password,
 }
 
+/// Server Mode A OTP prefilter outcome on `session_incoming` (no plaintext).
+///
+/// Host uses this plus its local OTP window to re-validate before `session_accept`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OtpPrefilterStatus {
+    /// Not Mode A, or no server OTP hash was published for the host.
+    #[default]
+    None,
+    /// Server verified viewer OTP against a stored hash and bound it to the session.
+    Ok,
+    /// Mode A without a server hash (host-only mint); host must re-validate locally.
+    Skipped,
+}
+
 /// Reasons a host/server may reject a session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -78,6 +93,10 @@ pub enum SignalMessage {
         session_id: String,
         signal_seq: u64,
         viewer_info: Value,
+        /// Authorization mode from the viewer's `session_intent`.
+        mode: SessionMode,
+        /// Server OTP prefilter result (Mode A); never carries the code.
+        otp_prefilter: OtpPrefilterStatus,
     },
     AuthChallenge {
         session_id: String,

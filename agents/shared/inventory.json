@@ -1,0 +1,1812 @@
+{
+  "schema_version": 1,
+  "workspace_root": ".",
+  "generated_at": "1786055172s-unix",
+  "items": [
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/challenge.rs",
+      "item": "AuthChallenge",
+      "kind": "struct",
+      "visibility": "pub",
+      "line": 184
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/challenge.rs",
+      "item": "AuthChallenge::issue",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 191
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/challenge.rs",
+      "item": "AuthChallenge::verify_response",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 198
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/challenge.rs",
+      "item": "CHALLENGE_MAC_LEN",
+      "kind": "const",
+      "visibility": "pub",
+      "line": 22
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/challenge.rs",
+      "item": "CHALLENGE_NONCE_LEN",
+      "kind": "const",
+      "visibility": "pub",
+      "line": 19
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/challenge.rs",
+      "item": "ChallengeNonce",
+      "kind": "struct",
+      "visibility": "pub",
+      "line": 73
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/challenge.rs",
+      "item": "ChallengeNonce::as_bytes",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 96
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/challenge.rs",
+      "item": "ChallengeNonce::from_bytes",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 87
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/challenge.rs",
+      "item": "ChallengeNonce::generate",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 80
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/challenge.rs",
+      "item": "ChallengeTranscript",
+      "kind": "struct",
+      "visibility": "pub",
+      "line": 111
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/challenge.rs",
+      "item": "ChallengeTranscript::encode",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 127
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/challenge.rs",
+      "item": "HOST_SECRET_MIN_LEN",
+      "kind": "const",
+      "visibility": "pub",
+      "line": 26
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/challenge.rs",
+      "item": "HostSecret",
+      "kind": "struct",
+      "visibility": "pub",
+      "line": 33
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/challenge.rs",
+      "item": "HostSecret::as_bytes",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 60
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/challenge.rs",
+      "item": "HostSecret::generate",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 53
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/challenge.rs",
+      "item": "HostSecret::try_new",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 41
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/challenge.rs",
+      "item": "PakeVerifierStub",
+      "kind": "struct",
+      "visibility": "pub",
+      "line": 240
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/challenge.rs",
+      "item": "PakeVerifierStub::new",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 247
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/challenge.rs",
+      "item": "PakeVerifierStub::start_handshake",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 252
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/challenge.rs",
+      "item": "compute_challenge_mac",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 152
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/challenge.rs",
+      "item": "pake",
+      "kind": "mod",
+      "visibility": "pub",
+      "line": 237
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/challenge.rs",
+      "item": "respond_to_challenge",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 217
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/challenge.rs",
+      "item": "verify_challenge_mac",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 166
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/device_id.rs",
+      "item": "DEVICE_ID_BODY_DIGITS",
+      "kind": "const",
+      "visibility": "pub",
+      "line": 16
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/device_id.rs",
+      "item": "DEVICE_ID_TOTAL_DIGITS",
+      "kind": "const",
+      "visibility": "pub",
+      "line": 19
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/device_id.rs",
+      "item": "DevicePublicId",
+      "kind": "struct",
+      "visibility": "pub",
+      "line": 23
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/device_id.rs",
+      "item": "DevicePublicId::as_str",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 82
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/device_id.rs",
+      "item": "DevicePublicId::display_grouped",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 92
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/device_id.rs",
+      "item": "DevicePublicId::generate",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 30
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/device_id.rs",
+      "item": "DevicePublicId::generate_with_rng",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 35
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/device_id.rs",
+      "item": "DevicePublicId::into_string",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 87
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/device_id.rs",
+      "item": "DevicePublicId::is_valid",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 77
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/device_id.rs",
+      "item": "DevicePublicId::parse",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 53
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/device_id.rs",
+      "item": "luhn_check_digit",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 115
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/device_id.rs",
+      "item": "validate_luhn",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 144
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/error.rs",
+      "item": "AuthError",
+      "kind": "enum",
+      "visibility": "pub",
+      "line": 7
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/error.rs",
+      "item": "Result",
+      "kind": "type",
+      "visibility": "pub",
+      "line": 38
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/fingerprint.rs",
+      "item": "encode_binding_message",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 18
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/fingerprint.rs",
+      "item": "generate_device_keypair",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 11
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/fingerprint.rs",
+      "item": "sign_fingerprint_binding",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 31
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/fingerprint.rs",
+      "item": "signing_key_from_bytes",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 67
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/fingerprint.rs",
+      "item": "verify_fingerprint_binding",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 42
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/fingerprint.rs",
+      "item": "verifying_key_from_bytes",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 59
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/lib.rs",
+      "item": "VERSION",
+      "kind": "const",
+      "visibility": "pub",
+      "line": 44
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/lib.rs",
+      "item": "challenge",
+      "kind": "mod",
+      "visibility": "pub",
+      "line": 16
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/lib.rs",
+      "item": "challenge::AuthChallenge",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 23
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/lib.rs",
+      "item": "challenge::CHALLENGE_MAC_LEN",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 23
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/lib.rs",
+      "item": "challenge::CHALLENGE_NONCE_LEN",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 23
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/lib.rs",
+      "item": "challenge::ChallengeNonce",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 23
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/lib.rs",
+      "item": "challenge::ChallengeTranscript",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 23
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/lib.rs",
+      "item": "challenge::HOST_SECRET_MIN_LEN",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 23
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/lib.rs",
+      "item": "challenge::HostSecret",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 23
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/lib.rs",
+      "item": "challenge::compute_challenge_mac",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 23
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/lib.rs",
+      "item": "challenge::respond_to_challenge",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 23
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/lib.rs",
+      "item": "challenge::verify_challenge_mac",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 23
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/lib.rs",
+      "item": "device_id",
+      "kind": "mod",
+      "visibility": "pub",
+      "line": 17
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/lib.rs",
+      "item": "device_id::DEVICE_ID_BODY_DIGITS",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 28
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/lib.rs",
+      "item": "device_id::DEVICE_ID_TOTAL_DIGITS",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 28
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/lib.rs",
+      "item": "device_id::DevicePublicId",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 28
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/lib.rs",
+      "item": "device_id::luhn_check_digit",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 28
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/lib.rs",
+      "item": "device_id::validate_luhn",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 28
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/lib.rs",
+      "item": "error",
+      "kind": "mod",
+      "visibility": "pub",
+      "line": 18
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/lib.rs",
+      "item": "error::AuthError",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 31
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/lib.rs",
+      "item": "error::Result",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 31
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/lib.rs",
+      "item": "fingerprint",
+      "kind": "mod",
+      "visibility": "pub",
+      "line": 19
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/lib.rs",
+      "item": "fingerprint::encode_binding_message",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 32
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/lib.rs",
+      "item": "fingerprint::generate_device_keypair",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 32
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/lib.rs",
+      "item": "fingerprint::sign_fingerprint_binding",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 32
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/lib.rs",
+      "item": "fingerprint::signing_key_from_bytes",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 32
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/lib.rs",
+      "item": "fingerprint::verify_fingerprint_binding",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 32
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/lib.rs",
+      "item": "fingerprint::verifying_key_from_bytes",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 32
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/lib.rs",
+      "item": "otp",
+      "kind": "mod",
+      "visibility": "pub",
+      "line": 20
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/lib.rs",
+      "item": "otp::OTP_DEFAULT_DIGITS",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 36
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/lib.rs",
+      "item": "otp::OTP_MAX_DIGITS",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 36
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/lib.rs",
+      "item": "otp::OTP_MIN_DIGITS",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 36
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/lib.rs",
+      "item": "otp::OTP_SALT_LEN",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 36
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/lib.rs",
+      "item": "otp::OtpCode",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 36
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/lib.rs",
+      "item": "otp::OtpHash",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 36
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/lib.rs",
+      "item": "otp::OtpRecord",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 36
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/lib.rs",
+      "item": "otp::generate_otp",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 36
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/lib.rs",
+      "item": "otp::generate_otp_default",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 36
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/lib.rs",
+      "item": "otp::generate_otp_with_rng",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 36
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/lib.rs",
+      "item": "otp::hash_otp",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 36
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/lib.rs",
+      "item": "otp::hash_otp_unkeyed",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 36
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/lib.rs",
+      "item": "otp::hash_otp_with_salt",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 36
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/lib.rs",
+      "item": "otp::mint_otp",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 36
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/lib.rs",
+      "item": "otp::mint_otp_record",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 36
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/lib.rs",
+      "item": "otp::validate_otp_format",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 36
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/lib.rs",
+      "item": "otp::verify_otp",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 36
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/lib.rs",
+      "item": "password",
+      "kind": "mod",
+      "visibility": "pub",
+      "line": 21
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/lib.rs",
+      "item": "password::hash_password",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 41
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/lib.rs",
+      "item": "password::password_matches",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 41
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/lib.rs",
+      "item": "password::verify_password",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 41
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/otp.rs",
+      "item": "OTP_DEFAULT_DIGITS",
+      "kind": "const",
+      "visibility": "pub",
+      "line": 31
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/otp.rs",
+      "item": "OTP_MAX_DIGITS",
+      "kind": "const",
+      "visibility": "pub",
+      "line": 29
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/otp.rs",
+      "item": "OTP_MIN_DIGITS",
+      "kind": "const",
+      "visibility": "pub",
+      "line": 27
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/otp.rs",
+      "item": "OTP_SALT_LEN",
+      "kind": "const",
+      "visibility": "pub",
+      "line": 33
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/otp.rs",
+      "item": "OtpCode",
+      "kind": "struct",
+      "visibility": "pub",
+      "line": 46
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/otp.rs",
+      "item": "OtpCode::as_str",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 52
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/otp.rs",
+      "item": "OtpCode::is_empty",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 68
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/otp.rs",
+      "item": "OtpCode::len",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 63
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/otp.rs",
+      "item": "OtpCode::to_ui_string",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 58
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/otp.rs",
+      "item": "OtpHash",
+      "kind": "struct",
+      "visibility": "pub",
+      "line": 84
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/otp.rs",
+      "item": "OtpHash::ct_eq",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 95
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/otp.rs",
+      "item": "OtpRecord",
+      "kind": "struct",
+      "visibility": "pub",
+      "line": 125
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/otp.rs",
+      "item": "OtpRecord::expires_at_unix",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 147
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/otp.rs",
+      "item": "OtpRecord::hash",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 142
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/otp.rs",
+      "item": "OtpRecord::is_consumed",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 152
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/otp.rs",
+      "item": "OtpRecord::is_expired",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 157
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/otp.rs",
+      "item": "OtpRecord::mark_consumed",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 185
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/otp.rs",
+      "item": "OtpRecord::new",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 133
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/otp.rs",
+      "item": "OtpRecord::verify",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 165
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/otp.rs",
+      "item": "OtpRecord::verify_and_consume",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 178
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/otp.rs",
+      "item": "generate_otp",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 191
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/otp.rs",
+      "item": "generate_otp_default",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 210
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/otp.rs",
+      "item": "generate_otp_with_rng",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 196
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/otp.rs",
+      "item": "hash_otp",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 240
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/otp.rs",
+      "item": "hash_otp_unkeyed",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 285
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/otp.rs",
+      "item": "hash_otp_with_salt",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 251
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/otp.rs",
+      "item": "mint_otp",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 316
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/otp.rs",
+      "item": "mint_otp_record",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 323
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/otp.rs",
+      "item": "validate_otp_format",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 215
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/otp.rs",
+      "item": "verify_otp",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 302
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/password.rs",
+      "item": "hash_password",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 25
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/password.rs",
+      "item": "password_matches",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 54
+    },
+    {
+      "crate_name": "remotelink-auth",
+      "path": "packages/auth/src/password.rs",
+      "item": "verify_password",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 39
+    },
+    {
+      "crate_name": "remotelink-common",
+      "path": "packages/common/src/lib.rs",
+      "item": "Result",
+      "kind": "type",
+      "visibility": "pub",
+      "line": 7
+    },
+    {
+      "crate_name": "remotelink-common",
+      "path": "packages/common/src/lib.rs",
+      "item": "VERSION",
+      "kind": "const",
+      "visibility": "pub",
+      "line": 4
+    },
+    {
+      "crate_name": "remotelink-protocol",
+      "path": "packages/protocol/src/error.rs",
+      "item": "ProtocolError",
+      "kind": "enum",
+      "visibility": "pub",
+      "line": 7
+    },
+    {
+      "crate_name": "remotelink-protocol",
+      "path": "packages/protocol/src/error.rs",
+      "item": "ProtocolError::too_large",
+      "kind": "fn",
+      "visibility": {
+        "restricted": "pub(crate)"
+      },
+      "line": 45
+    },
+    {
+      "crate_name": "remotelink-protocol",
+      "path": "packages/protocol/src/input.rs",
+      "item": "ALT",
+      "kind": "const",
+      "visibility": "pub",
+      "line": 16
+    },
+    {
+      "crate_name": "remotelink-protocol",
+      "path": "packages/protocol/src/input.rs",
+      "item": "CTRL",
+      "kind": "const",
+      "visibility": "pub",
+      "line": 15
+    },
+    {
+      "crate_name": "remotelink-protocol",
+      "path": "packages/protocol/src/input.rs",
+      "item": "InputEvent",
+      "kind": "struct",
+      "visibility": "pub",
+      "line": 96
+    },
+    {
+      "crate_name": "remotelink-protocol",
+      "path": "packages/protocol/src/input.rs",
+      "item": "InputPayload",
+      "kind": "enum",
+      "visibility": "pub",
+      "line": 87
+    },
+    {
+      "crate_name": "remotelink-protocol",
+      "path": "packages/protocol/src/input.rs",
+      "item": "KeyEvent",
+      "kind": "struct",
+      "visibility": "pub",
+      "line": 73
+    },
+    {
+      "crate_name": "remotelink-protocol",
+      "path": "packages/protocol/src/input.rs",
+      "item": "META",
+      "kind": "const",
+      "visibility": "pub",
+      "line": 18
+    },
+    {
+      "crate_name": "remotelink-protocol",
+      "path": "packages/protocol/src/input.rs",
+      "item": "MouseButton",
+      "kind": "struct",
+      "visibility": "pub",
+      "line": 45
+    },
+    {
+      "crate_name": "remotelink-protocol",
+      "path": "packages/protocol/src/input.rs",
+      "item": "MouseButtonKind",
+      "kind": "enum",
+      "visibility": "pub",
+      "line": 24
+    },
+    {
+      "crate_name": "remotelink-protocol",
+      "path": "packages/protocol/src/input.rs",
+      "item": "MouseMove",
+      "kind": "struct",
+      "visibility": "pub",
+      "line": 34
+    },
+    {
+      "crate_name": "remotelink-protocol",
+      "path": "packages/protocol/src/input.rs",
+      "item": "MouseWheel",
+      "kind": "struct",
+      "visibility": "pub",
+      "line": 59
+    },
+    {
+      "crate_name": "remotelink-protocol",
+      "path": "packages/protocol/src/input.rs",
+      "item": "SHIFT",
+      "kind": "const",
+      "visibility": "pub",
+      "line": 17
+    },
+    {
+      "crate_name": "remotelink-protocol",
+      "path": "packages/protocol/src/input.rs",
+      "item": "modifiers",
+      "kind": "mod",
+      "visibility": "pub",
+      "line": 14
+    },
+    {
+      "crate_name": "remotelink-protocol",
+      "path": "packages/protocol/src/lib.rs",
+      "item": "PROTOCOL_VERSION",
+      "kind": "const",
+      "visibility": "pub",
+      "line": 35
+    },
+    {
+      "crate_name": "remotelink-protocol",
+      "path": "packages/protocol/src/lib.rs",
+      "item": "decode_input",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 70
+    },
+    {
+      "crate_name": "remotelink-protocol",
+      "path": "packages/protocol/src/lib.rs",
+      "item": "decode_json",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 48
+    },
+    {
+      "crate_name": "remotelink-protocol",
+      "path": "packages/protocol/src/lib.rs",
+      "item": "decode_message",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 58
+    },
+    {
+      "crate_name": "remotelink-protocol",
+      "path": "packages/protocol/src/lib.rs",
+      "item": "encode_input",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 65
+    },
+    {
+      "crate_name": "remotelink-protocol",
+      "path": "packages/protocol/src/lib.rs",
+      "item": "encode_json",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 38
+    },
+    {
+      "crate_name": "remotelink-protocol",
+      "path": "packages/protocol/src/lib.rs",
+      "item": "encode_json_pretty",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 43
+    },
+    {
+      "crate_name": "remotelink-protocol",
+      "path": "packages/protocol/src/lib.rs",
+      "item": "encode_message",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 53
+    },
+    {
+      "crate_name": "remotelink-protocol",
+      "path": "packages/protocol/src/lib.rs",
+      "item": "error::ProtocolError",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 23
+    },
+    {
+      "crate_name": "remotelink-protocol",
+      "path": "packages/protocol/src/lib.rs",
+      "item": "input::InputEvent",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 24
+    },
+    {
+      "crate_name": "remotelink-protocol",
+      "path": "packages/protocol/src/lib.rs",
+      "item": "input::InputPayload",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 24
+    },
+    {
+      "crate_name": "remotelink-protocol",
+      "path": "packages/protocol/src/lib.rs",
+      "item": "input::KeyEvent",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 24
+    },
+    {
+      "crate_name": "remotelink-protocol",
+      "path": "packages/protocol/src/lib.rs",
+      "item": "input::MouseButton",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 24
+    },
+    {
+      "crate_name": "remotelink-protocol",
+      "path": "packages/protocol/src/lib.rs",
+      "item": "input::MouseButtonKind",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 24
+    },
+    {
+      "crate_name": "remotelink-protocol",
+      "path": "packages/protocol/src/lib.rs",
+      "item": "input::MouseMove",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 24
+    },
+    {
+      "crate_name": "remotelink-protocol",
+      "path": "packages/protocol/src/lib.rs",
+      "item": "input::MouseWheel",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 24
+    },
+    {
+      "crate_name": "remotelink-protocol",
+      "path": "packages/protocol/src/lib.rs",
+      "item": "input::modifiers",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 24
+    },
+    {
+      "crate_name": "remotelink-protocol",
+      "path": "packages/protocol/src/lib.rs",
+      "item": "limits::MAX_FINGERPRINT_SIG_BYTES",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 28
+    },
+    {
+      "crate_name": "remotelink-protocol",
+      "path": "packages/protocol/src/lib.rs",
+      "item": "limits::MAX_ICE_CANDIDATE_BYTES",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 28
+    },
+    {
+      "crate_name": "remotelink-protocol",
+      "path": "packages/protocol/src/lib.rs",
+      "item": "limits::MAX_OPAQUE_PAYLOAD_BYTES",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 28
+    },
+    {
+      "crate_name": "remotelink-protocol",
+      "path": "packages/protocol/src/lib.rs",
+      "item": "limits::MAX_SDP_BYTES",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 28
+    },
+    {
+      "crate_name": "remotelink-protocol",
+      "path": "packages/protocol/src/lib.rs",
+      "item": "limits::validate_message_limits",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 28
+    },
+    {
+      "crate_name": "remotelink-protocol",
+      "path": "packages/protocol/src/lib.rs",
+      "item": "message::HelloAuth",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 32
+    },
+    {
+      "crate_name": "remotelink-protocol",
+      "path": "packages/protocol/src/lib.rs",
+      "item": "message::IceCandidate",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 32
+    },
+    {
+      "crate_name": "remotelink-protocol",
+      "path": "packages/protocol/src/lib.rs",
+      "item": "message::RejectReason",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 32
+    },
+    {
+      "crate_name": "remotelink-protocol",
+      "path": "packages/protocol/src/lib.rs",
+      "item": "message::Role",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 32
+    },
+    {
+      "crate_name": "remotelink-protocol",
+      "path": "packages/protocol/src/lib.rs",
+      "item": "message::SessionMode",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 32
+    },
+    {
+      "crate_name": "remotelink-protocol",
+      "path": "packages/protocol/src/lib.rs",
+      "item": "message::SignalMessage",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 32
+    },
+    {
+      "crate_name": "remotelink-protocol",
+      "path": "packages/protocol/src/limits.rs",
+      "item": "MAX_FINGERPRINT_SIG_BYTES",
+      "kind": "const",
+      "visibility": "pub",
+      "line": 17
+    },
+    {
+      "crate_name": "remotelink-protocol",
+      "path": "packages/protocol/src/limits.rs",
+      "item": "MAX_ICE_CANDIDATE_BYTES",
+      "kind": "const",
+      "visibility": "pub",
+      "line": 14
+    },
+    {
+      "crate_name": "remotelink-protocol",
+      "path": "packages/protocol/src/limits.rs",
+      "item": "MAX_OPAQUE_PAYLOAD_BYTES",
+      "kind": "const",
+      "visibility": "pub",
+      "line": 20
+    },
+    {
+      "crate_name": "remotelink-protocol",
+      "path": "packages/protocol/src/limits.rs",
+      "item": "MAX_SDP_BYTES",
+      "kind": "const",
+      "visibility": "pub",
+      "line": 11
+    },
+    {
+      "crate_name": "remotelink-protocol",
+      "path": "packages/protocol/src/limits.rs",
+      "item": "validate_message_limits",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 37
+    },
+    {
+      "crate_name": "remotelink-protocol",
+      "path": "packages/protocol/src/message.rs",
+      "item": "HelloAuth",
+      "kind": "struct",
+      "visibility": "pub",
+      "line": 37
+    },
+    {
+      "crate_name": "remotelink-protocol",
+      "path": "packages/protocol/src/message.rs",
+      "item": "IceCandidate",
+      "kind": "struct",
+      "visibility": "pub",
+      "line": 43
+    },
+    {
+      "crate_name": "remotelink-protocol",
+      "path": "packages/protocol/src/message.rs",
+      "item": "RejectReason",
+      "kind": "enum",
+      "visibility": "pub",
+      "line": 29
+    },
+    {
+      "crate_name": "remotelink-protocol",
+      "path": "packages/protocol/src/message.rs",
+      "item": "Role",
+      "kind": "enum",
+      "visibility": "pub",
+      "line": 12
+    },
+    {
+      "crate_name": "remotelink-protocol",
+      "path": "packages/protocol/src/message.rs",
+      "item": "SessionMode",
+      "kind": "enum",
+      "visibility": "pub",
+      "line": 20
+    },
+    {
+      "crate_name": "remotelink-protocol",
+      "path": "packages/protocol/src/message.rs",
+      "item": "SignalMessage",
+      "kind": "enum",
+      "visibility": "pub",
+      "line": 60
+    },
+    {
+      "crate_name": "remotelink-protocol",
+      "path": "packages/protocol/src/message.rs",
+      "item": "SignalMessage::session_id",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 143
+    },
+    {
+      "crate_name": "remotelink-protocol",
+      "path": "packages/protocol/src/message.rs",
+      "item": "SignalMessage::signal_seq",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 163
+    },
+    {
+      "crate_name": "unit-test-agent",
+      "path": "agents/unit-test-agent/src/inventory.rs",
+      "item": "InventoryError",
+      "kind": "enum",
+      "visibility": "pub",
+      "line": 14
+    },
+    {
+      "crate_name": "unit-test-agent",
+      "path": "agents/unit-test-agent/src/inventory.rs",
+      "item": "expand_use_imports",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 436
+    },
+    {
+      "crate_name": "unit-test-agent",
+      "path": "agents/unit-test-agent/src/inventory.rs",
+      "item": "inventory_workspace",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 775
+    },
+    {
+      "crate_name": "unit-test-agent",
+      "path": "agents/unit-test-agent/src/inventory.rs",
+      "item": "is_cfg_test_attr",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 319
+    },
+    {
+      "crate_name": "unit-test-agent",
+      "path": "agents/unit-test-agent/src/inventory.rs",
+      "item": "package_has_tests",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 82
+    },
+    {
+      "crate_name": "unit-test-agent",
+      "path": "agents/unit-test-agent/src/inventory.rs",
+      "item": "parse_pub_item_line",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 671
+    },
+    {
+      "crate_name": "unit-test-agent",
+      "path": "agents/unit-test-agent/src/inventory.rs",
+      "item": "parse_pub_use_statement",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 403
+    },
+    {
+      "crate_name": "unit-test-agent",
+      "path": "agents/unit-test-agent/src/inventory.rs",
+      "item": "parse_public_items",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 128
+    },
+    {
+      "crate_name": "unit-test-agent",
+      "path": "agents/unit-test-agent/src/inventory.rs",
+      "item": "source_has_test_attr",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 108
+    },
+    {
+      "crate_name": "unit-test-agent",
+      "path": "agents/unit-test-agent/src/inventory.rs",
+      "item": "walk_rust_files",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 48
+    },
+    {
+      "crate_name": "unit-test-agent",
+      "path": "agents/unit-test-agent/src/lib.rs",
+      "item": "inventory::InventoryError",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 16
+    },
+    {
+      "crate_name": "unit-test-agent",
+      "path": "agents/unit-test-agent/src/lib.rs",
+      "item": "inventory::expand_use_imports",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 16
+    },
+    {
+      "crate_name": "unit-test-agent",
+      "path": "agents/unit-test-agent/src/lib.rs",
+      "item": "inventory::inventory_workspace",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 16
+    },
+    {
+      "crate_name": "unit-test-agent",
+      "path": "agents/unit-test-agent/src/lib.rs",
+      "item": "inventory::is_cfg_test_attr",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 16
+    },
+    {
+      "crate_name": "unit-test-agent",
+      "path": "agents/unit-test-agent/src/lib.rs",
+      "item": "inventory::package_has_tests",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 16
+    },
+    {
+      "crate_name": "unit-test-agent",
+      "path": "agents/unit-test-agent/src/lib.rs",
+      "item": "inventory::parse_pub_use_statement",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 16
+    },
+    {
+      "crate_name": "unit-test-agent",
+      "path": "agents/unit-test-agent/src/lib.rs",
+      "item": "inventory::parse_public_items",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 16
+    },
+    {
+      "crate_name": "unit-test-agent",
+      "path": "agents/unit-test-agent/src/lib.rs",
+      "item": "inventory::walk_rust_files",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 16
+    },
+    {
+      "crate_name": "unit-test-agent",
+      "path": "agents/unit-test-agent/src/lib.rs",
+      "item": "report::draft_report_markdown",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 20
+    },
+    {
+      "crate_name": "unit-test-agent",
+      "path": "agents/unit-test-agent/src/lib.rs",
+      "item": "report::packages_lacking_tests",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 20
+    },
+    {
+      "crate_name": "unit-test-agent",
+      "path": "agents/unit-test-agent/src/lib.rs",
+      "item": "report::sample_declared_surface",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 20
+    },
+    {
+      "crate_name": "unit-test-agent",
+      "path": "agents/unit-test-agent/src/lib.rs",
+      "item": "types::Inventory",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 21
+    },
+    {
+      "crate_name": "unit-test-agent",
+      "path": "agents/unit-test-agent/src/lib.rs",
+      "item": "types::InventoryItem",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 21
+    },
+    {
+      "crate_name": "unit-test-agent",
+      "path": "agents/unit-test-agent/src/lib.rs",
+      "item": "types::ItemKind",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 21
+    },
+    {
+      "crate_name": "unit-test-agent",
+      "path": "agents/unit-test-agent/src/lib.rs",
+      "item": "types::PackageSummary",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 21
+    },
+    {
+      "crate_name": "unit-test-agent",
+      "path": "agents/unit-test-agent/src/lib.rs",
+      "item": "types::Visibility",
+      "kind": "use",
+      "visibility": "pub",
+      "line": 21
+    },
+    {
+      "crate_name": "unit-test-agent",
+      "path": "agents/unit-test-agent/src/report.rs",
+      "item": "draft_report_markdown",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 29
+    },
+    {
+      "crate_name": "unit-test-agent",
+      "path": "agents/unit-test-agent/src/report.rs",
+      "item": "packages_lacking_tests",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 8
+    },
+    {
+      "crate_name": "unit-test-agent",
+      "path": "agents/unit-test-agent/src/report.rs",
+      "item": "sample_declared_surface",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 20
+    },
+    {
+      "crate_name": "unit-test-agent",
+      "path": "agents/unit-test-agent/src/types.rs",
+      "item": "Inventory",
+      "kind": "struct",
+      "visibility": "pub",
+      "line": 7
+    },
+    {
+      "crate_name": "unit-test-agent",
+      "path": "agents/unit-test-agent/src/types.rs",
+      "item": "InventoryItem",
+      "kind": "struct",
+      "visibility": "pub",
+      "line": 22
+    },
+    {
+      "crate_name": "unit-test-agent",
+      "path": "agents/unit-test-agent/src/types.rs",
+      "item": "ItemKind",
+      "kind": "enum",
+      "visibility": "pub",
+      "line": 41
+    },
+    {
+      "crate_name": "unit-test-agent",
+      "path": "agents/unit-test-agent/src/types.rs",
+      "item": "PackageSummary",
+      "kind": "struct",
+      "visibility": "pub",
+      "line": 93
+    },
+    {
+      "crate_name": "unit-test-agent",
+      "path": "agents/unit-test-agent/src/types.rs",
+      "item": "Visibility",
+      "kind": "enum",
+      "visibility": "pub",
+      "line": 67
+    },
+    {
+      "crate_name": "unit-test-agent",
+      "path": "agents/unit-test-agent/src/types.rs",
+      "item": "Visibility::is_public_api",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 86
+    },
+    {
+      "crate_name": "unit-test-agent",
+      "path": "agents/unit-test-agent/src/types.rs",
+      "item": "Visibility::parse",
+      "kind": "fn",
+      "visibility": "pub",
+      "line": 76
+    }
+  ],
+  "packages": [
+    {
+      "name": "remotelink-auth",
+      "manifest_path": "packages/auth/Cargo.toml",
+      "is_lib": true,
+      "has_tests": true,
+      "public_item_count": 126
+    },
+    {
+      "name": "remotelink-common",
+      "manifest_path": "packages/common/Cargo.toml",
+      "is_lib": true,
+      "has_tests": true,
+      "public_item_count": 2
+    },
+    {
+      "name": "remotelink-host",
+      "manifest_path": "apps/host/Cargo.toml",
+      "is_lib": false,
+      "has_tests": false,
+      "public_item_count": 0
+    },
+    {
+      "name": "remotelink-protocol",
+      "manifest_path": "packages/protocol/Cargo.toml",
+      "is_lib": true,
+      "has_tests": true,
+      "public_item_count": 54
+    },
+    {
+      "name": "remotelink-server",
+      "manifest_path": "apps/server/Cargo.toml",
+      "is_lib": false,
+      "has_tests": false,
+      "public_item_count": 0
+    },
+    {
+      "name": "remotelink-viewer",
+      "manifest_path": "apps/viewer/Cargo.toml",
+      "is_lib": false,
+      "has_tests": false,
+      "public_item_count": 0
+    },
+    {
+      "name": "unit-test-agent",
+      "manifest_path": "agents/unit-test-agent/Cargo.toml",
+      "is_lib": true,
+      "has_tests": true,
+      "public_item_count": 36
+    }
+  ]
+}

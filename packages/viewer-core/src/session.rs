@@ -1,4 +1,4 @@
-//! Viewer session: PeerTransport answerer + decode/playout/input/skew.
+﻿//! Viewer session: PeerTransport answerer + decode/playout/input/skew.
 //!
 //! # Identity binding (PR 13 / KD17)
 //!
@@ -213,7 +213,7 @@ impl ViewerSession {
         self.auto_playout = enabled;
     }
 
-    /// Use LAN jitter targets (10–15 ms video, 15–25 ms audio).
+    /// Use LAN jitter targets (10â€“15 ms video, 15â€“25 ms audio).
     pub fn use_lan_jitter_profile(&mut self) {
         self.video_jitter_cfg = JitterConfig::lan_video();
         self.audio_jitter_cfg = JitterConfig::lan_audio();
@@ -499,7 +499,7 @@ impl ViewerSession {
         self.capture.next_poll_deadline()
     }
 
-    /// Feed a raw platform sample through capture → encode → DataChannel.
+    /// Feed a raw platform sample through capture â†’ encode â†’ DataChannel.
     ///
     /// Returns the number of wire events sent (0 when focus policy blocks).
     ///
@@ -530,7 +530,7 @@ impl ViewerSession {
     ///
     /// Uses the same phase/identity gate as [`Self::push_raw_input`] (hard `Err`
     /// when not connected / identity not bound), so frame loops can distinguish
-    /// “not allowed” from “nothing due” (`Ok(0)`).
+    /// â€œnot allowedâ€ from â€œnothing dueâ€ (`Ok(0)`).
     pub fn poll_input_capture(&mut self) -> Result<usize> {
         self.ensure_can_send_input()?;
         let now = std::time::Instant::now();
@@ -546,7 +546,7 @@ impl ViewerSession {
     ///
     /// Prefer [`Self::push_raw_input`] from UI paths. This API is for tests,
     /// harnesses, and synthetic demos that intentionally skip capture policy.
-    /// DESIGN “focused-only” is enforced only on the capture path.
+    /// DESIGN â€œfocused-onlyâ€ is enforced only on the capture path.
     pub fn send_mouse_move(&mut self, x: f32, y: f32) -> Result<()> {
         self.ensure_can_send_input()?;
         let (_ev, msg) = self.input.mouse_move(x, y)?;
@@ -933,7 +933,7 @@ pub fn run_synthetic_loopback_ex(
     let answer = session.accept_offer(offer)?;
     pair.peer_a.set_remote_description(answer)?;
 
-    // Exchange ICE: host last local → viewer; viewer pending → host.
+    // Exchange ICE: host last local â†’ viewer; viewer pending â†’ host.
     if let Some(host_ice) = pair.peer_a.last_local_ice().cloned() {
         session.add_remote_ice(host_ice)?;
     }
@@ -1617,9 +1617,8 @@ mod tests {
         use remotelink_net::{DataMessage, MockPeerTransport, PeerTransport};
 
         let (sk, vk) = generate_device_keypair();
-        let pepper = b"viewer-bind-pepper!!";
         let otp = "654321";
-        let bind_key = SessionBindKey::from_mode_a_otp(otp, pepper).unwrap();
+        let bind_key = SessionBindKey::from_mode_a_otp(otp).unwrap();
 
         let mut pair = MockPeerPair::new();
         let mut session = ViewerSession::new();
@@ -1718,3 +1717,5 @@ mod tests {
         assert!(block.contains("Bind:"), "{block}");
     }
 }
+
+

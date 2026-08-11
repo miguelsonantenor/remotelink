@@ -23,6 +23,6 @@ pub use client_ip::{
     ClientIpConfig, OptionalPeer,
 };
 pub use rate_limit::{
-    default_refresh_config, default_register_config, default_session_intent_config,
-    RateLimitConfig, RateLimitExceeded, RateLimiter, RateLimiters,
+    default_admin_config, default_refresh_config, default_register_config,
+    default_session_intent_config, RateLimitConfig, RateLimitExceeded, RateLimiter, RateLimiters,
 };

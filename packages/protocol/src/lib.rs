@@ -1,4 +1,4 @@
-//! RemoteLink signaling and input protocol schemas.
+﻿//! RemoteLink signaling and input protocol schemas.
 //!
 //! Wire encoding is JSON via `serde_json`. See `DESIGN.md` WebSocket (`/v1/ws`)
 //! and input path (v1 freeze) sections.
@@ -13,8 +13,7 @@
 //!
 //! [`InputEvent`] / [`MouseWheel`] etc. in this crate are the v1 field authority.
 //! Wheel JSON is `{delta_x, delta_y, precise, x, y, display_id}` (not
-//! `precise_delta`). Keys use Windows scan-set-1 scancodes via
-//! [`lookup_scancode`] / [`NamedKey`] (not Unicode).
+//! `precise_delta`).
 
 mod error;
 mod input;
@@ -31,7 +30,9 @@ pub use limits::{
     validate_message_limits, MAX_FINGERPRINT_SIG_BYTES, MAX_ICE_CANDIDATE_BYTES,
     MAX_OPAQUE_PAYLOAD_BYTES, MAX_SDP_BYTES,
 };
-pub use message::{HelloAuth, IceCandidate, RejectReason, Role, SessionMode, SignalMessage};
+pub use message::{
+    HelloAuth, IceCandidate, OtpPrefilterStatus, RejectReason, Role, SessionMode, SignalMessage,
+};
 pub use scancode::{lookup_scancode, named_key_from_char, scancode_of, NamedKey, ScanCode};
 
 /// Current protocol version for `hello.protocol_version`.
@@ -196,8 +197,10 @@ mod tests {
                 session_id: "sess-1".into(),
                 signal_seq: 2,
                 viewer_info: json!({"display_name": "alice"}),
+                mode: SessionMode::Otp,
+                otp_prefilter: OtpPrefilterStatus::Ok,
             },
-            r#"{"type":"session_incoming","session_id":"sess-1","signal_seq":2,"viewer_info":{"display_name":"alice"}}"#,
+            r#"{"type":"session_incoming","session_id":"sess-1","signal_seq":2,"viewer_info":{"display_name":"alice"},"mode":"otp","otp_prefilter":"ok"}"#,
         );
     }
 
@@ -614,3 +617,4 @@ mod tests {
         assert!(decode_input("null").is_err());
     }
 }
+

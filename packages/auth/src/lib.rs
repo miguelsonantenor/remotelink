@@ -46,7 +46,7 @@ pub use identity::{
     hex_to_bytes, mode_b_verify_mac, mode_b_viewer_response, respond_dc_challenge,
     sign_session_fingerprint, verify_dc_bind_mac, verify_session_fingerprint, DcIdentityChallenge,
     DcIdentityMessage, DcIdentityResponse, IdentityBindState, SessionBindKey, DC_BIND_MAC_LEN,
-    DC_CHALLENGE_NONCE_LEN, IDENTITY_CHANNEL_LABEL,
+    DC_CHALLENGE_NONCE_LEN, IDENTITY_CHANNEL_LABEL, OTP_BIND_KEY_SALT,
 };
 pub use otp::{
     generate_otp, generate_otp_default, generate_otp_with_rng, hash_otp, hash_otp_unkeyed,

@@ -13,7 +13,7 @@ use remotelink_auth::{
     authorize_mode_a, authorize_mode_b, hash_otp, mint_otp_record, AuthChallenge, HostSecret,
     OtpCode, OtpHash, OtpRecord, SessionBindKey, OTP_DEFAULT_DIGITS,
 };
-use remotelink_protocol::SessionMode;
+use remotelink_protocol::{OtpPrefilterStatus, RejectReason, SessionMode};
 use serde::{Deserialize, Serialize};
 
 use crate::session::{Result as SessionResult, SessionError, SessionManager};
@@ -314,7 +314,107 @@ impl HostAuthService {
         )
         .map_err(|e| PolicyError::Auth(e.to_string()))
     }
+
+    /// Host re-validation gate before emitting `session_accept`.
+    ///
+    /// Call when the service/agent receives [`SignalMessage::SessionIncoming`]
+    /// (or is about to accept). Mode A requires the viewer OTP for local
+    /// consume-once re-check; Mode B requires `unattended_enabled` + secret.
+    pub fn decide_session_accept(
+        &mut self,
+        mode: SessionMode,
+        otp_prefilter: OtpPrefilterStatus,
+        otp_code: Option<&str>,
+        user_accepted: Option<bool>,
+        now_unix: u64,
+    ) -> SessionAcceptDecision {
+        match self.decide_confirm(user_accepted) {
+            ConfirmDecision::Denied => {
+                return SessionAcceptDecision::Deny {
+                    reason: RejectReason::Policy,
+                };
+            }
+            ConfirmDecision::Pending => return SessionAcceptDecision::NeedConfirm,
+            ConfirmDecision::AutoAccept | ConfirmDecision::Accepted => {}
+        }
+
+        match mode {
+            SessionMode::Unattended => match self.policy_allows_mode(SessionMode::Unattended) {
+                Ok(()) => SessionAcceptDecision::Allow { bind_key: None },
+                Err(PolicyError::UnattendedDisabled)
+                | Err(PolicyError::UnattendedSecretMissing) => SessionAcceptDecision::Deny {
+                    reason: RejectReason::Policy,
+                },
+                Err(_) => SessionAcceptDecision::Deny {
+                    reason: RejectReason::Auth,
+                },
+            },
+            SessionMode::Password => SessionAcceptDecision::Allow { bind_key: None },
+            SessionMode::Otp => {
+                // Server prefilter is advisory; host must re-validate active window.
+                let _ = otp_prefilter;
+                let Some(code) = otp_code.map(str::trim).filter(|s| !s.is_empty()) else {
+                    // Soft check: active window must still exist even before code entry.
+                    match self.active_otp.as_ref() {
+                        None => {
+                            return SessionAcceptDecision::Deny {
+                                reason: RejectReason::Auth,
+                            };
+                        }
+                        Some(w) if w.is_expired(now_unix) => {
+                            return SessionAcceptDecision::Deny {
+                                reason: RejectReason::Auth,
+                            };
+                        }
+                        Some(_) => return SessionAcceptDecision::NeedOtpCode,
+                    }
+                };
+                match self.consume_otp(code, now_unix) {
+                    Ok(key) => SessionAcceptDecision::Allow {
+                        bind_key: Some(key),
+                    },
+                    Err(_) => SessionAcceptDecision::Deny {
+                        reason: RejectReason::Auth,
+                    },
+                }
+            }
+        }
+    }
 }
+
+/// Outcome of [`HostAuthService::decide_session_accept`].
+#[derive(Debug)]
+pub enum SessionAcceptDecision {
+    /// Host may send `session_accept` (Mode A may include bind key after consume).
+    Allow {
+        /// Present after Mode A host-side OTP consume.
+        bind_key: Option<SessionBindKey>,
+    },
+    /// Waiting for local confirm UI (`--confirm-sessions`).
+    NeedConfirm,
+    /// Mode A needs viewer OTP plaintext for host re-validate/consume.
+    NeedOtpCode,
+    /// Host must send `session_reject` with this reason.
+    Deny {
+        /// Reject reason for the wire message.
+        reason: RejectReason,
+    },
+}
+
+impl PartialEq for SessionAcceptDecision {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::NeedConfirm, Self::NeedConfirm) | (Self::NeedOtpCode, Self::NeedOtpCode) => true,
+            (Self::Allow { bind_key: a }, Self::Allow { bind_key: b }) => {
+                a.is_some() == b.is_some()
+            }
+            (Self::Deny { reason: a }, Self::Deny { reason: b }) => a == b,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for SessionAcceptDecision {}
 
 /// Policy / OTP UX errors.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -449,5 +549,96 @@ mod tests {
         svc.authorize_session_mode_b(&mut mgr, &challenge, b"", b"", &mac)
             .unwrap();
         assert!(mgr.identity().session_authorized);
+    }
+
+    #[test]
+    fn decide_accept_mode_a_requires_code_and_consumes() {
+        let mut svc = HostAuthService::default();
+        let code = svc.mint_otp().unwrap();
+        let now = now_unix();
+        assert_eq!(
+            svc.decide_session_accept(SessionMode::Otp, OtpPrefilterStatus::Ok, None, None, now),
+            SessionAcceptDecision::NeedOtpCode
+        );
+        assert!(matches!(
+            svc.decide_session_accept(
+                SessionMode::Otp,
+                OtpPrefilterStatus::Ok,
+                Some(code.as_str()),
+                None,
+                now
+            ),
+            SessionAcceptDecision::Allow { bind_key: Some(_) }
+        ));
+        // Second accept: window gone.
+        assert_eq!(
+            svc.decide_session_accept(
+                SessionMode::Otp,
+                OtpPrefilterStatus::Ok,
+                Some(code.as_str()),
+                None,
+                now
+            ),
+            SessionAcceptDecision::Deny {
+                reason: RejectReason::Auth
+            }
+        );
+    }
+
+    #[test]
+    fn decide_accept_mode_b_disabled_denies() {
+        let mut svc = HostAuthService::default();
+        let secret = HostSecret::try_new(b"host-local-secret!!".to_vec()).unwrap();
+        svc.set_host_secret(secret);
+        assert_eq!(
+            svc.decide_session_accept(
+                SessionMode::Unattended,
+                OtpPrefilterStatus::None,
+                None,
+                None,
+                now_unix()
+            ),
+            SessionAcceptDecision::Deny {
+                reason: RejectReason::Policy
+            }
+        );
+        svc.set_unattended_enabled(true);
+        assert_eq!(
+            svc.decide_session_accept(
+                SessionMode::Unattended,
+                OtpPrefilterStatus::None,
+                None,
+                None,
+                now_unix()
+            ),
+            SessionAcceptDecision::Allow { bind_key: None }
+        );
+    }
+
+    #[test]
+    fn decide_accept_confirm_sessions() {
+        let mut svc = HostAuthService::default();
+        svc.set_confirm_sessions(true);
+        let code = svc.mint_otp().unwrap();
+        assert_eq!(
+            svc.decide_session_accept(
+                SessionMode::Otp,
+                OtpPrefilterStatus::Skipped,
+                Some(code.as_str()),
+                None,
+                now_unix()
+            ),
+            SessionAcceptDecision::NeedConfirm
+        );
+        assert!(matches!(
+            svc.decide_session_accept(
+                SessionMode::Otp,
+                OtpPrefilterStatus::Skipped,
+                Some(code.as_str()),
+                Some(true),
+                now_unix()
+            ),
+            SessionAcceptDecision::Allow { .. }
+        ));
     }
 }

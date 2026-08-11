@@ -42,6 +42,11 @@ pub fn default_session_intent_config() -> RateLimitConfig {
     RateLimitConfig::per_window(20, Duration::from_secs(60))
 }
 
+/// Default admin surface limit: 20 attempts / minute / IP (force-disconnect, etc.).
+pub fn default_admin_config() -> RateLimitConfig {
+    RateLimitConfig::per_window(20, Duration::from_secs(60))
+}
+
 /// Error when a key has exhausted its budget.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RateLimitExceeded {
@@ -146,6 +151,8 @@ pub struct RateLimiters {
     pub register: RateLimiter,
     pub refresh: RateLimiter,
     pub session_intent: RateLimiter,
+    /// Operator admin routes (`/v1/admin/...`).
+    pub admin: RateLimiter,
 }
 
 impl RateLimiters {
@@ -154,10 +161,13 @@ impl RateLimiters {
             register: RateLimiter::new(default_register_config()),
             refresh: RateLimiter::new(default_refresh_config()),
             session_intent: RateLimiter::new(default_session_intent_config()),
+            admin: RateLimiter::new(default_admin_config()),
         }
     }
 
-    /// Construct with custom configs (tests).
+    /// Construct with custom configs for register/refresh/session_intent (tests).
+    ///
+    /// Admin limiter uses [`default_admin_config`]; override with [`Self::with_admin`].
     pub fn with_configs(
         register: RateLimitConfig,
         refresh: RateLimitConfig,
@@ -167,7 +177,14 @@ impl RateLimiters {
             register: RateLimiter::new(register),
             refresh: RateLimiter::new(refresh),
             session_intent: RateLimiter::new(session_intent),
+            admin: RateLimiter::new(default_admin_config()),
         }
+    }
+
+    /// Replace the admin limiter config (tests / tighter deployments).
+    pub fn with_admin(mut self, admin: RateLimitConfig) -> Self {
+        self.admin = RateLimiter::new(admin);
+        self
     }
 }
 

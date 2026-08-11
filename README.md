@@ -1,75 +1,49 @@
-# RemoteLink
+﻿# RemoteLink
 
-Low-latency remote desktop with system audio. See [DESIGN.md](DESIGN.md) for architecture, threat model, and PR plan.
+Low-latency remote desktop with **system audio**, host agent, viewer, and signaling server.
 
-## Status
+> **Integrated tree** (`integrate/v1` / `main`): monorepo assembled from plan PRs 1–27.
+> Media path is still **mock PeerTransport / MH264** unless you wire real WebRTC.
 
-PR 1 monorepo skeleton: compiling workspace stubs (`packages/common`, `apps/host`, `apps/viewer`, `apps/server`). Coverage fail-closed gates are **off** until a later PR; see `agents/shared/allowlist.toml`.
+## Docs
 
-## Repository layout
+| Doc | Path |
+|-----|------|
+| Design | [DESIGN.md](DESIGN.md) |
+| Resume / handoff | [RESUME.md](RESUME.md) |
+| Progress | [PROGRESS.md](PROGRESS.md) |
+| Runbook | [docs/runbook.md](docs/runbook.md) |
+| Threat model | [docs/threat-model.md](docs/threat-model.md) |
+| Platform limits | [docs/platform-limitations.md](docs/platform-limitations.md) |
+| Packaging | [deploy/packaging/README.md](deploy/packaging/README.md) |
 
-```text
-remotelink/
-├── apps/host, viewer, server   # deployable binaries (stubs)
-├── packages/common             # shared types / version
-├── agents/shared/              # allowlists, agent config (later)
-├── tests/{integration,e2e,fixtures}/
-├── docs/
-├── Cargo.toml                  # workspace root
-└── .github/workflows/ci.yml
+## Environment (Windows)
+
+```powershell
+$env:Path = "C:\Users\Linked\tools\mingw64\bin;$env:USERPROFILE\.cargo\bin;" + $env:Path
+$env:RUSTUP_TOOLCHAIN = "stable-x86_64-pc-windows-gnu"
 ```
 
-## Prerequisites
+## Build & test
 
-- [Rust](https://rustup.rs/) stable (see `rust-toolchain.toml`)
-- On Windows GNU builds: a MinGW-w64 toolchain on `PATH` if using `stable-*-pc-windows-gnu`
-
-## Build
-
-```bash
-# From repository root
+```powershell
 cargo build --workspace
-```
-
-Binaries:
-
-| Binary              | Crate               | Role                          |
-|---------------------|---------------------|-------------------------------|
-| `remotelink-host`   | `apps/host`         | Host agent                    |
-| `remotelink-viewer` | `apps/viewer`       | Viewer client                 |
-| `remotelink-server` | `apps/server`       | Signaling / registry server   |
-
-```bash
-cargo run -p remotelink-host
-cargo run -p remotelink-viewer
-cargo run -p remotelink-server
-```
-
-## Test & lint
-
-```bash
-cargo fmt --all
-cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
-```
-
-### Synthetic E2E (identity bind + A/V + input mock)
-
-PR 15 composes host `SessionManager` + `viewer-core` over `MockPeerTransport` (no GPU, no real network):
-
-```bash
+cargo run -p remotelink-server
+cargo run -p remotelink-host -- --role=colocate
+cargo run -p remotelink-viewer -- --mock-codec --hud-block
 cargo test -p remotelink-e2e
 ```
 
-Coverage: Mode A/B authorize → DTLS fingerprint_sig → DataChannel identity bind; input rejected before bind / accepted after; synthetic video/audio on the viewer; optional in-process server `session_intent` + accept smoke (`127.0.0.1:0` only).
+## Layout
 
-CI (`.github/workflows/ci.yml`) runs `fmt --check`, `clippy -D warnings`, and `test` on `ubuntu-latest`.
+- `apps/host` — service + session agent
+- `apps/viewer` — CLI / optional egui shell
+- `apps/server` — registry, WSS signaling, security, metrics, admin
+- `packages/*` — protocol, auth, media, net, platforms, viewer-core, common
+- `agents/*` — unit-test-agent, coverage-gate, bug-hunt-agent
+- `tests/e2e` — synthetic identity + A/V + input tests
 
 ## License
 
-Licensed under either of
-
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
-- MIT license ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
-
-at your option.
+MIT OR Apache-2.0

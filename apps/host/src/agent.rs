@@ -31,10 +31,20 @@ pub struct AgentSessionState {
     /// Service may request enable via `SetPolicy`, but the agent must still
     /// refuse inject until [`SessionManager::input_allowed`].
     pub enable_input: bool,
+    /// Whether Mode B unattended is requested for the current session.
+    ///
+    /// Cleared on session end; cannot be set `true` while
+    /// [`Self::unattended_disabled`] is latched by a local kill-switch.
+    pub unattended: bool,
     /// Session chrome visibility.
     pub chrome_visible: bool,
-    /// Kill-switch latched.
+    /// Kill-switch latched (current session surface ended).
     pub killed: bool,
+    /// Local kill-switch latched unattended Mode B off until
+    /// [`Self::reenable_unattended_local`] (not clearable by remote `SetPolicy`).
+    ///
+    /// Survives detach/shutdown/re-attach; only cleared by local re-enable.
+    pub unattended_disabled: bool,
 }
 
 impl AgentSessionState {
@@ -51,6 +61,20 @@ impl AgentSessionState {
             message: message.into(),
             session_id,
         })
+    }
+
+    /// Reset session-scoped fields while preserving the host-local
+    /// [`Self::unattended_disabled`] latch (G9 / kill-switch).
+    fn clear_session_keep_unattended_latch(&mut self) {
+        let unattended_disabled = self.unattended_disabled;
+        *self = Self::default();
+        self.unattended_disabled = unattended_disabled;
+    }
+
+    /// Local-only: clear the unattended-disabled latch so Mode B may be
+    /// re-enabled via `SetPolicy`. Remote control paths must not call this.
+    pub fn reenable_unattended_local(&mut self) {
+        self.unattended_disabled = false;
     }
 
     /// Ensure `session_id` matches the attached session.
@@ -87,15 +111,29 @@ impl AgentSessionState {
     /// Apply a control message to local skeleton state.
     ///
     /// Returns `Ack` only when the command was applied; otherwise a stable
-    /// `Error` (`not_attached`, `session_mismatch`, `killed`, `unexpected`).
+    /// `Error` (`not_attached`, `session_mismatch`, `busy`, `killed`,
+    /// `chrome_mandatory`, `unattended_disabled`, `unexpected`).
     pub fn handle(&mut self, msg: &ControlMessage) -> ControlMessage {
         match msg {
             ControlMessage::AttachSession(a) => {
-                // Re-attach clears kill latch for the new session.
+                // Single-controller (G9): reject a second attach while a live
+                // session is bound. After kill-switch latch, re-attach is allowed
+                // and clears the kill latch for the new session.
+                // `unattended_disabled` is host-local and is NOT cleared here.
+                if self.session_id.is_some() && !self.killed {
+                    return Self::err(
+                        error_codes::BUSY,
+                        "session already active on host",
+                        Some(a.session_id.clone()),
+                    );
+                }
                 self.session_id = Some(a.session_id.clone());
                 self.media_started = false;
                 self.enable_input = false;
-                self.chrome_visible = false;
+                self.unattended = false;
+                // Mandatory connection chrome while attached (G9); cannot be
+                // remote-hidden while the session remains live.
+                self.chrome_visible = true;
                 self.killed = false;
                 Self::ack("attach_session", Some(a.session_id.clone()))
             }
@@ -103,7 +141,7 @@ impl AgentSessionState {
                 if let Some(e) = self.require_session(&d.session_id) {
                     return e;
                 }
-                *self = AgentSessionState::default();
+                self.clear_session_keep_unattended_latch();
                 Self::ack("detach_session", Some(d.session_id.clone()))
             }
             ControlMessage::SetPolicy(p) => {
@@ -113,7 +151,17 @@ impl AgentSessionState {
                 if let Some(e) = self.require_not_killed(Some(p.session_id.clone())) {
                     return e;
                 }
+                // Kill-switch may latch unattended off; remote policy cannot
+                // re-enable Mode B without local `reenable_unattended_local`.
+                if p.unattended && self.unattended_disabled {
+                    return Self::err(
+                        error_codes::UNATTENDED_DISABLED,
+                        "unattended disabled by local kill-switch until re-enabled on host",
+                        Some(p.session_id.clone()),
+                    );
+                }
                 self.enable_input = p.enable_input;
+                self.unattended = p.unattended;
                 Self::ack("set_policy", Some(p.session_id.clone()))
             }
             ControlMessage::StartMedia(s) => {
@@ -162,14 +210,34 @@ impl AgentSessionState {
                 if let Some(e) = self.require_session(&c.session_id) {
                     return e;
                 }
-                self.chrome_visible = c.visible;
+                // After kill: refuse all chrome commands (no re-enable of a
+                // dead session surface; no hide-as-success either).
+                if self.killed {
+                    return Self::err(
+                        error_codes::KILLED,
+                        "kill-switch is latched; chrome commands refused until re-attach",
+                        Some(c.session_id.clone()),
+                    );
+                }
+                // G9: mandatory chrome cannot be remote-disabled while live.
+                // Refuse hide with a stable error so callers do not treat Ack
+                // as success while chrome remains forced on.
+                if !c.visible {
+                    self.chrome_visible = true;
+                    return Self::err(
+                        error_codes::CHROME_MANDATORY,
+                        "session chrome is mandatory while session is live",
+                        Some(c.session_id.clone()),
+                    );
+                }
+                self.chrome_visible = true;
                 Self::ack("show_session_chrome", Some(c.session_id.clone()))
             }
             ControlMessage::ShutdownSession(s) => {
                 if let Some(e) = self.require_session(&s.session_id) {
                     return e;
                 }
-                *self = AgentSessionState::default();
+                self.clear_session_keep_unattended_latch();
                 Self::ack("shutdown_session", Some(s.session_id.clone()))
             }
             ControlMessage::KillSwitch(k) => {
@@ -193,10 +261,18 @@ impl AgentSessionState {
                         (None, _) => unreachable!("global kill always applies"),
                     };
                 }
+                // Local kill: end session surface — latch kill, clear media,
+                // disable input, hide chrome. Session id retained so mismatch
+                // checks still work until detach/re-attach; `killed` blocks
+                // further control until a fresh attach.
                 self.killed = true;
                 self.media_started = false;
                 self.enable_input = false;
+                self.unattended = false;
                 self.chrome_visible = false;
+                if k.disable_unattended {
+                    self.unattended_disabled = true;
+                }
                 Self::ack("kill_switch", k.session_id.clone())
             }
             ControlMessage::SignalForward(s) => {
@@ -247,11 +323,30 @@ impl AgentSession {
         }
     }
 
-    /// True when policy requested input **and** identity bind is complete.
+    /// True when policy requested input **and** identity bind is complete
+    /// **and** kill-switch is not latched.
     ///
-    /// Host MUST NOT inject input unless this returns true (KD17).
+    /// Host MUST NOT inject input unless this returns true (KD17 / PR 18).
     pub fn input_injection_allowed(&self) -> bool {
-        self.state.enable_input && self.manager.input_allowed()
+        self.state.enable_input && !self.state.killed && self.manager.input_allowed()
+    }
+
+    /// Sync the session manager policy/kill gate from control-plane flags.
+    ///
+    /// Call after handling control messages or before polling inbound input.
+    pub fn sync_input_policy(&mut self) {
+        self.manager
+            .set_input_policy_enabled(self.state.enable_input && !self.state.killed);
+    }
+
+    /// Poll PeerTransport inbound DataChannels (identity + input inject).
+    ///
+    /// Updates the inject policy gate from `enable_input && !killed` before
+    /// processing. Input is decoded and injected only when
+    /// [`Self::input_injection_allowed`] would be true after bind.
+    pub fn poll_inbound(&mut self) -> crate::session::Result<crate::session::InboundStats> {
+        self.sync_input_policy();
+        self.manager.poll_inbound()
     }
 
     /// Apply a control message: update state and drive the session manager.
@@ -271,6 +366,10 @@ impl AgentSession {
             ControlMessage::DetachSession(_) | ControlMessage::ShutdownSession(_) => {
                 self.manager.detach();
             }
+            ControlMessage::SetPolicy(_) => {
+                // enable_input applied on state; sync inject gate.
+                self.sync_input_policy();
+            }
             ControlMessage::StartMedia(_) => {
                 if let Err(e) = self.manager.start_media() {
                     self.state.media_started = false;
@@ -285,7 +384,11 @@ impl AgentSession {
                 let _ = self.manager.stop_media();
             }
             ControlMessage::KillSwitch(_) => {
+                // End media plane + clear session binding on the manager so
+                // input/media cannot continue after local kill-switch.
                 let _ = self.manager.stop_media();
+                self.manager.detach();
+                self.sync_input_policy();
             }
             ControlMessage::SignalForward(s) => {
                 if is_peer_signal_kind(&s.kind) {
@@ -351,9 +454,6 @@ pub fn run() {
     match run_agent_only_synthetic("agent-synthetic-session") {
         Ok(summary) => {
             println!("agent: {summary}");
-            let reg = remotelink_common::process_registry();
-            reg.inc_sessions(remotelink_common::SessionResult::Accept);
-            reg.inc_ice_path(remotelink_common::IcePath::Host);
             println!("agent: idle exit (named pipe client loop later)");
         }
         Err(e) => {
@@ -559,6 +659,7 @@ mod tests {
         let mut state = AgentSessionState::default();
         attach(&mut state, "s1");
         assert_eq!(state.session_id.as_deref(), Some("s1"));
+        assert!(state.chrome_visible, "mandatory chrome on attach (G9)");
 
         let r = state.handle(&ControlMessage::SetPolicy(SetPolicy {
             session_id: "s1".into(),
@@ -586,6 +687,225 @@ mod tests {
         assert!(state.killed);
         assert!(!state.media_started);
         assert!(!state.enable_input);
+        assert!(!state.chrome_visible);
+        assert!(state.unattended_disabled);
+    }
+
+    #[test]
+    fn second_attach_rejected_while_session_active() {
+        let mut state = AgentSessionState::default();
+        attach(&mut state, "s1");
+        assert_error(
+            state.handle(&ControlMessage::AttachSession(AttachSession {
+                session_id: "s2".into(),
+                viewer_label: None,
+                feature_flags: Default::default(),
+                turn_uris: vec![],
+                boot_secret: None,
+            })),
+            error_codes::BUSY,
+        );
+        assert_eq!(state.session_id.as_deref(), Some("s1"));
+
+        // After kill, re-attach is allowed (clears latch).
+        state.handle(&ControlMessage::KillSwitch(KillSwitch {
+            session_id: Some("s1".into()),
+            disable_unattended: true,
+            source: KillSwitchSource::Tray,
+        }));
+        attach(&mut state, "s2");
+        assert_eq!(state.session_id.as_deref(), Some("s2"));
+        assert!(!state.killed);
+        assert!(state.chrome_visible);
+    }
+
+    #[test]
+    fn chrome_cannot_be_remote_hidden_while_live() {
+        let mut state = AgentSessionState::default();
+        attach(&mut state, "s1");
+        assert!(state.chrome_visible);
+
+        // Hide refused with stable error (not Ack) so callers do not treat as success.
+        assert_error(
+            state.handle(&ControlMessage::ShowSessionChrome(ShowSessionChrome {
+                session_id: "s1".into(),
+                visible: false,
+                label: None,
+            })),
+            error_codes::CHROME_MANDATORY,
+        );
+        assert!(
+            state.chrome_visible,
+            "remote hide must not disable mandatory chrome while live"
+        );
+
+        // Show while live still acks.
+        let r = state.handle(&ControlMessage::ShowSessionChrome(ShowSessionChrome {
+            session_id: "s1".into(),
+            visible: true,
+            label: Some("v".into()),
+        }));
+        assert!(matches!(r, ControlMessage::Ack(_)));
+        assert!(state.chrome_visible);
+    }
+
+    #[test]
+    fn chrome_commands_refused_after_kill() {
+        let mut state = AgentSessionState::default();
+        attach(&mut state, "s1");
+        state.handle(&ControlMessage::KillSwitch(KillSwitch {
+            session_id: None,
+            disable_unattended: true,
+            source: KillSwitchSource::Hotkey,
+        }));
+        assert!(state.killed);
+        assert!(!state.chrome_visible);
+
+        // Neither show nor hide may mutate chrome after kill.
+        assert_error(
+            state.handle(&ControlMessage::ShowSessionChrome(ShowSessionChrome {
+                session_id: "s1".into(),
+                visible: true,
+                label: None,
+            })),
+            error_codes::KILLED,
+        );
+        assert!(!state.chrome_visible);
+        assert_error(
+            state.handle(&ControlMessage::ShowSessionChrome(ShowSessionChrome {
+                session_id: "s1".into(),
+                visible: false,
+                label: None,
+            })),
+            error_codes::KILLED,
+        );
+        assert!(!state.chrome_visible);
+    }
+
+    #[test]
+    fn kill_switch_latches_unattended_disabled() {
+        let mut state = AgentSessionState::default();
+        attach(&mut state, "s1");
+        let r = state.handle(&ControlMessage::SetPolicy(SetPolicy {
+            session_id: "s1".into(),
+            enable_input: false,
+            unattended: true,
+            max_bitrate_bps: 0,
+            disable_hw_encode: false,
+        }));
+        assert!(matches!(r, ControlMessage::Ack(_)));
+        assert!(state.unattended);
+
+        state.handle(&ControlMessage::KillSwitch(KillSwitch {
+            session_id: Some("s1".into()),
+            disable_unattended: true,
+            source: KillSwitchSource::Tray,
+        }));
+        assert!(state.unattended_disabled);
+        assert!(!state.unattended);
+
+        // Re-attach does not clear the host-local latch.
+        attach(&mut state, "s2");
+        assert!(state.unattended_disabled);
+        assert_error(
+            state.handle(&ControlMessage::SetPolicy(SetPolicy {
+                session_id: "s2".into(),
+                enable_input: false,
+                unattended: true,
+                max_bitrate_bps: 0,
+                disable_hw_encode: false,
+            })),
+            error_codes::UNATTENDED_DISABLED,
+        );
+        assert!(!state.unattended);
+
+        // Other policy (unattended:false) still applies.
+        let r = state.handle(&ControlMessage::SetPolicy(SetPolicy {
+            session_id: "s2".into(),
+            enable_input: true,
+            unattended: false,
+            max_bitrate_bps: 0,
+            disable_hw_encode: false,
+        }));
+        assert!(matches!(r, ControlMessage::Ack(_)));
+        assert!(state.enable_input);
+        assert!(!state.unattended);
+
+        // Local re-enable only.
+        state.reenable_unattended_local();
+        assert!(!state.unattended_disabled);
+        let r = state.handle(&ControlMessage::SetPolicy(SetPolicy {
+            session_id: "s2".into(),
+            enable_input: false,
+            unattended: true,
+            max_bitrate_bps: 0,
+            disable_hw_encode: false,
+        }));
+        assert!(matches!(r, ControlMessage::Ack(_)));
+        assert!(state.unattended);
+
+        // Detach preserves latch if re-latched by another kill later — also
+        // verify detach itself does not invent a latch.
+        state.handle(&ControlMessage::DetachSession(DetachSession {
+            session_id: "s2".into(),
+            reason: None,
+        }));
+        assert!(!state.unattended_disabled);
+        assert!(state.session_id.is_none());
+    }
+
+    #[test]
+    fn detach_preserves_unattended_disabled_latch() {
+        let mut state = AgentSessionState::default();
+        attach(&mut state, "s1");
+        state.handle(&ControlMessage::KillSwitch(KillSwitch {
+            session_id: None,
+            disable_unattended: true,
+            source: KillSwitchSource::Hotkey,
+        }));
+        assert!(state.unattended_disabled);
+        // Detach after kill: session_id still matches.
+        let r = state.handle(&ControlMessage::DetachSession(DetachSession {
+            session_id: "s1".into(),
+            reason: Some("post-kill".into()),
+        }));
+        assert!(matches!(r, ControlMessage::Ack(_)));
+        assert!(state.session_id.is_none());
+        assert!(
+            state.unattended_disabled,
+            "unattended_disabled must survive detach"
+        );
+    }
+
+    #[test]
+    fn agent_kill_switch_clears_media_session() {
+        let mut agent = AgentSession::new_mock();
+        let r = agent.handle(&ControlMessage::AttachSession(AttachSession {
+            session_id: "kill-media".into(),
+            viewer_label: None,
+            feature_flags: Default::default(),
+            turn_uris: vec![],
+            boot_secret: None,
+        }));
+        assert!(matches!(r, ControlMessage::Ack(_)));
+        let r = agent.handle(&ControlMessage::StartMedia(StartMedia {
+            session_id: "kill-media".into(),
+            display_id: None,
+        }));
+        assert!(matches!(r, ControlMessage::Ack(_)));
+        assert!(agent.state.media_started);
+        assert!(agent.manager.session_id().is_some());
+
+        let r = agent.handle(&ControlMessage::KillSwitch(KillSwitch {
+            session_id: Some("kill-media".into()),
+            disable_unattended: true,
+            source: KillSwitchSource::Hotkey,
+        }));
+        assert!(matches!(r, ControlMessage::Ack(_)));
+        assert!(agent.state.killed);
+        assert!(!agent.state.media_started);
+        assert!(!agent.state.enable_input);
+        assert!(agent.manager.session_id().is_none());
     }
 
     #[test]
@@ -877,5 +1197,90 @@ mod tests {
         assert!(matches!(r, ControlMessage::Ack(_)));
         assert_eq!(agent.manager.session_id(), Some("m1"));
         assert_eq!(agent.state.session_id.as_deref(), Some("m1"));
+    }
+
+    #[test]
+    fn agent_input_gate_rejects_before_bind_and_records_after() {
+        use crate::session::INPUT_CHANNEL_LABEL;
+        use remotelink_net::DataMessage;
+        use remotelink_protocol::{encode_input, InputEvent, InputPayload, KeyEvent, MouseMove};
+
+        let mut agent = AgentSession::new_mock();
+        let r = agent.handle(&ControlMessage::AttachSession(AttachSession {
+            session_id: "in-gate".into(),
+            viewer_label: None,
+            feature_flags: Default::default(),
+            turn_uris: vec![],
+            boot_secret: None,
+        }));
+        assert!(matches!(r, ControlMessage::Ack(_)));
+
+        // Policy enables input, but identity not bound yet.
+        let r = agent.handle(&ControlMessage::SetPolicy(SetPolicy {
+            session_id: "in-gate".into(),
+            enable_input: true,
+            unattended: false,
+            max_bitrate_bps: 0,
+            disable_hw_encode: true,
+        }));
+        assert!(matches!(r, ControlMessage::Ack(_)));
+        assert!(agent.state.enable_input);
+        assert!(!agent.input_injection_allowed());
+        agent.sync_input_policy();
+        assert!(agent.manager.policy_input_enabled());
+        assert!(!agent.manager.injection_allowed());
+
+        let mv = encode_input(&InputEvent {
+            client_ts_us: 1,
+            seq: 1,
+            payload: InputPayload::MouseMove(MouseMove {
+                x: 0.25,
+                y: 0.75,
+                display_id: 0,
+            }),
+        })
+        .unwrap();
+        let msg = DataMessage {
+            label: INPUT_CHANNEL_LABEL.into(),
+            data: mv.into_bytes(),
+            unordered: true,
+        };
+        assert!(!agent.manager.try_accept_input(msg));
+        assert_eq!(agent.manager.rejected_input_count(), 1);
+        assert!(agent.manager.input_stub().unwrap().is_empty());
+
+        // After identity bind, stub records injects.
+        agent.manager.force_identity_bound_for_tests();
+        assert!(agent.input_injection_allowed());
+        agent.sync_input_policy();
+
+        let key = encode_input(&InputEvent {
+            client_ts_us: 2,
+            seq: 2,
+            payload: InputPayload::Key(KeyEvent {
+                scancode: 0x1C,
+                extended: false,
+                pressed: true,
+                modifiers: 0,
+            }),
+        })
+        .unwrap();
+        let msg = DataMessage {
+            label: INPUT_CHANNEL_LABEL.into(),
+            data: key.into_bytes(),
+            unordered: false,
+        };
+        assert!(agent.manager.try_accept_input(msg));
+        assert_eq!(agent.manager.input_stub().unwrap().len(), 1);
+
+        // Kill-switch must block further inject.
+        let r = agent.handle(&ControlMessage::KillSwitch(KillSwitch {
+            session_id: Some("in-gate".into()),
+            disable_unattended: true,
+            source: KillSwitchSource::Hotkey,
+        }));
+        assert!(matches!(r, ControlMessage::Ack(_)));
+        assert!(agent.state.killed);
+        assert!(!agent.input_injection_allowed());
     }
 }
