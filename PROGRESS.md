@@ -131,4 +131,10 @@ Plan PRs 1–27 done.
 - `deploy/packaging/RELEASE_CHECKLIST.md` for MSI/codesign/smoke steps
 - WiX MSI remains optional (needs admin install of WiX Toolset)
 
+**2026-08-12 (Phase 3 live session):**
+- Host `--frames=0` keeps capturing until hangup (desktop host uses this)
+- Mock encoder embeds full/downscaled pixels so the viewer can paint a real picture
+- `remotelink-app` Connect opens a live remote-desktop window (mouse/keys + Disconnect)
+- Hosting / STUN/TURN still deferred until the product is finished
+
 **Optional (post-core):** Authenticode EV signing, NVENC SDK, webrtc multi-process e2e.

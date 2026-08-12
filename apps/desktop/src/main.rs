@@ -49,12 +49,12 @@ fn main() {
 
 fn print_help() {
     eprintln!(
-        "remotelink-app {} — product shell (Phase 1)\n\n\
+        "remotelink-app {} — product shell (Phase 3 live session)\n\n\
          Usage:\n  \
          remotelink-app [--server=http://HOST:PORT]\n\n\
          Home screen:\n  \
          • This PC — public ID + OTP when host is enrolled\n  \
-         • Connect — remote ID + OTP\n  \
+         • Connect — remote ID + OTP; live remote-desktop window stays open\n  \
          • Advanced — signaling URL, transport, data folder\n\n\
          Lab:\n  \
          1. remotelink-server\n  \

@@ -115,21 +115,84 @@ impl MockSoftwareEncoder {
         annexb_nal(&[0x68, 0x00])
     }
 
-    fn build_slice(&self, frame: &VideoFrame, keyframe: bool, index: u64) -> Vec<u8> {
+    fn build_slice(&self, preview: &PreviewSample, keyframe: bool, index: u64) -> Vec<u8> {
         // 0x65 = IDR (type 5), 0x41 = non-IDR (type 1), nal_ref_idc=2.
         let nal_type: u8 = if keyframe { 0x65 } else { 0x41 };
         let mut nal = vec![nal_type];
         nal.extend_from_slice(MOCK_SLICE_MAGIC);
         nal.extend_from_slice(&index.to_le_bytes());
-        nal.extend_from_slice(&frame.width.to_le_bytes());
-        nal.extend_from_slice(&frame.height.to_le_bytes());
-        nal.push(frame.format.bytes_per_pixel() as u8);
+        nal.extend_from_slice(&preview.width.to_le_bytes());
+        nal.extend_from_slice(&preview.height.to_le_bytes());
+        nal.push(preview.bpp);
         nal.extend_from_slice(&self.target_bitrate_bps.to_le_bytes());
-        // Compact pixel sample (up to 64 bytes) for harness equality checks.
-        let sample_len = frame.data.len().min(64);
-        nal.extend_from_slice(&(sample_len as u32).to_le_bytes());
-        nal.extend_from_slice(&frame.data[..sample_len]);
+        nal.extend_from_slice(&(preview.pixels.len() as u32).to_le_bytes());
+        nal.extend_from_slice(&preview.pixels);
         annexb_nal(&nal)
+    }
+}
+
+/// Max RGB/BGRA preview stored in a mock AU. Larger captures are downscaled.
+const MAX_PREVIEW_WIDTH: u32 = 960;
+const MAX_PREVIEW_HEIGHT: u32 = 540;
+
+struct PreviewSample {
+    width: u32,
+    height: u32,
+    bpp: u8,
+    pixels: Vec<u8>,
+}
+
+fn preview_pixels(frame: &VideoFrame) -> PreviewSample {
+    let src_bpp = frame.format.bytes_per_pixel();
+    if frame.width <= MAX_PREVIEW_WIDTH
+        && frame.height <= MAX_PREVIEW_HEIGHT
+        && !frame.data.is_empty()
+    {
+        return PreviewSample {
+            width: frame.width,
+            height: frame.height,
+            bpp: src_bpp as u8,
+            pixels: frame.data.clone(),
+        };
+    }
+    let scale = (MAX_PREVIEW_WIDTH as f32 / frame.width.max(1) as f32)
+        .min(MAX_PREVIEW_HEIGHT as f32 / frame.height.max(1) as f32)
+        .min(1.0);
+    let dw = ((frame.width as f32) * scale).round().max(1.0) as u32;
+    let dh = ((frame.height as f32) * scale).round().max(1.0) as u32;
+    let mut pixels = vec![0u8; dw as usize * dh as usize * 3];
+    for y in 0..dh as usize {
+        let sy = (y as u32 * frame.height / dh) as usize;
+        for x in 0..dw as usize {
+            let sx = (x as u32 * frame.width / dw) as usize;
+            let si = (sy * frame.width as usize + sx) * src_bpp;
+            let di = (y * dw as usize + x) * 3;
+            if si + src_bpp <= frame.data.len() {
+                match frame.format {
+                    PixelFormat::Rgb24 => {
+                        pixels[di] = frame.data[si];
+                        pixels[di + 1] = frame.data[si + 1];
+                        pixels[di + 2] = frame.data[si + 2];
+                    }
+                    PixelFormat::Rgba8 => {
+                        pixels[di] = frame.data[si];
+                        pixels[di + 1] = frame.data[si + 1];
+                        pixels[di + 2] = frame.data[si + 2];
+                    }
+                    PixelFormat::Bgra8 => {
+                        pixels[di] = frame.data[si + 2];
+                        pixels[di + 1] = frame.data[si + 1];
+                        pixels[di + 2] = frame.data[si];
+                    }
+                }
+            }
+        }
+    }
+    PreviewSample {
+        width: dw,
+        height: dh,
+        bpp: 3,
+        pixels,
     }
 }
 
@@ -152,12 +215,13 @@ impl H264Encoder for MockSoftwareEncoder {
         }
 
         let keyframe = self.should_keyframe(force_keyframe);
-        let mut data = Vec::with_capacity(256 + frame.data.len().min(64));
+        let preview = preview_pixels(frame);
+        let mut data = Vec::with_capacity(256 + preview.pixels.len());
         if keyframe {
-            data.extend_from_slice(&self.build_sps(frame.width, frame.height));
+            data.extend_from_slice(&self.build_sps(preview.width, preview.height));
             data.extend_from_slice(&Self::build_pps());
         }
-        data.extend_from_slice(&self.build_slice(frame, keyframe, self.frames_encoded));
+        data.extend_from_slice(&self.build_slice(&preview, keyframe, self.frames_encoded));
 
         self.frames_encoded = self.frames_encoded.saturating_add(1);
         if keyframe {

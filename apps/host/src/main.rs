@@ -350,7 +350,7 @@ fn print_usage() {
          WSS host flags (role=ws|service --server):\n  \
          --server URL     Signaling base (default http://127.0.0.1:8080; or REMOTELINK_SERVER)\n  \
          --display-name N Enrollment display name\n  \
-         --frames N       Synthetic video frames to pump after connect (default 5)\n  \
+         --frames N       Video frames after connect (default 5; 0 = live until hangup)\n  \
          --sessions N     Max sessions (0 = unlimited; service defaults to 0)\n  \
          --creds PATH     Credential file (default .remotelink-host.json; REMOTELINK_HOST_CREDS)\n  \
          --fresh          Ignore saved creds; register a new device\n  \

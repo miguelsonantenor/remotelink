@@ -7,8 +7,9 @@ use eframe::egui;
 use crate::config::{ensure_parent, AppConfig};
 use crate::host_worker::HostWorker;
 use crate::status::{read_status, status_age_secs, HostStatusSnapshot};
-use crate::viewer_worker::{ConnectOutcome, ViewerWorker};
+use crate::viewer_worker::ViewerWorker;
 use remotelink_net::TransportMode;
+use remotelink_viewer::{named_key_from_name, MouseButtonKind, RawInput};
 
 /// Main eframe application.
 pub struct RemoteLinkApp {
@@ -52,7 +53,7 @@ impl RemoteLinkApp {
             host_status: HostStatusSnapshot::default(),
             host_error: None,
             footer_note: format!(
-                "RemoteLink {} · product shell (Phase 1)",
+                "RemoteLink {} · live session (Phase 3)",
                 remotelink_common::VERSION
             ),
             last_status_poll: 0.0,
@@ -143,8 +144,14 @@ impl RemoteLinkApp {
             }
         }
         // Keep animating while host/viewer work.
-        if self.allow_access || self.viewer.as_ref().is_some_and(|v| !v.is_finished()) {
-            ctx.request_repaint_after(std::time::Duration::from_millis(250));
+        let viewer_live = self.viewer.as_ref().is_some_and(|v| !v.is_finished());
+        if self.allow_access || viewer_live {
+            let interval = if viewer_live {
+                std::time::Duration::from_millis(16)
+            } else {
+                std::time::Duration::from_millis(250)
+            };
+            ctx.request_repaint_after(interval);
         }
     }
 
@@ -152,24 +159,30 @@ impl RemoteLinkApp {
         let Some(ref worker) = self.viewer else {
             return;
         };
-        match worker.poll() {
-            ConnectOutcome::Running => {
-                self.connect_status = "Connecting…".into();
-            }
-            ConnectOutcome::Ok(s) => {
-                self.connect_status = s;
-                let id = self.remote_id.trim().to_string();
-                if !id.is_empty() {
-                    self.config.push_recent(&id);
-                    let _ = self.config.save();
-                }
-                self.viewer = None;
-            }
-            ConnectOutcome::Err(e) => {
-                self.connect_status = format!("Connect failed: {e}");
-                self.viewer = None;
-            }
+        let snap = worker.snapshot();
+        if let Some(err) = &snap.error {
+            self.connect_status = format!("Connect failed: {err}");
+        } else if !snap.status.is_empty() {
+            self.connect_status = snap.status.clone();
         }
+        if worker.is_finished() {
+            let id = self.remote_id.trim().to_string();
+            if snap.error.is_none() && !id.is_empty() {
+                self.config.push_recent(&id);
+                let _ = self.config.save();
+            }
+            if snap.error.is_none() && !self.connect_status.starts_with("Connect failed") {
+                self.connect_status = snap.status;
+            }
+            self.viewer = None;
+        }
+    }
+
+    fn disconnect_viewer(&mut self) {
+        if let Some(v) = self.viewer.take() {
+            v.request_stop();
+        }
+        self.connect_status = "Disconnected.".into();
     }
 
     fn start_connect(&mut self) {
@@ -198,6 +211,164 @@ impl RemoteLinkApp {
 
     fn copy_to_clipboard(ctx: &egui::Context, text: &str) {
         ctx.copy_text(text.to_string());
+    }
+
+    fn draw_live_session(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let Some(snap) = self.viewer.as_ref().map(|w| w.snapshot()) else {
+            return;
+        };
+
+        egui::Frame::group(ui.style())
+            .inner_margin(10.0)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.heading("Remote session");
+                    ui.label(
+                        egui::RichText::new(&snap.phase)
+                            .small()
+                            .weak(),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("Disconnect").clicked() {
+                            self.disconnect_viewer();
+                        }
+                    });
+                });
+                ui.label(format!(
+                    "{} · {}×{} · video {} · audio {}",
+                    snap.hud,
+                    snap.width,
+                    snap.height,
+                    snap.video_rx,
+                    snap.audio_rx
+                ));
+
+                if let (Some(rgba), w, h) = (snap.rgba.as_ref(), snap.width, snap.height) {
+                    if w > 0 && h > 0 && rgba.len() >= (w as usize * h as usize * 4) {
+                        let image = egui::ColorImage::from_rgba_unmultiplied(
+                            [w as usize, h as usize],
+                            rgba,
+                        );
+                        let tex = ctx.load_texture(
+                            "remotelink-live-frame",
+                            image,
+                            egui::TextureOptions::LINEAR,
+                        );
+                        let avail = ui.available_size();
+                        let aspect = w as f32 / h.max(1) as f32;
+                        let mut size = egui::vec2(avail.x.max(320.0), avail.x.max(320.0) / aspect);
+                        if size.y > 480.0 {
+                            size = egui::vec2(480.0 * aspect, 480.0);
+                        }
+                        let response = ui.add(
+                            egui::Image::new((tex.id(), size)).sense(egui::Sense::click_and_drag()),
+                        );
+                        self.forward_session_input(&response, ctx, size);
+                    }
+                } else {
+                    ui.add_space(8.0);
+                    ui.label(
+                        egui::RichText::new("Waiting for first video frame…")
+                            .italics()
+                            .weak(),
+                    );
+                }
+            });
+    }
+
+    fn forward_session_input(
+        &self,
+        response: &egui::Response,
+        ctx: &egui::Context,
+        size: egui::Vec2,
+    ) {
+        let Some(worker) = self.viewer.as_ref() else {
+            return;
+        };
+        let rect = response.rect;
+        let pointer = ctx.input(|i| i.pointer.hover_pos());
+        if let Some(pos) = pointer.filter(|_| response.hovered()) {
+            let px = ((pos.x - rect.min.x) / size.x * size.x).clamp(0.0, size.x);
+            let py = ((pos.y - rect.min.y) / size.y * size.y).clamp(0.0, size.y);
+            worker.send_input(RawInput::MouseMove { px, py });
+            if ctx.input(|i| i.pointer.primary_pressed()) {
+                worker.send_input(RawInput::MouseButton {
+                    button: MouseButtonKind::Left,
+                    pressed: true,
+                    px,
+                    py,
+                });
+            }
+            if ctx.input(|i| i.pointer.primary_released()) {
+                worker.send_input(RawInput::MouseButton {
+                    button: MouseButtonKind::Left,
+                    pressed: false,
+                    px,
+                    py,
+                });
+            }
+            if ctx.input(|i| i.pointer.secondary_pressed()) {
+                worker.send_input(RawInput::MouseButton {
+                    button: MouseButtonKind::Right,
+                    pressed: true,
+                    px,
+                    py,
+                });
+            }
+            if ctx.input(|i| i.pointer.secondary_released()) {
+                worker.send_input(RawInput::MouseButton {
+                    button: MouseButtonKind::Right,
+                    pressed: false,
+                    px,
+                    py,
+                });
+            }
+            let scroll = ctx.input(|i| i.raw_scroll_delta);
+            if scroll != egui::Vec2::ZERO {
+                worker.send_input(RawInput::MouseWheel {
+                    delta_x: scroll.x,
+                    delta_y: scroll.y,
+                    precise: true,
+                    px,
+                    py,
+                });
+            }
+        }
+
+        if response.has_focus() || response.hovered() {
+            ctx.input(|i| {
+                for ev in &i.events {
+                    if let egui::Event::Key {
+                        key,
+                        pressed,
+                        modifiers,
+                        ..
+                    } = ev
+                    {
+                        if let Some(named) = named_key_from_name(format!("{key:?}").as_str()) {
+                            let mut mods = 0u32;
+                            if modifiers.ctrl {
+                                mods |= remotelink_protocol::modifiers::CTRL;
+                            }
+                            if modifiers.alt {
+                                mods |= remotelink_protocol::modifiers::ALT;
+                            }
+                            if modifiers.shift {
+                                mods |= remotelink_protocol::modifiers::SHIFT;
+                            }
+                            if modifiers.command {
+                                mods |= remotelink_protocol::modifiers::META;
+                            }
+                            worker.send_input(RawInput::KeyNamed {
+                                key: named,
+                                pressed: *pressed,
+                                modifiers: mods,
+                            });
+                        }
+                    }
+                }
+            });
+        }
     }
 }
 
@@ -235,8 +406,17 @@ impl eframe::App for RemoteLinkApp {
             });
         });
 
+        if self.viewer.is_some() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(980.0, 720.0)));
+        }
+
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.add_space(4.0);
+
+            if self.viewer.is_some() {
+                self.draw_live_session(ui, ctx);
+                ui.add_space(10.0);
+            }
 
             // ── This PC ──────────────────────────────────────────────
             egui::Frame::group(ui.style())
@@ -407,6 +587,13 @@ impl eframe::App for RemoteLinkApp {
                                 self.start_connect();
                             }
                         });
+                        if connecting
+                            && ui
+                                .add_sized([100.0, 28.0], egui::Button::new("Disconnect"))
+                                .clicked()
+                        {
+                            self.disconnect_viewer();
+                        }
                     });
 
                     if !self.config.recent_hosts.is_empty() {

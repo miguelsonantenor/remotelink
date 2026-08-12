@@ -1,14 +1,14 @@
 # RemoteLink — Resume handoff
 
-**Saved:** 2026-08-11 (evening handoff — Phase 1 parked)  
+**Saved:** 2026-08-12 (Phase 3 live session window)  
 **Primary tree:** branch **`main`** at `C:\Users\Linked\Documents\remotelink`  
 **GitHub:** https://github.com/miguelsonantenor/remotelink  
 
 ## Git policy (user)
 
 - **OK:** local `git commit` anytime  
-- **NOT OK without explicit permission:** `git push`, GitHub releases, remote tags  
-- At handoff: **`main` is ahead of `origin/main` by 2 local commits** (not pushed)
+- **Push:** user authorized 2026-08-12 (Phase 1 commits are on origin)  
+- **NOT OK without explicit permission:** GitHub releases, remote tags
 
 | Local commit | Summary |
 |--------------|---------|
@@ -29,17 +29,16 @@ Remote still has older core release (`v0.1.0` portable zip **without** product s
 | GitHub release `v0.1.0` | Portable zip (pre–Phase-1 binaries) |
 | **Phase 1 shell** | `apps/desktop` → binary **`remotelink-app`** (egui) |
 | Host under app | Spawns `remotelink-host.exe` child; status JSON + OTP in UI |
-| Lab connect verified | `hello` → accept → offer/answer → `host_media_complete`; `video_rx`/`audio_rx` OK |
-| User saw successful log | Session ends quickly by design (short media burst, not live window) |
+| Lab connect verified | `hello` → accept → offer/answer → live pump (no more burst hangup) |
+| **Phase 3 live window** | `remotelink-app` Connect stays open and paints decoded frames |
 
 ### Not done (pick up later)
 
 | Priority | Work |
 |----------|------|
-| **Phase 3** (user deferred) | Live session **video window** (continuous remote desktop UI) |
-| **Phase 2** | Hosted signaling + STUN/TURN (internet / NAT) |
+| **Phase 2** (user: when finished) | Hosted signaling + STUN/TURN (internet / NAT) |
 | **Phase 4** | MSI + Authenticode; auto-start; updates |
-| Publish | Push local commits + re-release zip including `remotelink-app` (**ask first**) |
+| Polish | Real H.264 decode (today: mock software encoder so pixels reconstruct); full identity-bind on live input |
 
 ### Lab quirks on this machine
 
@@ -57,7 +56,8 @@ Remote still has older core release (`v0.1.0` portable zip **without** product s
 | **Integrated monorepo** | **Yes** |
 | PeerTransport backends | **mock** · **live TCP** · **webrtc-rs** (opt-in) |
 | **Core product** | **COMPLETE** |
-| **Phase 1 product shell** | **DONE** (local commits; not on origin) |
+| **Phase 1 product shell** | **DONE** (on origin) |
+| **Phase 3 live window** | **DONE** (session stays open; Disconnect hangs up) |
 | Shippable artifact | Portable zip (`scripts/package-release.ps1`) — rebuild to include app |
 | MSI | Optional via WiX — unsigned until codesign |
 

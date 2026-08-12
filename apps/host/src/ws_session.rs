@@ -33,8 +33,10 @@ use remotelink_signaling::{
 use crate::control_loop::ServiceAgentClient;
 use crate::policy::{DEFAULT_HOST_OTP_PEPPER, DEFAULT_OTP_TTL_SECS};
 use crate::service::signal_to_agent;
+use crate::platform_capture::{AudioCaptureKind, VideoCaptureKind};
 use crate::session::{parse_ice_payload, parse_sdp_payload, signal_kind, SdpPayload, SessionManager};
 use crate::tray::{default_status_path, HostTray};
+use remotelink_platform_windows::InjectorConfig;
 
 /// Configuration for [`run_ws_host`] / [`run_ws_host_service`].
 #[derive(Debug, Clone)]
@@ -46,6 +48,10 @@ pub struct WsHostConfig {
     /// Transport mode (mock is coerced to live).
     pub transport: TransportMode,
     /// Synthetic video frames to pump after each connect.
+    ///
+    /// **`0` = live session**: keep capturing until the viewer hangs up, the
+    /// tray ends the session, or the peer drops. Lab/e2e use a small positive
+    /// count (burst then `host_media_complete`).
     pub video_frames: u32,
     /// How long to wait for each `session_incoming`.
     pub wait_incoming: Duration,
@@ -328,8 +334,19 @@ async fn handle_one_session_local(
     let offerer = create_peer_transport_with_config(PeerRole::Offerer, transport_cfg)
         .map_err(|e| format!("create offerer: {e}"))?;
     let mut mgr = SessionManager::with_peer(offerer);
+    configure_session_media(&mut mgr, video_frames == 0);
     mgr.attach(&session_id);
-    mgr.start_media().map_err(|e| format!("start_media: {e}"))?;
+    if let Err(e) = mgr.start_media() {
+        if video_frames == 0 {
+            eprintln!("ws-host: live capture open failed ({e}); falling back to mock desktop");
+            mgr.set_video_kind(VideoCaptureKind::WindowsMock);
+            mgr.set_synthetic_geometry(960, 540, 15);
+            mgr.start_media()
+                .map_err(|e| format!("start_media (mock fallback): {e}"))?;
+        } else {
+            return Err(format!("start_media: {e}"));
+        }
+    }
 
     let outbound = mgr.take_outbound_signals();
     let offer_sig = outbound
@@ -366,10 +383,13 @@ async fn handle_one_session_local(
     if let Some(t) = tray {
         t.mark_session_active();
     }
-    let pump = mgr
-        .pump_media(video_frames)
-        .map_err(|e| format!("pump: {e}"))?;
-    if pump.skipped_not_connected || pump.video_sent == 0 {
+    if video_frames == 0 {
+        mgr.force_identity_bound_for_tests();
+        mgr.set_input_policy_enabled(true);
+    }
+    let (pump, end_reason) =
+        drive_local_media(sig, &mut mgr, video_frames, tray).await?;
+    if pump.skipped_not_connected || (video_frames > 0 && pump.video_sent == 0) {
         let _ = mgr.shutdown();
         if let Some(t) = tray {
             t.end_session();
@@ -384,15 +404,17 @@ async fn handle_one_session_local(
         .peer_mut()
         .local_fingerprint()
         .map_err(|e| e.to_string())?;
+    let (v_tx, a_tx) = mgr.media_counters();
     let summary = format!(
-        "ws-host ok public_id={public_id} session={session_id} media=local transport={} video_tx={} audio_tx={} fp={}",
+        "ws-host ok public_id={public_id} session={session_id} media=local transport={} video_tx={} audio_tx={} live={} reason={end_reason} fp={}",
         mode.as_str(),
-        pump.video_sent,
-        pump.audio_sent,
+        v_tx.max(pump.video_sent as u64),
+        a_tx.max(pump.audio_sent as u64),
+        video_frames == 0,
         fp.as_sign_material()
     );
 
-    end_wss_session(sig, &session_id).await;
+    end_wss_session(sig, &session_id, &end_reason).await;
     let _ = mgr.shutdown();
     if let Some(t) = tray {
         t.end_session();
@@ -643,13 +665,18 @@ async fn handle_one_session_agent(
         return Err("agent connected but pumped no video".into());
     }
 
+    let mut end_reason = "host_media_complete".to_string();
+    if video_frames == 0 {
+        end_reason = drive_agent_live(sig, agent, &session_id, tray).await?;
+    }
+
     // Detach agent so the next session can attach a fresh media plane.
     let _ = agent.request(&ControlMessage::DetachSession(DetachSession {
         session_id: session_id.clone(),
-        reason: Some("host_media_complete".into()),
+        reason: Some(end_reason.clone()),
     }));
 
-    end_wss_session(sig, &session_id).await;
+    end_wss_session(sig, &session_id, &end_reason).await;
     if let Some(t) = tray {
         t.end_session();
     }
@@ -805,15 +832,139 @@ async fn relay_offer_answer_ice_local(
     Ok(())
 }
 
-async fn end_wss_session(sig: &mut SignalingClient, session_id: &str) {
+async fn end_wss_session(sig: &mut SignalingClient, session_id: &str, reason: &str) {
     let end_seq = sig.take_seq();
     let _ = sig
         .send(&SignalMessage::SessionEnd {
             session_id: session_id.into(),
             signal_seq: end_seq,
-            reason: "host_media_complete".into(),
+            reason: reason.into(),
         })
         .await;
+}
+
+fn configure_session_media(mgr: &mut SessionManager, live: bool) {
+    if !live {
+        return;
+    }
+    mgr.set_force_software(true);
+    mgr.set_synthetic_geometry(960, 540, 15);
+    let _ = mgr.set_injector_config(InjectorConfig::default());
+    if cfg!(windows) {
+        mgr.set_video_kind(VideoCaptureKind::WindowsDxgi);
+        mgr.set_audio_kind(AudioCaptureKind::WindowsWasapiPreferNative);
+    }
+}
+
+async fn drive_local_media(
+    sig: &mut SignalingClient,
+    mgr: &mut SessionManager,
+    video_frames: u32,
+    tray: Option<&HostTray>,
+) -> Result<(crate::session::PumpStats, String), String> {
+    if video_frames > 0 {
+        let pump = mgr
+            .pump_media(video_frames)
+            .map_err(|e| format!("pump: {e}"))?;
+        return Ok((pump, "host_media_complete".into()));
+    }
+
+    let mut totals = crate::session::PumpStats::default();
+    loop {
+        if tray.map(|t| t.take_end_session()).unwrap_or(false) {
+            return Ok((totals, "tray_end_session".into()));
+        }
+        if mgr.connection_state() != remotelink_net::ConnectionState::Connected {
+            return Ok((totals, "peer_disconnected".into()));
+        }
+
+        match sig.recv_timeout(Duration::from_millis(5)).await {
+            Ok(SignalMessage::SessionEnd { reason, .. }) => {
+                return Ok((
+                    totals,
+                    if reason.is_empty() {
+                        "viewer_session_end".into()
+                    } else {
+                        reason
+                    },
+                ));
+            }
+            Ok(SignalMessage::IceCandidate { candidate, .. }) => {
+                let _ = mgr.apply_signal(
+                    signal_kind::ICE_CANDIDATE,
+                    &serde_json::to_string(&candidate).unwrap_or_default(),
+                );
+            }
+            Ok(_) => {}
+            Err(remotelink_signaling::SignalingError::Timeout(_)) => {}
+            Err(e) => return Ok((totals, format!("signaling:{e}"))),
+        }
+
+        let _ = mgr.poll_inbound();
+        match mgr.pump_media(1) {
+            Ok(s) => {
+                totals.video_sent = totals.video_sent.saturating_add(s.video_sent);
+                totals.audio_sent = totals.audio_sent.saturating_add(s.audio_sent);
+                if s.skipped_not_connected {
+                    return Ok((totals, "peer_disconnected".into()));
+                }
+            }
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("idle") {
+                    tokio::time::sleep(Duration::from_millis(16)).await;
+                    continue;
+                }
+                return Ok((totals, format!("pump:{msg}")));
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(32)).await;
+    }
+}
+
+async fn drive_agent_live(
+    sig: &mut SignalingClient,
+    agent: &mut ServiceAgentClient,
+    session_id: &str,
+    tray: Option<&HostTray>,
+) -> Result<String, String> {
+    loop {
+        if tray.map(|t| t.take_end_session()).unwrap_or(false) {
+            return Ok("tray_end_session".into());
+        }
+        match sig.recv_timeout(Duration::from_millis(40)).await {
+            Ok(SignalMessage::SessionEnd { reason, .. }) => {
+                return Ok(if reason.is_empty() {
+                    "viewer_session_end".into()
+                } else {
+                    reason
+                });
+            }
+            Ok(SignalMessage::IceCandidate { candidate, .. }) => {
+                let payload = serde_json::to_string(&candidate).map_err(|e| e.to_string())?;
+                let (reply, more) = agent
+                    .request(&signal_to_agent(
+                        session_id,
+                        signal_kind::ICE_CANDIDATE,
+                        &payload,
+                    ))
+                    .map_err(|e| format!("agent ice: {e}"))?;
+                if !matches!(reply, ControlMessage::Ack(_)) {
+                    return Ok("agent_rejected_ice".into());
+                }
+                let _ = forward_agent_ice_to_wss(sig, session_id, &more).await;
+            }
+            Ok(_) => {}
+            Err(remotelink_signaling::SignalingError::Timeout(_)) => {}
+            Err(e) => return Ok(format!("signaling:{e}")),
+        }
+        let _ = agent.request(&ControlMessage::QueryStats(
+            remotelink_platform_windows::ipc::message::QueryStats {
+                session_id: Some(session_id.into()),
+            },
+        ));
+        tokio::time::sleep(Duration::from_millis(32)).await;
+    }
 }
 
 /// One-shot: register, connect, serve **one** session, close.

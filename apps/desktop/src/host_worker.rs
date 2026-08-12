@@ -54,6 +54,7 @@ impl HostWorker {
             .arg(format!("--creds={}", creds_path.display()))
             .arg(format!("--status-path={}", status_path.display()))
             .arg("--sessions=0")
+            .arg("--frames=0")
             .arg("--reconnect")
             .arg("--tray")
             .arg("--no-os-tray")

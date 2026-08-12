@@ -16,6 +16,7 @@ remotelink-host = { path = "../host" }
 remotelink-viewer = { path = "../viewer" }
 remotelink-net = { workspace = true }
 remotelink-signaling = { workspace = true }
+remotelink-protocol = { workspace = true }
 eframe = { version = "0.31", default-features = true }
 egui = { version = "0.31" }
 serde = { workspace = true }

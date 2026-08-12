@@ -9,7 +9,7 @@ Low-latency remote desktop with **system audio**, host agent, viewer, and signal
 | Signaling (WSS, SDP/ICE, OTP) | Done |
 | Host service + tray + KD5 agent IPC | Done |
 | Live TCP media + DXGI / WASAPI / MF H.264 | Done |
-| **Product shell** (`remotelink-app`) — This PC + Connect | Phase 1 |
+| **Product shell** (`remotelink-app`) — This PC + Connect + live window | Phase 3 |
 | Portable package + lab scripts | Done |
 | MSI (WiX) | Optional — `scripts/build-msi.ps1` |
 | Authenticode signing | Optional — release pipeline only |

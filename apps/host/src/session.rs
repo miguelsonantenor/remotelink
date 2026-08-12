@@ -262,6 +262,8 @@ pub struct SessionManager {
     injector_config: InjectorConfig,
     /// OS / stub injector (rate-limited); re-opened from `injector_config` on attach.
     injector: AnyInjector,
+    /// Force the mock software H.264 path (needed so the viewer can reconstruct pixels).
+    force_software: bool,
 }
 
 impl SessionManager {
@@ -322,7 +324,13 @@ impl SessionManager {
             injector_config: InjectorConfig::synthetic(),
             injector: open_injector(InjectorConfig::synthetic())
                 .expect("stub injector always opens"),
+            force_software: false,
         }
+    }
+
+    /// Force the software/mock H.264 encoder (viewer can reconstruct pixels).
+    pub fn set_force_software(&mut self, force: bool) {
+        self.force_software = force;
     }
 
     /// Select video capture backend (call before [`Self::start_media`]).
@@ -786,8 +794,8 @@ impl SessionManager {
             height: self.synth_height,
             fps: self.synth_fps.max(1),
             target_bitrate_bps: remotelink_platform_windows::DEFAULT_TARGET_BITRATE_BPS,
-            disable_hw_encode: false,
-            force_software: false,
+            disable_hw_encode: self.force_software,
+            force_software: self.force_software,
         };
         let h264 = remotelink_platform_windows::open_encoder(&enc_cfg)
             .map_err(|e| SessionError::Media(e.to_string()))?;
@@ -947,8 +955,10 @@ impl SessionManager {
                     None => continue,
                 }
             }
-            let frame =
-                frame.ok_or_else(|| SessionError::Media("video source idle / ended".into()))?;
+            let Some(frame) = frame else {
+                // DXGI returns idle when the desktop has not updated; skip this slot.
+                continue;
+            };
             let force_key = media.video_frames_sent.is_multiple_of(30);
             let rtp_ts = media.epoch.video_ts(frame.pts_host_mono);
             let capture_frame = media_frame_to_capture(&frame)?;

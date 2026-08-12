@@ -150,6 +150,8 @@ pub struct ViewerSession {
     audio_jitter_cfg: JitterConfig,
     /// Auto-pump decoded audio into the playout sink on each track.
     auto_playout: bool,
+    /// Cap recorded encoded media (None = unlimited, for tests).
+    record_limit: Option<usize>,
 }
 
 impl ViewerSession {
@@ -201,7 +203,16 @@ impl ViewerSession {
             video_jitter_cfg,
             audio_jitter_cfg,
             auto_playout: true,
+            record_limit: None,
         }
+    }
+
+    /// Limit recorded encoded A/V (live sessions must not grow forever).
+    ///
+    /// `None` keeps every unit (tests). `Some(0)` records nothing. `Some(n)`
+    /// keeps the last `n` NALUs / packets.
+    pub fn set_record_limit(&mut self, limit: Option<usize>) {
+        self.record_limit = limit;
     }
 
     /// Replace the playout sink (e.g. null sink when only draining via API).
@@ -794,7 +805,7 @@ impl ViewerSession {
     fn handle_track(&mut self, data: IncomingTrackData) {
         match data {
             IncomingTrackData::Video(nalu) => {
-                self.recorded_video_nalus.push(nalu.clone());
+                push_recorded(&mut self.recorded_video_nalus, nalu.clone(), self.record_limit);
                 if let Some(decoded) = self.video.decode(&nalu) {
                     if decoded.from_mock_h264 {
                         self.stats.mock_h264_frames = self.stats.mock_h264_frames.saturating_add(1);
@@ -825,7 +836,11 @@ impl ViewerSession {
                 }
             }
             IncomingTrackData::Audio(packet) => {
-                self.recorded_audio_packets.push(packet.clone());
+                push_recorded(
+                    &mut self.recorded_audio_packets,
+                    packet.clone(),
+                    self.record_limit,
+                );
                 if self.audio.push_packet(&packet).is_ok() {
                     self.stats.audio_packets = self.audio.enqueued();
                     self.stats.mock_opus_packets = self.audio.mock_opus_decoded();
@@ -899,6 +914,20 @@ impl Default for ViewerSession {
 
 fn duration_to_host_ms(d: Duration) -> f64 {
     d.as_secs_f64() * 1000.0
+}
+
+fn push_recorded<T>(buf: &mut Vec<T>, item: T, limit: Option<usize>) {
+    match limit {
+        None => buf.push(item),
+        Some(0) => {}
+        Some(n) => {
+            buf.push(item);
+            let extra = buf.len().saturating_sub(n);
+            if extra > 0 {
+                buf.drain(0..extra);
+            }
+        }
+    }
 }
 
 /// Drive a complete mock loopback: host (A) offerer + viewer session as answerer (B).
