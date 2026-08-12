@@ -7,6 +7,7 @@
 
 use std::io::{self, Write};
 use std::net::{TcpListener, TcpStream};
+#[cfg(windows)]
 use std::sync::Mutex;
 use std::time::Duration;
 

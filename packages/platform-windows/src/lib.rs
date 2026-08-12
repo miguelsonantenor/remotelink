@@ -17,6 +17,8 @@
 //! for v1.
 
 #![deny(missing_docs)]
+// Shared codec/types compile on Linux CI; Windows-only backends look unused there.
+#![cfg_attr(not(windows), allow(unused))]
 
 pub mod capture;
 pub mod encode;
