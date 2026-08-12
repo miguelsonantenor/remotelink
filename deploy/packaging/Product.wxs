@@ -22,9 +22,11 @@
       UpgradeCode="A1B2C3D4-E5F6-7890-ABCD-EF1234567890">
 
     <Package
+        Id="*"
         InstallerVersion="500"
         Compressed="yes"
         InstallScope="perMachine"
+        Platform="x64"
         Description="RemoteLink host and viewer" />
 
     <MajorUpgrade
@@ -47,25 +49,25 @@
     </Directory>
 
     <ComponentGroup Id="ProductComponents" Directory="INSTALLFOLDER">
-      <Component Id="AppExe" Guid="*">
+      <Component Id="AppExe" Guid="*" Win64="yes">
         <File Id="AppExeFile"
               Source="$(var.StageDir)\bin\remotelink-app.exe"
               KeyPath="yes"
               Checksum="yes" />
       </Component>
-      <Component Id="HostExe" Guid="*">
+      <Component Id="HostExe" Guid="*" Win64="yes">
         <File Id="HostExeFile"
               Source="$(var.StageDir)\bin\remotelink-host.exe"
               KeyPath="yes"
               Checksum="yes" />
       </Component>
-      <Component Id="ViewerExe" Guid="*">
+      <Component Id="ViewerExe" Guid="*" Win64="yes">
         <File Id="ViewerExeFile"
               Source="$(var.StageDir)\bin\remotelink-viewer.exe"
               KeyPath="yes"
               Checksum="yes" />
       </Component>
-      <Component Id="LicenseMit" Guid="*">
+      <Component Id="LicenseMit" Guid="*" Win64="yes">
         <File Id="LicenseMitFile"
               Source="$(var.StageDir)\LICENSE-MIT"
               KeyPath="yes" />
@@ -73,7 +75,7 @@
     </ComponentGroup>
 
     <DirectoryRef Id="ApplicationProgramsFolder">
-      <Component Id="StartMenuShortcuts" Guid="*">
+      <Component Id="StartMenuShortcuts" Guid="*" Win64="yes">
         <Shortcut Id="AppShortcut"
                   Name="RemoteLink"
                   Description="RemoteLink - this PC and connect"

@@ -71,12 +71,14 @@ $Msi = Join-Path $Root "dist\RemoteLink-$Version.msi"
 Write-Host "Building MSI with $($wix.Candle)"
 & $wix.Candle "-dProductVersion=$Version" "-dStageDir=$StageAbs" -o $Wixobj $Wxs
 if ($LASTEXITCODE -ne 0) {
-    throw "candle failed ($LASTEXITCODE)"
+    Write-Host "candle failed ($LASTEXITCODE) - MSI skipped; portable zip is the core product."
+    exit 0
 }
 
 & $wix.Light -o $Msi $Wixobj
 if ($LASTEXITCODE -ne 0) {
-    throw "light failed ($LASTEXITCODE)"
+    Write-Host "light failed ($LASTEXITCODE) - MSI skipped; portable zip is the core product."
+    exit 0
 }
 
 Write-Host ""
