@@ -390,9 +390,6 @@ mod tests {
             normalize_pipe_path("remotelink-host-control"),
             r"\\.\pipe\remotelink-host-control"
         );
-        assert_eq!(
-            normalize_pipe_path(r"\\.\pipe\foo"),
-            r"\\.\pipe\foo"
-        );
+        assert_eq!(normalize_pipe_path(r"\\.\pipe\foo"), r"\\.\pipe\foo");
     }
 }

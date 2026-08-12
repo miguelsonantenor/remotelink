@@ -98,10 +98,7 @@ impl LiveViewerHandle {
 
     /// Copy of the latest snapshot.
     pub fn snapshot(&self) -> LiveViewerSnapshot {
-        self.snapshot
-            .lock()
-            .map(|g| g.clone())
-            .unwrap_or_default()
+        self.snapshot.lock().map(|g| g.clone()).unwrap_or_default()
     }
 
     /// Queue a raw input sample for the host (mouse / keys).
@@ -238,7 +235,10 @@ async fn run_live(
             return Ok("cancelled".into());
         }
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        let msg = match sig.recv_timeout(remaining.min(Duration::from_millis(250))).await {
+        let msg = match sig
+            .recv_timeout(remaining.min(Duration::from_millis(250)))
+            .await
+        {
             Ok(m) => m,
             Err(remotelink_signaling::SignalingError::Timeout(_)) => {
                 let _ = viewer.poll();

@@ -7,9 +7,7 @@
 use std::time::Duration;
 
 use remotelink_net::{TransportConfig, TransportMode};
-use remotelink_platform_windows::ipc::message::{
-    error_codes, Ack, ControlError, ControlMessage,
-};
+use remotelink_platform_windows::ipc::message::{error_codes, Ack, ControlError, ControlMessage};
 use remotelink_platform_windows::{
     connect_control, listen_control, ControlEndpoint, ControlStream, TransportError,
 };
@@ -50,9 +48,7 @@ pub fn boot_secret_ok(expected: Option<&str>, provided: Option<&str>) -> bool {
     match expected {
         None => true,
         Some(exp) => match provided {
-            Some(got) if exp.len() == got.len() => {
-                bool::from(exp.as_bytes().ct_eq(got.as_bytes()))
-            }
+            Some(got) if exp.len() == got.len() => bool::from(exp.as_bytes().ct_eq(got.as_bytes())),
             _ => {
                 // Still burn a compare of equal length to reduce length oracle.
                 let dummy = [0u8; 32];
@@ -185,10 +181,7 @@ pub fn parse_control_endpoint(s: &str) -> Result<ControlEndpoint, ControlLoopErr
         if s.eq_ignore_ascii_case("pipe") || s.eq_ignore_ascii_case("named-pipe") {
             return Ok(ControlEndpoint::default_named_pipe());
         }
-        if let Some(name) = s
-            .strip_prefix("pipe:")
-            .or_else(|| s.strip_prefix("PIPE:"))
-        {
+        if let Some(name) = s.strip_prefix("pipe:").or_else(|| s.strip_prefix("PIPE:")) {
             let name = name.trim();
             if name.is_empty() {
                 return Ok(ControlEndpoint::default_named_pipe());
@@ -247,8 +240,7 @@ pub fn format_endpoint(endpoint: &ControlEndpoint) -> String {
 fn new_agent_session(transport: TransportMode) -> Result<AgentSession, ControlLoopError> {
     match transport {
         TransportMode::Mock | TransportMode::Auto => Ok(AgentSession::new_mock()),
-        other => AgentSession::from_mode(other)
-            .map_err(|e| ControlLoopError::Agent(e.to_string())),
+        other => AgentSession::from_mode(other).map_err(|e| ControlLoopError::Agent(e.to_string())),
     }
 }
 
@@ -459,8 +451,7 @@ pub fn run_ipc_colocate_demo(session_id: &str) -> Result<String, String> {
 
     let agent_thread = std::thread::spawn(move || {
         let mut stream = listener.accept().map_err(|e| e.to_string())?;
-        let mut agent =
-            AgentSession::with_manager(SessionManager::with_peer(Box::new(peer_a)));
+        let mut agent = AgentSession::with_manager(SessionManager::with_peer(Box::new(peer_a)));
         serve_agent_connection(&mut stream, &mut agent, TransportMode::Mock, None)
             .map_err(|e| e.to_string())?;
         Ok::<_, String>(())
@@ -477,8 +468,9 @@ pub fn run_ipc_colocate_demo(session_id: &str) -> Result<String, String> {
         if let ControlMessage::SignalForward(s) = msg {
             match s.kind.as_str() {
                 k if k == signal_kind::SESSION_OFFER => {
-                    offer_sdp =
-                        Some(parse_sdp_payload(&s.payload).map_err(|e| format!("parse offer: {e}"))?);
+                    offer_sdp = Some(
+                        parse_sdp_payload(&s.payload).map_err(|e| format!("parse offer: {e}"))?,
+                    );
                 }
                 k if k == signal_kind::ICE_CANDIDATE => {
                     host_ice.push(
@@ -615,8 +607,7 @@ mod tests {
 
         let agent_thread = std::thread::spawn(move || {
             let mut stream = listener.accept().unwrap();
-            let mut agent =
-                AgentSession::with_manager(SessionManager::with_peer(Box::new(peer_a)));
+            let mut agent = AgentSession::with_manager(SessionManager::with_peer(Box::new(peer_a)));
             // Serve until client disconnects.
             let _ = serve_agent_connection(&mut stream, &mut agent, TransportMode::Mock, None);
         });
@@ -646,7 +637,10 @@ mod tests {
                 ControlMessage::SignalForward(s) if s.kind == "session_offer"
             )
         });
-        assert!(has_offer, "expected session_offer in drain, got {outbound:?}");
+        assert!(
+            has_offer,
+            "expected session_offer in drain, got {outbound:?}"
+        );
 
         client.close();
         let _ = agent_thread.join();
@@ -661,12 +655,13 @@ mod tests {
         let MockPeerPair { peer_a, peer_b: _ } = pair;
         let agent_thread = std::thread::spawn(move || {
             let mut stream = listener.accept().unwrap();
-            let mut agent =
-                AgentSession::with_manager(SessionManager::with_peer(Box::new(peer_a)));
+            let mut agent = AgentSession::with_manager(SessionManager::with_peer(Box::new(peer_a)));
             let _ = serve_agent_connection(&mut stream, &mut agent, TransportMode::Mock, None);
         });
         let mut client = ServiceAgentClient::connect(&endpoint).unwrap();
-        let outbound = client.start_session("ipc-seq", false).expect("start_session");
+        let outbound = client
+            .start_session("ipc-seq", false)
+            .expect("start_session");
         assert!(
             outbound.iter().any(|m| {
                 matches!(m, ControlMessage::SignalForward(s) if s.kind == "session_offer")
@@ -680,10 +675,7 @@ mod tests {
     #[test]
     fn ipc_colocate_demo_delivers_media() {
         let summary = run_ipc_colocate_demo("ipc-demo-test").expect("ipc colocate");
-        assert!(
-            summary.contains("viewer_video_rx="),
-            "summary={summary}"
-        );
+        assert!(summary.contains("viewer_video_rx="), "summary={summary}");
         assert!(
             !summary.contains("viewer_video_rx=0"),
             "expected video frames: {summary}"
@@ -709,11 +701,9 @@ mod tests {
         });
 
         // Wrong secret → auth_failed
-        let mut bad = ServiceAgentClient::connect_with_secret(
-            &endpoint,
-            Some("wrong-secret".into()),
-        )
-        .unwrap();
+        let mut bad =
+            ServiceAgentClient::connect_with_secret(&endpoint, Some("wrong-secret".into()))
+                .unwrap();
         let err = bad.start_session("auth-bad", false).unwrap_err();
         assert!(
             matches!(err, ControlLoopError::Auth(_)) || err.to_string().contains("auth"),
@@ -738,11 +728,13 @@ mod tests {
         });
         let mut good =
             ServiceAgentClient::connect_with_secret(&endpoint2, Some(secret.into())).unwrap();
-        let outbound = good.start_session("auth-ok", false).expect("start with secret");
+        let outbound = good
+            .start_session("auth-ok", false)
+            .expect("start with secret");
         assert!(
-            outbound
-                .iter()
-                .any(|m| matches!(m, ControlMessage::SignalForward(s) if s.kind == "session_offer")),
+            outbound.iter().any(
+                |m| matches!(m, ControlMessage::SignalForward(s) if s.kind == "session_offer")
+            ),
             "outbound={outbound:?}"
         );
         good.close();

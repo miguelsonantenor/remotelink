@@ -5,8 +5,8 @@ use std::str::FromStr;
 use eframe::egui;
 
 use crate::config::{ensure_parent, AppConfig};
-use crate::startup;
 use crate::host_worker::HostWorker;
+use crate::startup;
 use crate::status::{read_status, status_age_secs, HostStatusSnapshot};
 use crate::viewer_worker::ViewerWorker;
 use remotelink_net::TransportMode;
@@ -68,7 +68,11 @@ impl RemoteLinkApp {
             footer_note: format!(
                 "RemoteLink {} · live session{}",
                 remotelink_common::VERSION,
-                if login_start { " · started at login" } else { "" }
+                if login_start {
+                    " · started at login"
+                } else {
+                    ""
+                }
             ),
             last_status_poll: 0.0,
             minimize_on_start: login_start,
@@ -238,11 +242,7 @@ impl RemoteLinkApp {
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.heading("Remote session");
-                    ui.label(
-                        egui::RichText::new(&snap.phase)
-                            .small()
-                            .weak(),
-                    );
+                    ui.label(egui::RichText::new(&snap.phase).small().weak());
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.button("Disconnect").clicked() {
                             self.disconnect_viewer();
@@ -407,11 +407,7 @@ impl eframe::App for RemoteLinkApp {
         egui::TopBottomPanel::top("title_bar").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.heading("RemoteLink");
-                ui.label(
-                    egui::RichText::new("remote desktop")
-                        .weak()
-                        .small(),
-                );
+                ui.label(egui::RichText::new("remote desktop").weak().small());
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
                         .selectable_label(self.show_advanced, "Advanced")
@@ -425,11 +421,7 @@ impl eframe::App for RemoteLinkApp {
 
         egui::TopBottomPanel::bottom("footer").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new(&self.footer_note)
-                        .small()
-                        .weak(),
-                );
+                ui.label(egui::RichText::new(&self.footer_note).small().weak());
             });
         });
 

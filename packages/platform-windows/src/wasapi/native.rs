@@ -218,27 +218,20 @@ impl NativeLoopbackCapture {
             let mut num_frames: u32 = 0;
             let mut flags: u32 = 0;
             let hr = unsafe {
-                com.capture.GetBuffer(
-                    &mut data_ptr,
-                    &mut num_frames,
-                    &mut flags,
-                    None,
-                    None,
-                )
+                com.capture
+                    .GetBuffer(&mut data_ptr, &mut num_frames, &mut flags, None, None)
             };
             if hr.is_err() || num_frames == 0 || data_ptr.is_null() {
                 break;
             }
             com.outstanding_frames = num_frames;
-            let silent_flag = (flags
-                & windows::Win32::Media::Audio::AUDCLNT_BUFFERFLAGS_SILENT.0 as u32)
-                != 0;
+            let silent_flag =
+                (flags & windows::Win32::Media::Audio::AUDCLNT_BUFFERFLAGS_SILENT.0 as u32) != 0;
 
             let ch = self.channels as usize;
             let frames = num_frames as usize;
             if silent_flag {
-                self.pending
-                    .extend(std::iter::repeat_n(0i16, frames * ch));
+                self.pending.extend(std::iter::repeat_n(0i16, frames * ch));
             } else {
                 append_pcm_s16(
                     &mut self.pending,
@@ -302,9 +295,8 @@ fn windows_try_open(config: LoopbackConfig) -> Result<NativeLoopbackCapture, Loo
     }
 
     let enumerator: IMMDeviceEnumerator = unsafe {
-        CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL).map_err(|e| {
-            LoopbackError::ClientOpenFailed(format!("MMDeviceEnumerator: {e}"))
-        })?
+        CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
+            .map_err(|e| LoopbackError::ClientOpenFailed(format!("MMDeviceEnumerator: {e}")))?
     };
 
     let device = unsafe {
@@ -335,12 +327,7 @@ fn windows_try_open(config: LoopbackConfig) -> Result<NativeLoopbackCapture, Loo
         let f = &*mix_fmt_ptr;
         let is_float = f.wFormatTag == WAVE_FORMAT_IEEE_FLOAT
             || (f.wFormatTag == WAVE_FORMAT_EXTENSIBLE && f.wBitsPerSample == 32);
-        (
-            f.nSamplesPerSec,
-            f.nChannels,
-            f.wBitsPerSample,
-            is_float,
-        )
+        (f.nSamplesPerSec, f.nChannels, f.wBitsPerSample, is_float)
     };
 
     // Prefer device mix format with loopback + autoconvert when possible.

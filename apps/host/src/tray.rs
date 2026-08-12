@@ -444,9 +444,8 @@ mod win {
     #[repr(C)]
     struct WndClassW {
         style: u32,
-        lpfn_wnd_proc: Option<
-            unsafe extern "system" fn(*mut core::ffi::c_void, u32, usize, isize) -> isize,
-        >,
+        lpfn_wnd_proc:
+            Option<unsafe extern "system" fn(*mut core::ffi::c_void, u32, usize, isize) -> isize>,
         cb_cls_extra: i32,
         cb_wnd_extra: i32,
         h_instance: *mut core::ffi::c_void,
@@ -544,10 +543,8 @@ mod win {
         fn OpenClipboard(h_wnd_new_owner: *mut core::ffi::c_void) -> i32;
         fn CloseClipboard() -> i32;
         fn EmptyClipboard() -> i32;
-        fn SetClipboardData(
-            u_format: u32,
-            h_mem: *mut core::ffi::c_void,
-        ) -> *mut core::ffi::c_void;
+        fn SetClipboardData(u_format: u32, h_mem: *mut core::ffi::c_void)
+            -> *mut core::ffi::c_void;
     }
 
     #[repr(C)]
@@ -853,10 +850,7 @@ mod win {
     }
 
     impl WinNotifyTray {
-        pub fn spawn(
-            state: Arc<Mutex<TrayState>>,
-            commands: TrayCommands,
-        ) -> Result<Self, String> {
+        pub fn spawn(state: Arc<Mutex<TrayState>>, commands: TrayCommands) -> Result<Self, String> {
             let (tx, rx) = std::sync::mpsc::channel::<Result<usize, String>>();
             let balloon_otp = Arc::new(Mutex::new(None));
             let balloon_t = Arc::clone(&balloon_otp);
@@ -865,10 +859,8 @@ mod win {
             let join = thread::Builder::new()
                 .name("remotelink-tray".into())
                 .spawn(move || {
-                    let class_name = to_wide(&format!(
-                        "RemoteLinkHostTrayClass-{}",
-                        std::process::id()
-                    ));
+                    let class_name =
+                        to_wide(&format!("RemoteLinkHostTrayClass-{}", std::process::id()));
                     let h_instance = unsafe { GetModuleHandleW(std::ptr::null()) };
                     let wc = WndClassW {
                         style: 0,
@@ -965,12 +957,7 @@ mod win {
         pub fn refresh_tooltip(&self) {
             if self.alive.load(Ordering::SeqCst) && self.hwnd != 0 {
                 unsafe {
-                    PostMessageW(
-                        self.hwnd as *mut core::ffi::c_void,
-                        WM_APP_REFRESH,
-                        0,
-                        0,
-                    );
+                    PostMessageW(self.hwnd as *mut core::ffi::c_void, WM_APP_REFRESH, 0, 0);
                 }
             }
         }
@@ -981,12 +968,7 @@ mod win {
             }
             if self.alive.load(Ordering::SeqCst) && self.hwnd != 0 {
                 unsafe {
-                    PostMessageW(
-                        self.hwnd as *mut core::ffi::c_void,
-                        WM_APP_BALLOON,
-                        0,
-                        0,
-                    );
+                    PostMessageW(self.hwnd as *mut core::ffi::c_void, WM_APP_BALLOON, 0, 0);
                 }
             }
         }

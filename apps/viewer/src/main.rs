@@ -365,8 +365,7 @@ fn run_webrtc_demo() -> Result<(), Box<dyn std::error::Error>> {
             remotelink_common::VERSION
         );
 
-        let mut offerer =
-            WebrtcPeerTransport::new(PeerRole::Offerer, WebrtcPeerConfig::default())?;
+        let mut offerer = WebrtcPeerTransport::new(PeerRole::Offerer, WebrtcPeerConfig::default())?;
         let mut answerer =
             WebrtcPeerTransport::new(PeerRole::Answerer, WebrtcPeerConfig::default())?;
         let rec = SharedRecording::new();
@@ -435,11 +434,9 @@ fn run_webrtc_demo() -> Result<(), Box<dyn std::error::Error>> {
     }
     #[cfg(not(feature = "webrtc-rs"))]
     {
-        Err(
-            "webrtc demo requires --features webrtc-rs \
+        Err("webrtc demo requires --features webrtc-rs \
              (cargo run -p remotelink-viewer --features webrtc-rs -- --webrtc-demo)"
-                .into(),
-        )
+            .into())
     }
 }
 

@@ -211,7 +211,11 @@ async fn ws_sdp_relay_session_manager_media() {
     .await;
 
     let remote_offer = match recv_msg(&mut viewer_ws).await {
-        SignalMessage::SessionOffer { sdp, fingerprint_sig, .. } => (sdp, fingerprint_sig),
+        SignalMessage::SessionOffer {
+            sdp,
+            fingerprint_sig,
+            ..
+        } => (sdp, fingerprint_sig),
         other => panic!("viewer expected offer, got {other:?}"),
     };
 
@@ -324,10 +328,7 @@ async fn ws_sdp_relay_session_manager_media() {
 
     viewer.poll().expect("viewer poll");
     assert_eq!(host.connection_state(), ConnectionState::Connected);
-    assert_eq!(
-        viewer.transport_state(),
-        Some(ConnectionState::Connected)
-    );
+    assert_eq!(viewer.transport_state(), Some(ConnectionState::Connected));
 
     let pump = host.pump_media(3).expect("pump");
     assert_eq!(pump.video_sent, 3);
@@ -336,9 +337,7 @@ async fn ws_sdp_relay_session_manager_media() {
     // Deliver mock media into viewer session.
     for _ in 0..20 {
         viewer.poll().expect("viewer poll media");
-        if viewer.recorded_video_nalus().len() >= 3
-            && !viewer.recorded_audio_packets().is_empty()
-        {
+        if viewer.recorded_video_nalus().len() >= 3 && !viewer.recorded_audio_packets().is_empty() {
             break;
         }
         std::thread::sleep(Duration::from_millis(5));

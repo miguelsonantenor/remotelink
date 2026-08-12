@@ -1,9 +1,7 @@
 //! Background live viewer session for the product shell.
 
 use remotelink_net::TransportMode;
-use remotelink_viewer::{
-    LiveViewerHandle, LiveViewerSnapshot, RawInput, WsViewerConfig,
-};
+use remotelink_viewer::{LiveViewerHandle, LiveViewerSnapshot, RawInput, WsViewerConfig};
 
 /// Live remote-desktop session (stays open until Disconnect).
 pub struct ViewerWorker {

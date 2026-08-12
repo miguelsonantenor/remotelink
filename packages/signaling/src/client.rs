@@ -64,14 +64,15 @@ impl SignalingClient {
         let (ws, _) = connect_async(ws_url)
             .await
             .map_err(|e| SignalingError::Connect(e.to_string()))?;
-        Ok(Self {
-            ws,
-            next_seq: 1,
-        })
+        Ok(Self { ws, next_seq: 1 })
     }
 
     /// Send `hello` and wait for `hello_ok` (or map server error).
-    pub async fn hello(&mut self, role: Role, device_token: &str) -> SignalingResult<SignalMessage> {
+    pub async fn hello(
+        &mut self,
+        role: Role,
+        device_token: &str,
+    ) -> SignalingResult<SignalMessage> {
         self.send(&SignalMessage::Hello {
             role,
             protocol_version: PROTOCOL_VERSION,

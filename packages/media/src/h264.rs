@@ -361,7 +361,11 @@ impl H264Encoder for MockSoftwareEncoder {
             data.extend_from_slice(&self.build_sps(preview.width, preview.height));
             data.extend_from_slice(&Self::build_pps());
         }
-        data.extend_from_slice(&self.build_slice_from_preview(&preview, keyframe, self.frames_encoded));
+        data.extend_from_slice(&self.build_slice_from_preview(
+            &preview,
+            keyframe,
+            self.frames_encoded,
+        ));
 
         self.frames_encoded = self.frames_encoded.saturating_add(1);
         if keyframe {

@@ -1,4 +1,4 @@
-﻿[package]
+[package]
 name = "remotelink-host"
 version.workspace = true
 edition.workspace = true

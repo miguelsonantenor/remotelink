@@ -949,7 +949,9 @@ async fn sdp_ice_relay_after_accept() {
     .await;
     match recv_msg(&mut viewer).await {
         SignalMessage::IceCandidate {
-            candidate, signal_seq, ..
+            candidate,
+            signal_seq,
+            ..
         } => {
             assert_eq!(signal_seq, 6);
             assert!(candidate.candidate.contains("127.0.0.1"));

@@ -127,7 +127,10 @@ pub async fn run_ws_viewer(cfg: WsViewerConfig) -> Result<String, String> {
         if remaining.is_zero() {
             break;
         }
-        let msg = match sig.recv_timeout(remaining.min(Duration::from_millis(250))).await {
+        let msg = match sig
+            .recv_timeout(remaining.min(Duration::from_millis(250)))
+            .await
+        {
             Ok(m) => m,
             Err(remotelink_signaling::SignalingError::Timeout(_)) => {
                 let _ = viewer.poll();
@@ -213,8 +216,7 @@ pub async fn run_ws_viewer(cfg: WsViewerConfig) -> Result<String, String> {
     let media_deadline = tokio::time::Instant::now() + cfg.media_timeout;
     while tokio::time::Instant::now() < media_deadline {
         let _ = viewer.poll();
-        if !viewer.recorded_video_nalus().is_empty()
-            && !viewer.recorded_audio_packets().is_empty()
+        if !viewer.recorded_video_nalus().is_empty() && !viewer.recorded_audio_packets().is_empty()
         {
             break;
         }

@@ -564,9 +564,7 @@ async fn handle_text(
         | SignalMessage::Renegotiate { .. }
         | SignalMessage::AuthChallenge { .. }
         | SignalMessage::AuthResponse { .. }
-        | SignalMessage::Stats { .. } => {
-            state.sessions.relay_media_signal(conn_id, msg).await
-        }
+        | SignalMessage::Stats { .. } => state.sessions.relay_media_signal(conn_id, msg).await,
         SignalMessage::SessionEnd {
             session_id,
             signal_seq,

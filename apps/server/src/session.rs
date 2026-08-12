@@ -696,7 +696,10 @@ impl SessionRegistry {
         if session.state != SessionState::Active {
             return Err(error_msg(
                 "invalid_state",
-                format!("session is {:?}, expected active for media relay", session.state),
+                format!(
+                    "session is {:?}, expected active for media relay",
+                    session.state
+                ),
             ));
         }
         if signal_seq < session.next_signal_seq {

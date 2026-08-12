@@ -65,9 +65,8 @@ impl HostCredentialFile {
 
     /// Load credentials from disk.
     pub fn load(path: &Path) -> Result<Self, RegisterError> {
-        let text = fs::read_to_string(path).map_err(|e| {
-            RegisterError::Http(format!("read creds {}: {e}", path.display()))
-        })?;
+        let text = fs::read_to_string(path)
+            .map_err(|e| RegisterError::Http(format!("read creds {}: {e}", path.display())))?;
         serde_json::from_str(&text).map_err(|e| RegisterError::Parse(format!("creds json: {e}")))
     }
 

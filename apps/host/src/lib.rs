@@ -1,4 +1,4 @@
-﻿//! RemoteLink host library: service control plane + session agent media plane.
+//! RemoteLink host library: service control plane + session agent media plane.
 //!
 //! KD5: service owns enrollment/signaling/policy; agent owns PeerTransport and
 //! capture/encode. Control IPC is length-prefixed JSON with **no media bytes**.
@@ -27,17 +27,16 @@ pub use control_loop::{
 };
 // Control IPC transport (TCP localhost for CI/dev). Re-exported so callers do not
 // need a direct platform-windows dependency for KD5 service↔agent wiring.
-pub use remotelink_platform_windows::{
-    listen_control, ControlEndpoint, ControlListener, ControlStream,
-};
 pub use chrome::{HostSessionUx, SessionChrome, SessionIndicator};
-pub use tray::{default_status_path, HostTray, TrayCommands, TrayState};
 pub use platform_capture::{
     default_audio_kind, default_video_kind, open_audio_source, open_default_sources,
     open_video_source, AudioCaptureKind, HostAudioSource, HostVideoSource, PlatformCaptureError,
     VideoCaptureKind,
 };
 pub use policy::{HostAuthService, HostLocalConfig, DEFAULT_HOST_OTP_PEPPER};
+pub use remotelink_platform_windows::{
+    listen_control, ControlEndpoint, ControlListener, ControlStream,
+};
 pub use service::{
     build_session_start_sequence, run_colocate_synthetic, run_kill_switch_demo,
     service_kill_switch, signal_to_agent,
@@ -46,6 +45,7 @@ pub use session::{
     parse_ice_payload, parse_sdp_payload, signal_kind, InboundStats, InputProcessOutcome,
     PumpStats, SdpPayload, SessionError, SessionManager, INPUT_CHANNEL_LABEL,
 };
+pub use tray::{default_status_path, HostTray, TrayCommands, TrayState};
 pub use ws_session::{
     run_ws_host, run_ws_host_blocking, run_ws_host_service, ExistingHostCreds, WsHostConfig,
     DEFAULT_LAB_SERVER,

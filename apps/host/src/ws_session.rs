@@ -19,11 +19,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use remotelink_auth::generate_device_keypair;
-use remotelink_net::{
-    create_peer_transport_with_config, PeerRole, TransportConfig, TransportMode,
-};
-use remotelink_platform_windows::ControlEndpoint;
+use remotelink_net::{create_peer_transport_with_config, PeerRole, TransportConfig, TransportMode};
 use remotelink_platform_windows::ipc::message::{ControlMessage, DetachSession};
+use remotelink_platform_windows::ControlEndpoint;
 use remotelink_protocol::SignalMessage;
 use remotelink_signaling::{
     http_to_ws_url, post_otp_hash, refresh_device_token, register_device, HostCredentialFile,
@@ -34,7 +32,9 @@ use crate::control_loop::ServiceAgentClient;
 use crate::platform_capture::{AudioCaptureKind, VideoCaptureKind};
 use crate::policy::{HostAuthService, HostLocalConfig, DEFAULT_OTP_TTL_SECS};
 use crate::service::signal_to_agent;
-use crate::session::{parse_ice_payload, parse_sdp_payload, signal_kind, SdpPayload, SessionManager};
+use crate::session::{
+    parse_ice_payload, parse_sdp_payload, signal_kind, SdpPayload, SessionManager,
+};
 use crate::tray::{default_status_path, HostTray};
 use remotelink_platform_windows::InjectorConfig;
 
@@ -331,9 +331,7 @@ async fn maybe_mint_otp(
     .await
     .map_err(|e| format!("post otp hash: {e}"))?;
     let expires_at = resp.expires_at.to_string();
-    println!(
-        "ws-host: Mode A OTP for viewer (expires {expires_at}): {code}"
-    );
+    println!("ws-host: Mode A OTP for viewer (expires {expires_at}): {code}");
     println!(
         "ws-host: viewer example: remotelink-viewer --ws-connect --server={} --host {} --otp {code} --transport=live",
         cfg.server, enrolled.public_id
@@ -429,9 +427,15 @@ async fn handle_one_session_local(
         .cloned()
         .collect();
 
-    let relay =
-        relay_offer_answer_ice_local(sig, &session_id, &offer, &mut pending_host_ice, &mut mgr, tray)
-            .await;
+    let relay = relay_offer_answer_ice_local(
+        sig,
+        &session_id,
+        &offer,
+        &mut pending_host_ice,
+        &mut mgr,
+        tray,
+    )
+    .await;
     if let Err(e) = relay {
         if let Some(t) = tray {
             if e.contains("tray") {
@@ -480,8 +484,7 @@ async fn handle_one_session_local(
             }
         }
     }
-    let (pump, end_reason) =
-        drive_local_media(sig, &mut mgr, video_frames, tray).await?;
+    let (pump, end_reason) = drive_local_media(sig, &mut mgr, video_frames, tray).await?;
     if pump.skipped_not_connected || (video_frames > 0 && pump.video_sent == 0) {
         let _ = mgr.shutdown();
         if let Some(t) = tray {
@@ -585,7 +588,9 @@ async fn handle_one_session_agent(
             Err(e) => return Err(format!("recv: {e}")),
         };
         match msg {
-            SignalMessage::SessionAnswer { sdp, signal_seq, .. } => {
+            SignalMessage::SessionAnswer {
+                sdp, signal_seq, ..
+            } => {
                 println!("ws-host: session_answer seq={signal_seq}");
                 let payload = serde_json::to_string(&SdpPayload {
                     sdp,
@@ -843,7 +848,9 @@ async fn relay_offer_answer_ice_local(
         };
 
         match msg {
-            SignalMessage::SessionAnswer { sdp, signal_seq, .. } => {
+            SignalMessage::SessionAnswer {
+                sdp, signal_seq, ..
+            } => {
                 println!("ws-host: session_answer seq={signal_seq}");
                 mgr.apply_signal(
                     signal_kind::SESSION_ANSWER,
@@ -1094,10 +1101,7 @@ pub async fn run_ws_host_service(cfg: WsHostConfig) -> Result<String, String> {
             cfg.os_tray,
         );
         t.set_identity(&public_id, Some(&cfg.display_name));
-        println!(
-            "ws-host: tray status file {}",
-            status_path.display()
-        );
+        println!("ws-host: tray status file {}", status_path.display());
         Some(t)
     } else {
         None
@@ -1195,9 +1199,7 @@ pub async fn run_ws_host_service(cfg: WsHostConfig) -> Result<String, String> {
                     && cfg.mint_otp
                     && match &session_result {
                         Ok(_) => true,
-                        Err(e) => {
-                            !e.contains("wait incoming") && !e.contains("timeout waiting")
-                        }
+                        Err(e) => !e.contains("wait incoming") && !e.contains("timeout waiting"),
                     };
                 match session_result {
                     Ok(summary) => {

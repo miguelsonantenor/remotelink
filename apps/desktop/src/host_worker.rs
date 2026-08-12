@@ -165,10 +165,7 @@ fn resolve_host_exe() -> Result<PathBuf, String> {
         if path.is_file() {
             return Ok(path);
         }
-        return Err(format!(
-            "REMOTELINK_HOST_EXE not found: {}",
-            path.display()
-        ));
+        return Err(format!("REMOTELINK_HOST_EXE not found: {}", path.display()));
     }
 
     let exe_name = if cfg!(windows) {

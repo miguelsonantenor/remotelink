@@ -94,7 +94,8 @@ pub fn open_capture(
                 std::time::Duration::from_millis(u64::from(interval_ms.max(1))),
             );
             if config.mock_start_pts_ms > 0 {
-                src = src.with_start_pts(std::time::Duration::from_millis(config.mock_start_pts_ms));
+                src =
+                    src.with_start_pts(std::time::Duration::from_millis(config.mock_start_pts_ms));
             }
             Ok(DisplayCapture::Mock(src))
         }

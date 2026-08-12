@@ -486,7 +486,9 @@ pub fn run_with_transport(mode: remotelink_net::TransportMode) {
 
     let result = match resolved {
         remotelink_net::TransportMode::Live => run_agent_only_live_synthetic("agent-live-session"),
-        remotelink_net::TransportMode::Webrtc => run_agent_only_webrtc_synthetic("agent-webrtc-session"),
+        remotelink_net::TransportMode::Webrtc => {
+            run_agent_only_webrtc_synthetic("agent-webrtc-session")
+        }
         _ => run_agent_only_synthetic("agent-synthetic-session"),
     };
 
@@ -509,8 +511,7 @@ fn run_agent_only_live_synthetic(session_id: &str) -> Result<String, String> {
     use std::time::Duration;
 
     use remotelink_net::{
-        live_handshake, LivePeerConfig, LivePeerTransport, PeerRole, PeerTransport,
-        SharedRecording,
+        live_handshake, LivePeerConfig, LivePeerTransport, PeerRole, PeerTransport, SharedRecording,
     };
 
     let mut offerer = LivePeerTransport::new(PeerRole::Offerer, LivePeerConfig::default())
@@ -542,9 +543,8 @@ fn run_agent_only_webrtc_synthetic(session_id: &str) -> Result<String, String> {
             WebrtcPeerTransport,
         };
 
-        let mut offerer =
-            WebrtcPeerTransport::new(PeerRole::Offerer, WebrtcPeerConfig::default())
-                .map_err(|e| e.to_string())?;
+        let mut offerer = WebrtcPeerTransport::new(PeerRole::Offerer, WebrtcPeerConfig::default())
+            .map_err(|e| e.to_string())?;
         let mut answerer =
             WebrtcPeerTransport::new(PeerRole::Answerer, WebrtcPeerConfig::default())
                 .map_err(|e| e.to_string())?;

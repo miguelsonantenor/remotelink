@@ -59,9 +59,9 @@ impl MediaFoundationEncoder {
         use windows::core::GUID;
         use windows::Win32::Media::MediaFoundation::{
             IMFMediaType, IMFTransform, MFCreateMediaType, MFMediaType_Video, MFStartup,
-            MF_MT_AVG_BITRATE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE,
-            MF_MT_MAJOR_TYPE, MF_MT_SUBTYPE, MF_VERSION, MFVideoFormat_H264, MFVideoFormat_RGB32,
-            MFVideoInterlace_Progressive, MFSTARTUP_NOSOCKET,
+            MFVideoFormat_H264, MFVideoFormat_RGB32, MFVideoInterlace_Progressive,
+            MFSTARTUP_NOSOCKET, MF_MT_AVG_BITRATE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE,
+            MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE, MF_MT_SUBTYPE, MF_VERSION,
         };
         use windows::Win32::System::Com::{
             CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
@@ -102,8 +102,9 @@ impl MediaFoundationEncoder {
 
         // Output type: H.264
         let out_type: IMFMediaType = unsafe {
-            MFCreateMediaType()
-                .map_err(|e| EncodeError::HardwareUnavailable(format!("MFCreateMediaType out: {e}")))?
+            MFCreateMediaType().map_err(|e| {
+                EncodeError::HardwareUnavailable(format!("MFCreateMediaType out: {e}"))
+            })?
         };
         unsafe {
             out_type
@@ -128,15 +129,16 @@ impl MediaFoundationEncoder {
             out_type
                 .SetUINT32(&MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive.0 as u32)
                 .map_err(|e| EncodeError::Other(format!("set interlace: {e}")))?;
-            transform
-                .SetOutputType(0, &out_type, 0)
-                .map_err(|e| EncodeError::HardwareUnavailable(format!("SetOutputType H264: {e}")))?;
+            transform.SetOutputType(0, &out_type, 0).map_err(|e| {
+                EncodeError::HardwareUnavailable(format!("SetOutputType H264: {e}"))
+            })?;
         }
 
         // Input type: RGB32 (BGRA memory layout on little-endian Windows)
         let in_type: IMFMediaType = unsafe {
-            MFCreateMediaType()
-                .map_err(|e| EncodeError::HardwareUnavailable(format!("MFCreateMediaType in: {e}")))?
+            MFCreateMediaType().map_err(|e| {
+                EncodeError::HardwareUnavailable(format!("MFCreateMediaType in: {e}"))
+            })?
         };
         unsafe {
             in_type
@@ -156,20 +158,24 @@ impl MediaFoundationEncoder {
             in_type
                 .SetUINT32(&MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive.0 as u32)
                 .map_err(|e| EncodeError::Other(format!("set in interlace: {e}")))?;
-            transform
-                .SetInputType(0, &in_type, 0)
-                .map_err(|e| EncodeError::HardwareUnavailable(format!("SetInputType RGB32: {e}")))?;
+            transform.SetInputType(0, &in_type, 0).map_err(|e| {
+                EncodeError::HardwareUnavailable(format!("SetInputType RGB32: {e}"))
+            })?;
         }
 
         // Optional: notify begin streaming
-        let _ = unsafe { transform.ProcessMessage(
-            windows::Win32::Media::MediaFoundation::MFT_MESSAGE_NOTIFY_BEGIN_STREAMING,
-            0,
-        ) };
-        let _ = unsafe { transform.ProcessMessage(
-            windows::Win32::Media::MediaFoundation::MFT_MESSAGE_NOTIFY_START_OF_STREAM,
-            0,
-        ) };
+        let _ = unsafe {
+            transform.ProcessMessage(
+                windows::Win32::Media::MediaFoundation::MFT_MESSAGE_NOTIFY_BEGIN_STREAMING,
+                0,
+            )
+        };
+        let _ = unsafe {
+            transform.ProcessMessage(
+                windows::Win32::Media::MediaFoundation::MFT_MESSAGE_NOTIFY_START_OF_STREAM,
+                0,
+            )
+        };
 
         let sample_duration_hns = 10_000_000i64 / i64::from(fps.max(1));
 
@@ -188,9 +194,12 @@ impl MediaFoundationEncoder {
         })
     }
 
-    fn build_sample(&self, frame: &VideoFrame) -> Result<windows::Win32::Media::MediaFoundation::IMFSample, EncodeError> {
+    fn build_sample(
+        &self,
+        frame: &VideoFrame,
+    ) -> Result<windows::Win32::Media::MediaFoundation::IMFSample, EncodeError> {
         use windows::Win32::Media::MediaFoundation::{
-            MFCreateMemoryBuffer, MFCreateSample, IMFSample,
+            IMFSample, MFCreateMemoryBuffer, MFCreateSample,
         };
 
         if frame.format != PixelFormat::Bgra8 && frame.format != PixelFormat::Rgba8 {

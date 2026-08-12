@@ -51,11 +51,11 @@ use tokio::runtime::{Handle, Runtime};
 use webrtc::api::interceptor_registry::register_default_interceptors;
 use webrtc::api::media_engine::{MediaEngine, MIME_TYPE_H264, MIME_TYPE_OPUS};
 use webrtc::api::APIBuilder;
-use webrtc::interceptor::registry::Registry;
 use webrtc::data_channel::data_channel_message::DataChannelMessage;
 use webrtc::data_channel::data_channel_state::RTCDataChannelState;
 use webrtc::data_channel::RTCDataChannel;
 use webrtc::ice_transport::ice_candidate::{RTCIceCandidate, RTCIceCandidateInit};
+use webrtc::interceptor::registry::Registry;
 use webrtc::media::io::sample_builder::SampleBuilder;
 use webrtc::media::Sample;
 use webrtc::peer_connection::certificate::RTCCertificate;
@@ -666,13 +666,14 @@ fn spawn_remote_track_reader(track: Arc<TrackRemote>, tx: Sender<Inbound>) {
                     Ok((pkt, _)) => {
                         sb.push(pkt);
                         while let Some(sample) = sb.pop() {
-                            let _ = tx.send(Inbound::Track(IncomingTrackData::Audio(AudioPacket {
-                                pts_host_mono: Duration::from_millis(0),
-                                rtp_ts: Some(sample.packet_timestamp),
-                                sample_rate: 48_000,
-                                channels: 2,
-                                data: sample.data.to_vec(),
-                            })));
+                            let _ =
+                                tx.send(Inbound::Track(IncomingTrackData::Audio(AudioPacket {
+                                    pts_host_mono: Duration::from_millis(0),
+                                    rtp_ts: Some(sample.packet_timestamp),
+                                    sample_rate: 48_000,
+                                    channels: 2,
+                                    data: sample.data.to_vec(),
+                                })));
                         }
                     }
                     Err(_) => break,

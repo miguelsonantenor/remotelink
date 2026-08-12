@@ -4,19 +4,19 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use futures_util::{SinkExt, StreamExt};
 use remotelink_auth::{generate_device_keypair, mint_otp};
 use remotelink_host::DEFAULT_HOST_OTP_PEPPER;
+use remotelink_protocol::{
+    decode_message, encode_message, HelloAuth, Role, SessionMode, SignalMessage, PROTOCOL_VERSION,
+};
 use remotelink_server::{router, AppState, MemoryDeviceRepo};
 use remotelink_signaling::{
     http_to_ws_url, post_otp_hash, register_device, HostCredentialFile, SignalingClient,
 };
-use remotelink_protocol::{
-    HelloAuth, Role, SessionMode, SignalMessage, PROTOCOL_VERSION, encode_message, decode_message,
-};
 use tokio::net::TcpListener;
-use futures_util::{SinkExt, StreamExt};
-use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::connect_async;
+use tokio_tungstenite::tungstenite::Message;
 
 async fn spawn_server(state: AppState) -> SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

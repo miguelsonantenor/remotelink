@@ -37,7 +37,9 @@ fn main() {
             );
             // With --server, run the long-lived WSS host service; otherwise skeleton.
             if flag_value(&args, "--server").is_some()
-                || env::var("REMOTELINK_SERVER").map(|s| !s.is_empty()).unwrap_or(false)
+                || env::var("REMOTELINK_SERVER")
+                    .map(|s| !s.is_empty())
+                    .unwrap_or(false)
             {
                 let mut cfg = parse_ws_host_config(&args, transport.mode);
                 if cfg.max_sessions == 1 && !args.iter().any(|a| a.starts_with("--sessions")) {
@@ -74,9 +76,7 @@ fn main() {
                         let boot = flag_value(&args, "--boot-secret")
                             .or_else(|| env::var("REMOTELINK_BOOT_SECRET").ok())
                             .filter(|s| !s.is_empty());
-                        if let Err(e) =
-                            run_agent_control_server(endpoint, transport.mode, boot)
-                        {
+                        if let Err(e) = run_agent_control_server(endpoint, transport.mode, boot) {
                             eprintln!("agent control server: {e}");
                             std::process::exit(1);
                         }
@@ -238,7 +238,10 @@ fn parse_ws_host_config(args: &[String], transport: remotelink_net::TransportMod
     if args.iter().any(|a| a == "--no-save-creds") {
         cfg.save_creds = false;
     }
-    if args.iter().any(|a| a == "--no-load-creds" || a == "--fresh") {
+    if args
+        .iter()
+        .any(|a| a == "--no-load-creds" || a == "--fresh")
+    {
         cfg.load_creds = false;
     }
     if args.iter().any(|a| a == "--no-otp") {
@@ -253,8 +256,8 @@ fn parse_ws_host_config(args: &[String], transport: remotelink_net::TransportMod
     if args.iter().any(|a| a == "--no-reconnect") {
         cfg.reconnect = false;
     }
-    if let Some(ep) = flag_value(args, "--agent-control")
-        .or_else(|| env::var("REMOTELINK_AGENT_CONTROL").ok())
+    if let Some(ep) =
+        flag_value(args, "--agent-control").or_else(|| env::var("REMOTELINK_AGENT_CONTROL").ok())
     {
         match parse_control_endpoint(&ep) {
             Ok(endpoint) => cfg.agent_control = Some(endpoint),
@@ -278,8 +281,8 @@ fn parse_ws_host_config(args: &[String], transport: remotelink_net::TransportMod
     if let Some(p) = flag_value(args, "--status-path") {
         cfg.status_path = Some(std::path::PathBuf::from(p));
     }
-    if let Some(s) = flag_value(args, "--boot-secret")
-        .or_else(|| env::var("REMOTELINK_BOOT_SECRET").ok())
+    if let Some(s) =
+        flag_value(args, "--boot-secret").or_else(|| env::var("REMOTELINK_BOOT_SECRET").ok())
     {
         if !s.is_empty() {
             cfg.boot_secret = Some(s);

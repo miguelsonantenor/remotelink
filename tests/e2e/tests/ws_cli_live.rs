@@ -41,10 +41,7 @@ async fn spawn_server(state: AppState) -> SocketAddr {
 }
 
 /// Viewer half of the CLI path (mirrors `apps/viewer/src/ws_connect.rs`).
-async fn run_ws_viewer_live(
-    server: &str,
-    host_public_id: &str,
-) -> Result<String, String> {
+async fn run_ws_viewer_live(server: &str, host_public_id: &str) -> Result<String, String> {
     let transport_cfg = TransportConfig {
         mode: TransportMode::Live,
     };
@@ -155,7 +152,9 @@ async fn run_ws_viewer_live(
                 }
             }
             SignalMessage::IceCandidate { candidate, .. } => {
-                viewer.add_remote_ice(candidate).map_err(|e| e.to_string())?;
+                viewer
+                    .add_remote_ice(candidate)
+                    .map_err(|e| e.to_string())?;
                 let _ = viewer.poll();
                 for ice in viewer.take_pending_local_ice() {
                     let ice_seq = sig.take_seq();
@@ -182,8 +181,7 @@ async fn run_ws_viewer_live(
     let media_deadline = tokio::time::Instant::now() + Duration::from_secs(15);
     while tokio::time::Instant::now() < media_deadline {
         let _ = viewer.poll();
-        if !viewer.recorded_video_nalus().is_empty()
-            && !viewer.recorded_audio_packets().is_empty()
+        if !viewer.recorded_video_nalus().is_empty() && !viewer.recorded_audio_packets().is_empty()
         {
             break;
         }

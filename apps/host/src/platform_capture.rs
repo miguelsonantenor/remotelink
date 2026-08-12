@@ -451,11 +451,8 @@ mod tests {
 
     #[test]
     fn windows_wasapi_prefer_native_opens_or_stub() {
-        let mut a = open_audio_source(
-            AudioCaptureKind::WindowsWasapiPreferNative,
-            Duration::ZERO,
-        )
-        .unwrap();
+        let mut a =
+            open_audio_source(AudioCaptureKind::WindowsWasapiPreferNative, Duration::ZERO).unwrap();
         // Real COM when a render endpoint exists; otherwise stub fallback.
         let name = a.backend_name();
         assert!(name == "wasapi" || name == "stub", "backend={name}");
@@ -465,8 +462,7 @@ mod tests {
 
     #[test]
     fn windows_wasapi_native_only_open_or_error() {
-        match open_audio_source(AudioCaptureKind::WindowsWasapiNativeOnly, Duration::ZERO)
-        {
+        match open_audio_source(AudioCaptureKind::WindowsWasapiNativeOnly, Duration::ZERO) {
             Ok(a) => assert_eq!(a.backend_name(), "wasapi"),
             Err(PlatformCaptureError::WindowsAudio(_)) => {}
             Err(e) => panic!("unexpected: {e}"),

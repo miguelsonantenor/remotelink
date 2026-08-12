@@ -26,9 +26,9 @@ use remotelink_auth::{
 };
 use remotelink_media::{JitterConfig, SkewController, SkewSample, AUDIO_CLOCK_HZ, VIDEO_CLOCK_HZ};
 use remotelink_net::{
-    create_peer_transport_with_config, AudioPacket, BoxPeerTransport, ConnectionState,
-    DataMessage, IncomingTrackData, LocalIceCandidate, PeerRole, PeerTransport,
-    PeerTransportCallbacks, SessionDescription, TransportConfig, TransportMode, VideoNalu,
+    create_peer_transport_with_config, AudioPacket, BoxPeerTransport, ConnectionState, DataMessage,
+    IncomingTrackData, LocalIceCandidate, PeerRole, PeerTransport, PeerTransportCallbacks,
+    SessionDescription, TransportConfig, TransportMode, VideoNalu,
 };
 use remotelink_protocol::IceCandidate;
 
@@ -805,7 +805,11 @@ impl ViewerSession {
     fn handle_track(&mut self, data: IncomingTrackData) {
         match data {
             IncomingTrackData::Video(nalu) => {
-                push_recorded(&mut self.recorded_video_nalus, nalu.clone(), self.record_limit);
+                push_recorded(
+                    &mut self.recorded_video_nalus,
+                    nalu.clone(),
+                    self.record_limit,
+                );
                 if let Some(decoded) = self.video.decode(&nalu) {
                     if decoded.from_mock_h264 {
                         self.stats.mock_h264_frames = self.stats.mock_h264_frames.saturating_add(1);
@@ -1633,9 +1637,7 @@ mod tests {
         session
             .begin_connect(&ConnectRequest::otp("h", "123456"))
             .unwrap();
-        session
-            .attach_transport_mode(TransportMode::Mock)
-            .unwrap();
+        session.attach_transport_mode(TransportMode::Mock).unwrap();
         assert!(session.has_transport());
         assert_eq!(session.transport_state(), Some(ConnectionState::New));
     }

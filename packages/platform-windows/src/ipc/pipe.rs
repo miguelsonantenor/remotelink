@@ -97,13 +97,12 @@ extern "system" {
 
     fn CloseHandle(h_object: *mut core::ffi::c_void) -> i32;
 
-    fn SetCommTimeouts(h_file: *mut core::ffi::c_void, lp_comm_timeouts: *const CommTimeouts)
-        -> i32;
-
-    fn GetCommTimeouts(
+    fn SetCommTimeouts(
         h_file: *mut core::ffi::c_void,
-        lp_comm_timeouts: *mut CommTimeouts,
+        lp_comm_timeouts: *const CommTimeouts,
     ) -> i32;
+
+    fn GetCommTimeouts(h_file: *mut core::ffi::c_void, lp_comm_timeouts: *mut CommTimeouts) -> i32;
 
     fn FlushFileBuffers(h_file: *mut core::ffi::c_void) -> i32;
 
@@ -164,7 +163,9 @@ impl SddlDescriptor {
             )
         };
         if ok == 0 || sd.is_null() {
-            return Err(io::Error::from_raw_os_error(unsafe { GetLastError() } as i32));
+            return Err(io::Error::from_raw_os_error(
+                unsafe { GetLastError() } as i32
+            ));
         }
         Ok(Self { ptr: sd })
     }
@@ -386,7 +387,9 @@ pub fn set_pipe_read_timeout(file: &File, read: Option<Duration>) -> io::Result<
     timeouts.read_total_timeout_constant = duration_to_ms(read);
     let ok = unsafe { SetCommTimeouts(handle, &timeouts) };
     if ok == 0 {
-        return Err(io::Error::from_raw_os_error(unsafe { GetLastError() } as i32));
+        return Err(io::Error::from_raw_os_error(
+            unsafe { GetLastError() } as i32
+        ));
     }
     Ok(())
 }
@@ -400,7 +403,9 @@ pub fn set_pipe_write_timeout(file: &File, write: Option<Duration>) -> io::Resul
     timeouts.write_total_timeout_constant = duration_to_ms(write);
     let ok = unsafe { SetCommTimeouts(handle, &timeouts) };
     if ok == 0 {
-        return Err(io::Error::from_raw_os_error(unsafe { GetLastError() } as i32));
+        return Err(io::Error::from_raw_os_error(
+            unsafe { GetLastError() } as i32
+        ));
     }
     Ok(())
 }
@@ -411,7 +416,9 @@ pub fn flush_pipe(file: &File) -> io::Result<()> {
     let handle = file.as_raw_handle() as *mut core::ffi::c_void;
     let ok = unsafe { FlushFileBuffers(handle) };
     if ok == 0 {
-        return Err(io::Error::from_raw_os_error(unsafe { GetLastError() } as i32));
+        return Err(io::Error::from_raw_os_error(
+            unsafe { GetLastError() } as i32
+        ));
     }
     Ok(())
 }

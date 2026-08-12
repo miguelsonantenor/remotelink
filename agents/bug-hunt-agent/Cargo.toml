@@ -1,4 +1,4 @@
-﻿[package]
+[package]
 name = "bug-hunt-agent"
 version.workspace = true
 edition.workspace = true
