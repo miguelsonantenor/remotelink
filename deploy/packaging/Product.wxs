@@ -76,7 +76,7 @@
       <Component Id="StartMenuShortcuts" Guid="*">
         <Shortcut Id="AppShortcut"
                   Name="RemoteLink"
-                  Description="RemoteLink — this PC and connect"
+                  Description="RemoteLink - this PC and connect"
                   Target="[INSTALLFOLDER]remotelink-app.exe"
                   WorkingDirectory="INSTALLFOLDER" />
         <Shortcut Id="HostShortcut"
