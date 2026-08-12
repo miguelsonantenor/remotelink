@@ -27,6 +27,12 @@ pub struct AppConfig {
     pub stun_urls: String,
     /// Recent remote host IDs (most recent first).
     pub recent_hosts: Vec<String>,
+    /// Allow Mode B unattended connects (host-only password).
+    #[serde(default)]
+    pub unattended_enabled: bool,
+    /// Unattended password (never sent to the server).
+    #[serde(default)]
+    pub unattended_secret: String,
 }
 
 impl Default for AppConfig {
@@ -42,6 +48,8 @@ impl Default for AppConfig {
             transport: "webrtc".into(),
             stun_urls: String::new(),
             recent_hosts: Vec::new(),
+            unattended_enabled: false,
+            unattended_secret: String::new(),
         }
     }
 }

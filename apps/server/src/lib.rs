@@ -22,6 +22,7 @@
 
 pub mod credentials;
 pub mod error;
+pub mod ice;
 pub mod models;
 pub mod otp;
 pub mod repo;
@@ -31,6 +32,7 @@ pub mod session;
 pub mod state;
 
 pub use error::{AppError, AppResult, ErrorBody};
+pub use ice::IceConfig;
 pub use models::{Device, DeviceCredential, DeviceStatus, IssuedTokens, NewCredential, NewDevice};
 pub use otp::{
     MemoryOtpStore, OtpMintRequest, OtpMintResponse, OtpPrefilterResult, OtpStoreError,

@@ -38,9 +38,11 @@ services:
       # TRUST_PROXY: "1"
       # ADMIN_TOKEN: "change-me"
       RUST_LOG: "info"
-      # Shared with coturn for REST-style ephemeral TURN creds (server mint later).
+      # Advertised to clients on hello_ok (override RL_PUBLIC / STUN_URLS in production).
+      STUN_URLS: "${STUN_URLS:-stun:127.0.0.1:3478}"
+      TURN_URLS: "${TURN_URLS:-turn:127.0.0.1:3478}"
       TURN_REALM: "remotelink.local"
-      TURN_SHARED_SECRET: "remotelink-dev-turn-secret-change-me"
+      TURN_SHARED_SECRET: "${TURN_SHARED_SECRET:-remotelink-dev-turn-secret-change-me}"
     ports:
       - "8080:8080"
     depends_on:

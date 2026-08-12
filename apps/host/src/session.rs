@@ -551,6 +551,16 @@ impl SessionManager {
         Ok(())
     }
 
+    /// Mode B without a pre-DTLS MAC: install the host-only secret as the bind key.
+    pub fn authorize_unattended_secret(&mut self, secret: &HostSecret) -> Result<()> {
+        if self.session_id.is_none() {
+            return Err(SessionError::InvalidState("no session attached".into()));
+        }
+        self.bind_key = Some(SessionBindKey::from_mode_b_secret(secret));
+        self.identity.mark_authorized();
+        Ok(())
+    }
+
     /// Issue a post-DTLS DataChannel identity challenge (host → viewer).
     ///
     /// Requires an attached session, Mode A/B authorization, and a Connected peer.

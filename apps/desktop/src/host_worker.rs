@@ -29,6 +29,7 @@ impl HostWorker {
         status_path: PathBuf,
         creds_path: PathBuf,
         stun_urls: String,
+        unattended_secret: Option<String>,
     ) -> Result<Self, String> {
         let host_exe = resolve_host_exe()?;
         let last_error = Arc::new(Mutex::new(None));
@@ -68,6 +69,9 @@ impl HostWorker {
             cmd.env_remove("REMOTELINK_WEBRTC_STUN");
         } else {
             cmd.env("REMOTELINK_WEBRTC_STUN", stun);
+        }
+        if let Some(secret) = unattended_secret.filter(|s| !s.trim().is_empty()) {
+            cmd.arg(format!("--unattended-secret={secret}"));
         }
 
         // Hide console window on Windows (host is a console binary).

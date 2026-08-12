@@ -147,10 +147,14 @@ enum Inbound {
 pub struct WebrtcPeerConfig {
     /// Optional ICE servers (`stun:…` / `turn:…`). Empty = host candidates only.
     pub ice_servers: Vec<String>,
+    /// TURN REST username (optional).
+    pub turn_username: String,
+    /// TURN REST credential (optional).
+    pub turn_credential: String,
 }
 
 impl WebrtcPeerConfig {
-    /// Read optional `REMOTELINK_WEBRTC_STUN` (comma-separated URLs).
+    /// Read `REMOTELINK_WEBRTC_STUN` plus optional TURN user/pass.
     pub fn from_env() -> Self {
         let mut cfg = Self::default();
         if let Ok(s) = std::env::var("REMOTELINK_WEBRTC_STUN") {
@@ -161,6 +165,14 @@ impl WebrtcPeerConfig {
                 .map(str::to_owned)
                 .collect();
         }
+        cfg.turn_username = std::env::var("REMOTELINK_WEBRTC_TURN_USER")
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        cfg.turn_credential = std::env::var("REMOTELINK_WEBRTC_TURN_PASS")
+            .unwrap_or_default()
+            .trim()
+            .to_string();
         cfg
     }
 }
@@ -199,10 +211,15 @@ impl WebrtcPeerTransport {
 
         let mut ice_servers = Vec::new();
         for url in config.ice_servers {
-            ice_servers.push(webrtc::ice_transport::ice_server::RTCIceServer {
-                urls: vec![url],
+            let mut server = webrtc::ice_transport::ice_server::RTCIceServer {
+                urls: vec![url.clone()],
                 ..Default::default()
-            });
+            };
+            if url.starts_with("turn:") || url.starts_with("turns:") {
+                server.username = config.turn_username.clone();
+                server.credential = config.turn_credential.clone();
+            }
+            ice_servers.push(server);
         }
 
         let rtc_cfg = RTCConfiguration {

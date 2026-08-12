@@ -10,8 +10,8 @@ use remotelink_net::{
     create_peer_transport_with_config, ConnectionState, PeerRole, SessionDescription,
     TransportConfig, TransportMode,
 };
-use remotelink_protocol::{SessionMode, SignalMessage};
-use remotelink_signaling::{http_to_ws_url, SignalingClient};
+use remotelink_protocol::SignalMessage;
+use remotelink_signaling::{apply_ice_servers_from_hello, http_to_ws_url, SignalingClient};
 use remotelink_viewer_core::{ConnectRequest, ViewerSession};
 
 /// Viewer WSS connect configuration.
@@ -27,6 +27,8 @@ pub struct WsViewerConfig {
     pub transport: TransportMode,
     /// How long to wait for media after ICE.
     pub media_timeout: Duration,
+    /// When true, `otp` is treated as a Mode B unattended password.
+    pub unattended: bool,
 }
 
 impl Default for WsViewerConfig {
@@ -37,6 +39,7 @@ impl Default for WsViewerConfig {
             otp: "123456".into(),
             transport: TransportMode::Live,
             media_timeout: Duration::from_secs(30),
+            unattended: false,
         }
     }
 }
@@ -60,34 +63,23 @@ pub async fn run_ws_viewer(cfg: WsViewerConfig) -> Result<String, String> {
     let mut sig = SignalingClient::connect(&ws_url)
         .await
         .map_err(|e| format!("ws connect: {e}"))?;
-    sig.hello_viewer_anonymous()
+    let hello = sig
+        .hello_viewer_anonymous()
         .await
         .map_err(|e| format!("hello: {e}"))?;
+    apply_ice_servers_from_hello(&hello);
     println!("ws-viewer: hello_ok");
 
     let session_id = format!("viewer-{}", uuid_like());
     let intent_seq = sig.take_seq();
-    let req = ConnectRequest::otp(&cfg.host_public_id, &cfg.otp);
+    let req = if cfg.unattended {
+        ConnectRequest::unattended(&cfg.host_public_id, &cfg.otp)
+    } else {
+        ConnectRequest::otp(&cfg.host_public_id, &cfg.otp)
+    };
     let intent = req
         .session_intent_message(&session_id, intent_seq)
         .map_err(|e| format!("intent: {e}"))?;
-    // Ensure mode is otp for prefilter
-    let intent = match intent {
-        SignalMessage::SessionIntent {
-            session_id,
-            signal_seq,
-            host_public_id,
-            mode: _,
-            prefilter,
-        } => SignalMessage::SessionIntent {
-            session_id,
-            signal_seq,
-            host_public_id,
-            mode: SessionMode::Otp,
-            prefilter,
-        },
-        other => other,
-    };
     sig.send(&intent)
         .await
         .map_err(|e| format!("send intent: {e}"))?;

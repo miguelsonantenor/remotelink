@@ -2,6 +2,7 @@
 
 use std::env;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use remotelink_server::{router, AppState, ClientIpConfig, MemoryDeviceRepo, PostgresDeviceRepo};
@@ -19,6 +20,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let addr: SocketAddr = listen.parse()?;
     let client_ip = ClientIpConfig::from_env();
 
+    let ice = remotelink_server::IceConfig::from_env();
+    if ice.has_servers() {
+        tracing::info!(
+            stun = ice.stun_urls.len(),
+            turn = ice.turn_urls.len(),
+            "advertising ICE servers on hello_ok"
+        );
+    }
+
     let state = match env::var("DATABASE_URL") {
         Ok(url) if !url.is_empty() => {
             tracing::info!("using Postgres repository");
@@ -26,12 +36,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             AppState::new(Arc::new(repo))
                 .with_client_ip(client_ip)
                 .with_admin_token_from_env()
+                .with_ice(ice)
         }
         _ => {
-            tracing::warn!("DATABASE_URL unset; using in-memory repository (not durable)");
-            AppState::new(Arc::new(MemoryDeviceRepo::new()))
+            let path = registry_path();
+            tracing::info!(path = %path.display(), "using durable JSON registry (set DATABASE_URL for Postgres)");
+            let repo = MemoryDeviceRepo::open_or_create(&path)?;
+            AppState::new(Arc::new(repo))
                 .with_client_ip(client_ip)
                 .with_admin_token_from_env()
+                .with_ice(ice)
         }
     };
 
@@ -53,4 +67,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     )
     .await?;
     Ok(())
+}
+
+fn registry_path() -> PathBuf {
+    if let Ok(p) = env::var("REGISTRY_PATH") {
+        if !p.trim().is_empty() {
+            return PathBuf::from(p);
+        }
+    }
+    if let Ok(d) = env::var("REMOTELINK_DATA_DIR") {
+        if !d.trim().is_empty() {
+            return PathBuf::from(d).join("registry.json");
+        }
+    }
+    PathBuf::from("data").join("registry.json")
 }

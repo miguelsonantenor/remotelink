@@ -38,7 +38,7 @@ Lab processes were **stopped** on park (server + both `remotelink-app` / host ch
 
 | Priority | Work |
 |----------|------|
-| **Phase 2** (user: when finished) | Hosted signaling + STUN/TURN (internet / NAT) |
+| **Phase 2** | Self-host stack + ICE advertise (`docs/HOSTING.md`); you still need a public VPS |
 | **Phase 4** | MSI + Authenticode; updates (auto-start is done) |
 | Polish | Real H.264 decode (today: mock software encoder so pixels reconstruct) |
 

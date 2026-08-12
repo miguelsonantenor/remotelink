@@ -14,7 +14,7 @@ use remotelink_net::{
     TransportConfig,
 };
 use remotelink_protocol::{NamedKey, SignalMessage};
-use remotelink_signaling::{http_to_ws_url, SignalingClient};
+use remotelink_signaling::{apply_ice_servers_from_hello, http_to_ws_url, SignalingClient};
 use remotelink_viewer_core::{
     ConnectRequest, DecodedVideoFrame, RawInput, ViewerPhase, ViewerSession,
 };
@@ -157,9 +157,11 @@ async fn run_live(
     let mut sig = SignalingClient::connect(&ws_url)
         .await
         .map_err(|e| format!("ws connect: {e}"))?;
-    sig.hello_viewer_anonymous()
+    let hello = sig
+        .hello_viewer_anonymous()
         .await
         .map_err(|e| format!("hello: {e}"))?;
+    apply_ice_servers_from_hello(&hello);
     publish(&snapshot, |s| s.status = "Waiting for host…".into());
 
     let session_id = format!("viewer-{}", {
@@ -170,7 +172,11 @@ async fn run_live(
             .unwrap_or(0)
     });
     let intent_seq = sig.take_seq();
-    let req = ConnectRequest::otp(&cfg.host_public_id, &cfg.otp);
+    let req = if cfg.unattended {
+        ConnectRequest::unattended(&cfg.host_public_id, &cfg.otp)
+    } else {
+        ConnectRequest::otp(&cfg.host_public_id, &cfg.otp)
+    };
     let intent = req
         .session_intent_message(&session_id, intent_seq)
         .map_err(|e| format!("intent: {e}"))?;
@@ -212,16 +218,21 @@ async fn run_live(
     viewer.set_record_limit(Some(4));
     viewer.set_focused(true);
     viewer.set_always_capture(true);
-    if let Ok(key) = remotelink_auth::SessionBindKey::from_mode_a_otp(&cfg.otp) {
+    let bind_key = if cfg.unattended {
+        remotelink_auth::HostSecret::try_new(cfg.otp.as_bytes().to_vec())
+            .ok()
+            .map(|s| remotelink_auth::SessionBindKey::from_mode_b_secret(&s))
+    } else {
+        remotelink_auth::SessionBindKey::from_mode_a_otp(&cfg.otp).ok()
+    };
+    if let Some(key) = bind_key {
         viewer.set_bind_key(key);
         viewer.set_require_identity_for_input(true);
+        viewer.mark_session_authorized();
     }
     viewer
         .begin_connect(&req)
         .map_err(|e| format!("begin_connect: {e}"))?;
-    if remotelink_auth::SessionBindKey::from_mode_a_otp(&cfg.otp).is_ok() {
-        viewer.mark_session_authorized();
-    }
     viewer.attach_transport(answerer);
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(45);

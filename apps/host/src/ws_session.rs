@@ -22,10 +22,10 @@ use remotelink_auth::generate_device_keypair;
 use remotelink_net::{create_peer_transport_with_config, PeerRole, TransportConfig, TransportMode};
 use remotelink_platform_windows::ipc::message::{ControlMessage, DetachSession};
 use remotelink_platform_windows::ControlEndpoint;
-use remotelink_protocol::SignalMessage;
+use remotelink_protocol::{SessionMode, SignalMessage};
 use remotelink_signaling::{
-    http_to_ws_url, post_otp_hash, refresh_device_token, register_device, HostCredentialFile,
-    SignalingClient, DEFAULT_CREDS_PATH,
+    apply_ice_servers_from_hello, http_to_ws_url, post_otp_hash, refresh_device_token,
+    register_device, HostCredentialFile, SignalingClient, DEFAULT_CREDS_PATH,
 };
 
 use crate::control_loop::ServiceAgentClient;
@@ -85,6 +85,8 @@ pub struct WsHostConfig {
     pub status_path: Option<PathBuf>,
     /// KD5 control IPC boot secret (must match agent `--boot-secret`).
     pub boot_secret: Option<String>,
+    /// Mode B unattended password (host-only; never sent to the server).
+    pub unattended_secret: Option<String>,
 }
 
 /// Pre-enrolled host credentials (from a prior [`register_device`] call).
@@ -119,6 +121,7 @@ impl Default for WsHostConfig {
             os_tray: cfg!(windows),
             status_path: None,
             boot_secret: None,
+            unattended_secret: None,
         }
     }
 }
@@ -273,6 +276,28 @@ impl LiveOtpHub {
         }
     }
 
+    fn enable_unattended(&mut self, secret: &str) -> Result<(), String> {
+        let host_secret = remotelink_auth::HostSecret::try_new(secret.as_bytes().to_vec())
+            .map_err(|e| format!("unattended secret: {e}"))?;
+        self.policy.set_host_secret(host_secret);
+        self.policy.set_unattended_enabled(true);
+        println!("ws-host: Mode B unattended access enabled");
+        Ok(())
+    }
+
+    fn authorize_unattended(&mut self, mgr: &mut SessionManager) -> Result<(), String> {
+        let secret = self
+            .policy
+            .host_secret()
+            .ok_or_else(|| "unattended enabled but host secret missing".to_string())?;
+        mgr.authorize_unattended_secret(secret)
+            .map_err(|e| format!("authorize unattended: {e}"))?;
+        mgr.set_input_policy_enabled(true);
+        mgr.start_identity_challenge()
+            .map_err(|e| format!("identity challenge: {e}"))?;
+        Ok(())
+    }
+
     fn mint_local(&mut self) -> Result<(String, remotelink_auth::OtpHash), String> {
         let code = self
             .policy
@@ -343,7 +368,7 @@ async fn maybe_mint_otp(
 async fn accept_incoming_session(
     sig: &mut SignalingClient,
     wait_incoming: Duration,
-) -> Result<String, String> {
+) -> Result<(String, SessionMode), String> {
     println!(
         "ws-host: waiting for session_incoming (timeout {}s)…",
         wait_incoming.as_secs()
@@ -355,12 +380,13 @@ async fn accept_incoming_session(
         .await
         .map_err(|e| format!("wait incoming: {e}"))?;
 
-    let (session_id, incoming_seq) = match &incoming {
+    let (session_id, incoming_seq, incoming_mode) = match &incoming {
         SignalMessage::SessionIncoming {
             session_id,
             signal_seq,
+            mode,
             ..
-        } => (session_id.clone(), *signal_seq),
+        } => (session_id.clone(), *signal_seq, *mode),
         _ => unreachable!(),
     };
     println!("ws-host: session_incoming session_id={session_id}");
@@ -373,8 +399,8 @@ async fn accept_incoming_session(
     })
     .await
     .map_err(|e| format!("accept: {e}"))?;
-    println!("ws-host: session_accept seq={accept_seq}");
-    Ok(session_id)
+    println!("ws-host: session_accept seq={accept_seq} mode={incoming_mode:?}");
+    Ok((session_id, incoming_mode))
 }
 
 /// Serve one session using an **in-process** SessionManager (legacy / single binary).
@@ -389,7 +415,7 @@ async fn handle_one_session_local(
     tray: Option<&HostTray>,
     otp_hub: &mut LiveOtpHub,
 ) -> Result<String, String> {
-    let session_id = accept_incoming_session(sig, wait_incoming).await?;
+    let (session_id, incoming_mode) = accept_incoming_session(sig, wait_incoming).await?;
     if let Some(t) = tray {
         t.begin_session(&session_id, None);
     }
@@ -458,7 +484,12 @@ async fn handle_one_session_local(
         t.mark_session_active();
     }
     if video_frames == 0 {
-        match otp_hub.authorize_live(&mut mgr) {
+        let auth = if incoming_mode == SessionMode::Unattended {
+            otp_hub.authorize_unattended(&mut mgr)
+        } else {
+            otp_hub.authorize_live(&mut mgr)
+        };
+        match auth {
             Ok(()) => {
                 // Give the viewer a moment to answer the DC challenge.
                 for _ in 0..40 {
@@ -529,7 +560,7 @@ async fn handle_one_session_agent(
     wait_incoming: Duration,
     tray: Option<&HostTray>,
 ) -> Result<String, String> {
-    let session_id = accept_incoming_session(sig, wait_incoming).await?;
+    let (session_id, _incoming_mode) = accept_incoming_session(sig, wait_incoming).await?;
     if let Some(t) = tray {
         t.begin_session(&session_id, None);
     }
@@ -1109,6 +1140,9 @@ pub async fn run_ws_host_service(cfg: WsHostConfig) -> Result<String, String> {
     };
 
     let mut otp_hub = LiveOtpHub::new();
+    if let Some(secret) = cfg.unattended_secret.as_deref() {
+        otp_hub.enable_unattended(secret)?;
+    }
     if let Some(otp) = maybe_mint_otp(&cfg, &enrolled, &mut otp_hub).await? {
         if let Some(ref t) = tray {
             t.set_otp(&otp.code, otp.expires_at);
@@ -1152,6 +1186,7 @@ pub async fn run_ws_host_service(cfg: WsHostConfig) -> Result<String, String> {
                 .await
                 .map_err(|e| format!("hello: {e}"))?;
             if let SignalMessage::HelloOk { feature_flags, .. } = &hello {
+                apply_ice_servers_from_hello(&hello);
                 println!(
                     "ws-host: hello_ok sdp_relay={} public_id={public_id} media={}",
                     feature_flags

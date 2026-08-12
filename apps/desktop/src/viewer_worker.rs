@@ -15,6 +15,7 @@ impl ViewerWorker {
         host_public_id: String,
         otp: String,
         transport: TransportMode,
+        unattended: bool,
     ) -> Self {
         let cfg = WsViewerConfig {
             server,
@@ -22,6 +23,7 @@ impl ViewerWorker {
             otp,
             transport,
             media_timeout: std::time::Duration::from_secs(45),
+            unattended,
         };
         Self {
             handle: LiveViewerHandle::start(cfg),

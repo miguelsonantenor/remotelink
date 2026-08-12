@@ -1,11 +1,16 @@
 //! In-memory repository for unit tests and local runs without Postgres.
+//!
+//! When opened with [`MemoryDeviceRepo::open_or_create`], mutations are
+//! written to a JSON file so IDs survive process restart.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Mutex;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
 use super::{DeviceRepository, RepoError};
 use crate::models::{Device, DeviceCredential, DeviceStatus, NewCredential, NewDevice};
@@ -16,6 +21,7 @@ pub struct MemoryDeviceRepo {
     next_device_id: AtomicI64,
     next_cred_id: AtomicI64,
     inner: Mutex<Store>,
+    persist_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Default)]
@@ -25,10 +31,81 @@ struct Store {
     credentials: HashMap<i64, DeviceCredential>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+struct PersistSnapshot {
+    next_device_id: i64,
+    next_cred_id: i64,
+    devices: Vec<Device>,
+    credentials: Vec<DeviceCredential>,
+}
+
 impl MemoryDeviceRepo {
-    /// Create an empty in-memory repository.
+    /// Create an empty in-memory repository (tests / ephemeral lab).
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Load a JSON registry from `path`, or create an empty one.
+    pub fn open_or_create(path: impl AsRef<Path>) -> Result<Self, RepoError> {
+        let path = path.as_ref().to_path_buf();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| RepoError::Internal(format!("create registry dir: {e}")))?;
+        }
+        if !path.exists() {
+            let repo = Self {
+                persist_path: Some(path.clone()),
+                ..Self::default()
+            };
+            repo.save()?;
+            return Ok(repo);
+        }
+        let text = std::fs::read_to_string(&path)
+            .map_err(|e| RepoError::Internal(format!("read registry: {e}")))?;
+        let snap: PersistSnapshot = serde_json::from_str(&text)
+            .map_err(|e| RepoError::Internal(format!("parse registry: {e}")))?;
+        let mut devices = HashMap::new();
+        let mut by_public_id = HashMap::new();
+        for d in snap.devices {
+            by_public_id.insert(d.public_id.clone(), d.id);
+            devices.insert(d.id, d);
+        }
+        let mut credentials = HashMap::new();
+        for c in snap.credentials {
+            credentials.insert(c.id, c);
+        }
+        Ok(Self {
+            next_device_id: AtomicI64::new(snap.next_device_id),
+            next_cred_id: AtomicI64::new(snap.next_cred_id),
+            inner: Mutex::new(Store {
+                devices,
+                by_public_id,
+                credentials,
+            }),
+            persist_path: Some(path),
+        })
+    }
+
+    fn save(&self) -> Result<(), RepoError> {
+        let Some(path) = &self.persist_path else {
+            return Ok(());
+        };
+        let store = self.lock()?;
+        let snap = PersistSnapshot {
+            next_device_id: self.next_device_id.load(Ordering::SeqCst),
+            next_cred_id: self.next_cred_id.load(Ordering::SeqCst),
+            devices: store.devices.values().cloned().collect(),
+            credentials: store.credentials.values().cloned().collect(),
+        };
+        drop(store);
+        let text = serde_json::to_string_pretty(&snap)
+            .map_err(|e| RepoError::Internal(format!("serialize registry: {e}")))?;
+        let tmp = path.with_extension("json.tmp");
+        std::fs::write(&tmp, text)
+            .map_err(|e| RepoError::Internal(format!("write registry tmp: {e}")))?;
+        std::fs::rename(&tmp, path)
+            .map_err(|e| RepoError::Internal(format!("replace registry: {e}")))?;
+        Ok(())
     }
 
     /// Test helper: force a device status (e.g. disabled).
@@ -103,6 +180,8 @@ impl DeviceRepository for MemoryDeviceRepo {
         };
         store.by_public_id.insert(new.public_id, id);
         store.devices.insert(id, device.clone());
+        drop(store);
+        self.save()?;
         Ok(device)
     }
 
@@ -132,12 +211,17 @@ impl DeviceRepository for MemoryDeviceRepo {
         }
         device.status = DeviceStatus::Deleted;
         device.deleted_at = Some(at);
+        drop(store);
+        self.save()?;
         Ok(true)
     }
 
     async fn insert_credential(&self, new: NewCredential) -> Result<DeviceCredential, RepoError> {
         let mut store = self.lock()?;
-        Self::insert_credential_locked(&mut store, &self.next_cred_id, new, Utc::now())
+        let cred = Self::insert_credential_locked(&mut store, &self.next_cred_id, new, Utc::now())?;
+        drop(store);
+        self.save()?;
+        Ok(cred)
     }
 
     async fn find_by_access_hash(
@@ -247,6 +331,8 @@ impl DeviceRepository for MemoryDeviceRepo {
             d.last_seen_at = Some(now);
         }
 
+        drop(store);
+        self.save()?;
         Ok((device, inserted))
     }
 
@@ -263,6 +349,8 @@ impl DeviceRepository for MemoryDeviceRepo {
             return Err(RepoError::NotFound);
         }
         cred.revoked_at = Some(at);
+        drop(store);
+        self.save()?;
         Ok(())
     }
 
@@ -277,6 +365,8 @@ impl DeviceRepository for MemoryDeviceRepo {
                 cred.revoked_at = Some(at);
             }
         }
+        drop(store);
+        self.save()?;
         Ok(())
     }
 
@@ -286,6 +376,8 @@ impl DeviceRepository for MemoryDeviceRepo {
             return Err(RepoError::NotFound);
         };
         device.last_seen_at = Some(at);
+        drop(store);
+        self.save()?;
         Ok(())
     }
 
@@ -516,5 +608,21 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, RepoError::StaleCredential));
+    }
+
+    #[tokio::test]
+    async fn persist_round_trip_survives_reopen() {
+        let dir = std::env::temp_dir().join(format!("rl-reg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("registry.json");
+        {
+            let repo = MemoryDeviceRepo::open_or_create(&path).unwrap();
+            sample_device(&repo, "1234567897").await;
+        }
+        let repo = MemoryDeviceRepo::open_or_create(&path).unwrap();
+        let found = repo.get_by_public_id("1234567897").await.unwrap().unwrap();
+        assert_eq!(found.public_id, "1234567897");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

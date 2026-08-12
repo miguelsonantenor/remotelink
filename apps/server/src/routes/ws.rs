@@ -211,6 +211,7 @@ async fn expect_hello(
         feature_flags: json!({
             "max_protocol_version": PROTOCOL_VERSION,
             "sdp_relay": true,
+            "ice_servers": state.ice.feature_flag_value(),
         }),
     };
     if !state.sessions.send_to(conn_id, ok).await {

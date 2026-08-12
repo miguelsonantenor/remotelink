@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use crate::ice::IceConfig;
 use crate::otp::{MemoryOtpStore, DEFAULT_OTP_PEPPER};
 use crate::repo::DeviceRepository;
 use crate::security::{
@@ -27,6 +28,8 @@ pub struct AppState {
     pub client_ip: ClientIpConfig,
     /// Operator admin token (`ADMIN_TOKEN`). `None` / empty disables admin routes.
     pub admin_token: Option<Arc<str>>,
+    /// STUN/TURN advertised on `hello_ok`.
+    pub ice: IceConfig,
 }
 
 impl AppState {
@@ -42,6 +45,7 @@ impl AppState {
             otp_pepper: Arc::new(DEFAULT_OTP_PEPPER.to_vec()),
             client_ip: ClientIpConfig::default(),
             admin_token: None,
+            ice: IceConfig::default(),
         }
     }
 
@@ -58,6 +62,7 @@ impl AppState {
             otp_pepper: Arc::new(DEFAULT_OTP_PEPPER.to_vec()),
             client_ip: ClientIpConfig::default(),
             admin_token: None,
+            ice: IceConfig::default(),
         }
     }
 
@@ -81,6 +86,7 @@ impl AppState {
             otp_pepper: Arc::new(DEFAULT_OTP_PEPPER.to_vec()),
             client_ip: ClientIpConfig::default(),
             admin_token: None,
+            ice: IceConfig::default(),
         }
     }
 
@@ -132,6 +138,12 @@ impl AppState {
     /// Inject OTP store (tests).
     pub fn with_otp_store(mut self, otp: Arc<MemoryOtpStore>) -> Self {
         self.otp = otp;
+        self
+    }
+
+    /// Advertise STUN/TURN on `hello_ok`.
+    pub fn with_ice(mut self, ice: IceConfig) -> Self {
+        self.ice = ice;
         self
     }
 }

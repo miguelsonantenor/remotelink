@@ -32,7 +32,7 @@ impl DeviceStatus {
 }
 
 /// Enrolled host device row.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Device {
     pub id: i64,
     pub public_id: String,
@@ -47,7 +47,7 @@ pub struct Device {
 }
 
 /// Stored credential hashes (plaintext tokens never persisted).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeviceCredential {
     pub id: i64,
     pub device_id: i64,

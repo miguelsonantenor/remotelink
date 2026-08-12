@@ -288,6 +288,13 @@ fn parse_ws_host_config(args: &[String], transport: remotelink_net::TransportMod
             cfg.boot_secret = Some(s);
         }
     }
+    if let Some(s) = flag_value(args, "--unattended-secret")
+        .or_else(|| env::var("REMOTELINK_UNATTENDED_SECRET").ok())
+    {
+        if !s.is_empty() {
+            cfg.unattended_secret = Some(s);
+        }
+    }
     cfg
 }
 

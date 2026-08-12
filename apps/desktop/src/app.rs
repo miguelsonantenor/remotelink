@@ -32,6 +32,7 @@ pub struct RemoteLinkApp {
     last_status_poll: f64,
     minimize_on_start: bool,
     session_fullscreen: bool,
+    connect_unattended: bool,
 }
 
 impl RemoteLinkApp {
@@ -78,6 +79,7 @@ impl RemoteLinkApp {
             last_status_poll: 0.0,
             minimize_on_start: login_start,
             session_fullscreen: false,
+            connect_unattended: false,
         };
         if allow_access {
             app.start_host();
@@ -125,6 +127,11 @@ impl RemoteLinkApp {
             status_path,
             creds_path,
             self.config.stun_urls.clone(),
+            if self.config.unattended_enabled {
+                Some(self.config.unattended_secret.clone())
+            } else {
+                None
+            },
         ) {
             Ok(w) => {
                 self.footer_note = format!("Host started ({})", w.host_exe().display());
@@ -241,7 +248,15 @@ impl RemoteLinkApp {
             return;
         }
         if otp.is_empty() {
-            self.connect_status = "Enter the OTP shown on the remote PC.".into();
+            self.connect_status = if self.connect_unattended {
+                "Enter the unattended password set on the remote PC.".into()
+            } else {
+                "Enter the OTP shown on the remote PC.".into()
+            };
+            return;
+        }
+        if self.connect_unattended && otp.len() < 16 {
+            self.connect_status = "Unattended password must be at least 16 characters.".into();
             return;
         }
         if self.viewer.as_ref().is_some_and(|v| !v.is_finished()) {
@@ -255,6 +270,7 @@ impl RemoteLinkApp {
             host,
             otp,
             self.transport_mode(),
+            self.connect_unattended,
         ));
     }
 
@@ -615,6 +631,36 @@ impl eframe::App for RemoteLinkApp {
                     if let Some(err) = &self.host_error {
                         ui.colored_label(egui::Color32::from_rgb(220, 80, 80), err);
                     }
+                    ui.add_space(6.0);
+                    let mut unattended = self.config.unattended_enabled;
+                    if ui
+                        .checkbox(&mut unattended, "Allow unattended access")
+                        .on_hover_text(
+                            "Viewers can connect with this password when nobody is at the PC.",
+                        )
+                        .changed()
+                    {
+                        self.config.unattended_enabled = unattended;
+                        let _ = self.config.save();
+                    }
+                    if self.config.unattended_enabled {
+                        ui.horizontal(|ui| {
+                            ui.label("Unattended password");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.config.unattended_secret)
+                                    .desired_width(200.0)
+                                    .password(true)
+                                    .hint_text("at least 16 characters"),
+                            );
+                        });
+                        ui.label(
+                            egui::RichText::new(
+                                "Stored only on this PC. Restart Allow remote access after changing it.",
+                            )
+                            .small()
+                            .weak(),
+                        );
+                    }
                     let age = status_age_secs(&AppConfig::status_path());
                     if host_alive && age.is_none() {
                         ui.label(
@@ -645,11 +691,20 @@ impl eframe::App for RemoteLinkApp {
                         }
                     });
                     ui.horizontal(|ui| {
-                        ui.label("OTP");
+                        ui.label(if self.connect_unattended {
+                            "Password"
+                        } else {
+                            "OTP"
+                        });
                         ui.add(
                             egui::TextEdit::singleline(&mut self.remote_secret)
-                                .desired_width(120.0)
-                                .hint_text("code"),
+                                .desired_width(160.0)
+                                .password(self.connect_unattended)
+                                .hint_text(if self.connect_unattended {
+                                    "unattended password"
+                                } else {
+                                    "code"
+                                }),
                         );
                         let connecting = self
                             .viewer
@@ -671,6 +726,11 @@ impl eframe::App for RemoteLinkApp {
                             self.disconnect_viewer(ctx);
                         }
                     });
+
+                    ui.checkbox(
+                        &mut self.connect_unattended,
+                        "Unattended (password instead of OTP)",
+                    );
 
                     if !self.config.recent_hosts.is_empty() {
                         ui.add_space(4.0);

@@ -13,6 +13,7 @@ Low-latency remote desktop with **system audio**, host agent, viewer, and signal
 | Portable package + lab scripts | Done |
 | MSI (WiX) | Optional — `scripts/build-msi.ps1` |
 | Authenticode signing | Optional — release pipeline only |
+| Self-host (IDs persist + STUN/TURN) | [docs/HOSTING.md](docs/HOSTING.md) |
 
 ## Docs
 

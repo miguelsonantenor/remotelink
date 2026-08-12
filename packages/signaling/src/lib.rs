@@ -7,6 +7,7 @@
 mod client;
 mod creds;
 mod http_api;
+mod ice;
 mod register;
 
 pub use client::{SignalingClient, SignalingError, SignalingResult};
@@ -14,6 +15,7 @@ pub use creds::{HostCredentialFile, DEFAULT_CREDS_PATH};
 pub use http_api::{
     apply_refresh, post_otp_hash, refresh_device_token, OtpMintHttpResponse, TokenHttpResponse,
 };
+pub use ice::apply_ice_servers_from_hello;
 pub use register::{http_to_ws_url, register_device, DeviceRegistration, RegisterError};
 
 /// Crate version from `Cargo.toml`.

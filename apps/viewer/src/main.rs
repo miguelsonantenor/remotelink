@@ -199,6 +199,10 @@ fn run_cli(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         if let Some(o) = otp.as_deref() {
             cfg.otp = o.to_string();
         }
+        if let Some(s) = unattended.as_deref() {
+            cfg.otp = s.to_string();
+            cfg.unattended = true;
+        }
         return match run_ws_viewer_blocking(cfg) {
             Ok(summary) => {
                 println!("{summary}");

@@ -172,4 +172,10 @@ Plan PRs 1–27 done.
 - Advanced STUN/TURN field → `REMOTELINK_WEBRTC_STUN` (empty = host candidates / same LAN)
 - WSS `mock`/`auto` resolve to webrtc when compiled (no longer forced to live)
 
+**2026-08-12 (ship blockers):**
+- Server default registry is durable JSON (`REGISTRY_PATH` / `data/registry.json`); Postgres still via `DATABASE_URL`
+- `hello_ok` advertises STUN/TURN (`STUN_URLS` / `TURN_URLS` / `TURN_SHARED_SECRET`); clients apply them
+- App: Allow unattended access + password (Mode B); Connect can use that password instead of OTP
+- Hosting steps: `docs/HOSTING.md`
+
 **Optional (post-core):** Authenticode EV signing, NVENC SDK, webrtc multi-process e2e.
