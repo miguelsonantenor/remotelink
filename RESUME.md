@@ -1,49 +1,51 @@
 # RemoteLink — Resume handoff
 
-**Saved:** 2026-08-12 (Phase 3 live session window)  
+**Saved:** 2026-08-12 (parked after successful two-client live connect)  
 **Primary tree:** branch **`main`** at `C:\Users\Linked\Documents\remotelink`  
 **GitHub:** https://github.com/miguelsonantenor/remotelink  
+**Tip of `main`:** `4d8a883` (ICE seq race fix)
 
 ## Git policy (user)
 
 - **OK:** local `git commit` anytime  
-- **Push:** user authorized 2026-08-12 (Phase 1 commits are on origin)  
+- **OK:** `git push` to GitHub  
 - **NOT OK without explicit permission:** GitHub releases, remote tags
 
-| Local commit | Summary |
-|--------------|---------|
-| `6b3f1ae` | Phase 1 product shell (`remotelink-app` — This PC + Connect) |
-| `851982c` | Host runs as **child process** so WSS stays online (`host_offline` fix) |
-
-Remote still has older core release (`v0.1.0` portable zip **without** product shell).
+Lab processes were **stopped** on park (server + both `remotelink-app` / host children).
 
 ---
 
 ## Where we stopped
 
-### Done
+### Done (and user-verified)
 
 | Item | Notes |
 |------|--------|
 | Core remote stack | Signaling, host, viewer CLI, DXGI/WASAPI/MF H.264, packaging |
 | GitHub release `v0.1.0` | Portable zip (pre–Phase-1 binaries) |
-| **Phase 1 shell** | `apps/desktop` → binary **`remotelink-app`** (egui) |
-| Host under app | Spawns `remotelink-host.exe` child; status JSON + OTP in UI |
-| Lab connect verified | `hello` → accept → offer/answer → live pump (no more burst hangup) |
-| **Phase 3 live window** | `remotelink-app` Connect stays open and paints decoded frames |
+| **Phase 1 shell** | `remotelink-app` This PC + Connect |
+| **Phase 3 live window** | Session stays open and paints decoded frames |
+| **Two-client lab** | **Worked** 2026-08-12: OTP + bind + live picture, session stayed up |
+| Live OTP bind | Mode A DC challenge; remint after hangup; retry until host accepts |
+| Lab default port | `http://127.0.0.1:18080` (8080 is taken on this PC) |
+| Live picture | 1280×720 preview, window fills view, mouse 0..1 |
+| Start with Windows | Advanced checkbox → HKCU Run `--autostart` |
+| Lab fixes during test | Skip idle WASAPI audio; drop colliding ICE `signal_seq` |
 
 ### Not done (pick up later)
 
 | Priority | Work |
 |----------|------|
 | **Phase 2** (user: when finished) | Hosted signaling + STUN/TURN (internet / NAT) |
-| **Phase 4** | MSI + Authenticode; updates (auto-start done) |
+| **Phase 4** | MSI + Authenticode; updates (auto-start is done) |
 | Polish | Real H.264 decode (today: mock software encoder so pixels reconstruct) |
 
-### Lab quirks on this machine
+### Lab notes
 
-- Lab default is **`http://127.0.0.1:18080`** (8080 is often taken by other Windows services)
-- Live sessions remint a new OTP after hangup so the next viewer can connect
+- Always copy **Your ID + OTP from the other window**, not from old chat. Restart remints a new OTP.
+- Two instances need **different** `REMOTELINK_DATA_DIR`.
+- In-memory server forgets devices on restart; host re-registers if token refresh fails.
+- Agent helper commands can kill GUI children when they exit — keep a long-lived server/app process, or launch via `cmd /c start`.
 
 ---
 

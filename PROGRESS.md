@@ -152,4 +152,9 @@ Plan PRs 1–27 done.
 - Login launch starts minimized with host allowed
 - Portable install `-Startup`; uninstall removes the Run key
 
+**2026-08-12 (lab parked — live connect succeeded):**
+- User connected two `remotelink-app` windows; session stayed up
+- Fixed: OTP retry bind, idle WASAPI not fatal, colliding ICE seq dropped
+- Lab processes stopped; resume from `RESUME.md`
+
 **Optional (post-core):** Authenticode EV signing, NVENC SDK, webrtc multi-process e2e.
