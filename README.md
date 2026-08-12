@@ -45,7 +45,7 @@ cargo run -p remotelink-desktop
 # • This PC — Your ID + OTP (Copy ID + OTP for the other PC)
 # • Connect — remote ID + OTP (paste the pair into Remote ID)
 # • Live session fills the window (Fullscreen / Esc)
-# • Advanced — signaling URL (default http://127.0.0.1:18080)
+# • Advanced — signaling URL, webrtc (default) / live fallback, optional STUN
 ```
 
 Settings live under `%LOCALAPPDATA%\RemoteLink` (`config.json`, host creds, status).

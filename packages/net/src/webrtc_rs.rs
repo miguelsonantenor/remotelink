@@ -640,43 +640,32 @@ fn spawn_remote_track_reader(track: Arc<TrackRemote>, tx: Sender<Inbound>) {
         let mime = track.codec().capability.mime_type.to_ascii_lowercase();
         if mime.contains("h264") {
             let mut sb = SampleBuilder::new(64, H264Packet::default(), 90_000);
-            loop {
-                match track.read_rtp().await {
-                    Ok((pkt, _)) => {
-                        sb.push(pkt);
-                        while let Some(sample) = sb.pop() {
-                            let data = sample.data.to_vec();
-                            let keyframe = is_h264_keyframe(&data);
-                            let _ = tx.send(Inbound::Track(IncomingTrackData::Video(VideoNalu {
-                                pts_host_mono: Duration::from_millis(0),
-                                rtp_ts: Some(sample.packet_timestamp),
-                                keyframe,
-                                format: NaluFormat::AnnexB,
-                                data,
-                            })));
-                        }
-                    }
-                    Err(_) => break,
+            while let Ok((pkt, _)) = track.read_rtp().await {
+                sb.push(pkt);
+                while let Some(sample) = sb.pop() {
+                    let data = sample.data.to_vec();
+                    let keyframe = is_h264_keyframe(&data);
+                    let _ = tx.send(Inbound::Track(IncomingTrackData::Video(VideoNalu {
+                        pts_host_mono: Duration::from_millis(0),
+                        rtp_ts: Some(sample.packet_timestamp),
+                        keyframe,
+                        format: NaluFormat::AnnexB,
+                        data,
+                    })));
                 }
             }
         } else if mime.contains("opus") {
             let mut sb = SampleBuilder::new(32, OpusPacket, 48_000);
-            loop {
-                match track.read_rtp().await {
-                    Ok((pkt, _)) => {
-                        sb.push(pkt);
-                        while let Some(sample) = sb.pop() {
-                            let _ =
-                                tx.send(Inbound::Track(IncomingTrackData::Audio(AudioPacket {
-                                    pts_host_mono: Duration::from_millis(0),
-                                    rtp_ts: Some(sample.packet_timestamp),
-                                    sample_rate: 48_000,
-                                    channels: 2,
-                                    data: sample.data.to_vec(),
-                                })));
-                        }
-                    }
-                    Err(_) => break,
+            while let Ok((pkt, _)) = track.read_rtp().await {
+                sb.push(pkt);
+                while let Some(sample) = sb.pop() {
+                    let _ = tx.send(Inbound::Track(IncomingTrackData::Audio(AudioPacket {
+                        pts_host_mono: Duration::from_millis(0),
+                        rtp_ts: Some(sample.packet_timestamp),
+                        sample_rate: 48_000,
+                        channels: 2,
+                        data: sample.data.to_vec(),
+                    })));
                 }
             }
         } else {

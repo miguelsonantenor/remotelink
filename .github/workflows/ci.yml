@@ -33,6 +33,9 @@ jobs:
       - name: cargo test
         run: cargo test --workspace
 
+      - name: cargo test webrtc-rs backend
+        run: cargo test -p remotelink-net --features webrtc-rs --lib
+
       - name: packaging inventory smoke
         shell: pwsh
         run: ./scripts/list-package-binaries.ps1

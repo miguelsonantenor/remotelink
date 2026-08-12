@@ -46,13 +46,13 @@ pub async fn run_ws_viewer(cfg: WsViewerConfig) -> Result<String, String> {
     if cfg.host_public_id.is_empty() {
         return Err("--host PUBLIC_ID is required for --ws-connect".into());
     }
-    let mut mode = cfg.transport;
-    if mode == TransportMode::Mock || mode == TransportMode::Auto {
+    let mode = cfg.transport.for_multi_process();
+    if mode != cfg.transport {
         eprintln!(
-            "ws-viewer: transport `{}` is not multi-process safe; using live TCP",
+            "ws-viewer: transport `{}` is not multi-process safe; using {}",
+            cfg.transport.as_str(),
             mode.as_str()
         );
-        mode = TransportMode::Live;
     }
     let transport_cfg = TransportConfig { mode };
 

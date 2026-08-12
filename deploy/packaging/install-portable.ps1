@@ -38,7 +38,7 @@ if (-not $NoStartMenu) {
     $ws = New-Object -ComObject WScript.Shell
     foreach ($pair in @(
             @{ Name = "RemoteLink"; Target = "remotelink-app.exe"; Args = "" },
-            @{ Name = "RemoteLink Host (CLI)"; Target = "remotelink-host.exe"; Args = "--role=service --server=http://127.0.0.1:18080 --transport=live" },
+            @{ Name = "RemoteLink Host (CLI)"; Target = "remotelink-host.exe"; Args = "--role=service --server=http://127.0.0.1:18080 --transport=webrtc" },
             @{ Name = "RemoteLink Viewer (CLI)"; Target = "remotelink-viewer.exe"; Args = "--help" },
             @{ Name = "RemoteLink Server"; Target = "remotelink-server.exe"; Args = "" }
         )) {

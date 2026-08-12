@@ -15,8 +15,9 @@ name = "remotelink-host"
 path = "src/main.rs"
 
 [features]
-default = []
-# Real webrtc-rs PeerTransport demos (pulls webrtc + tokio). Off by default for CI.
+default = ["webrtc-rs"]
+# Product media plane: webrtc-rs PeerConnection (SDP / ICE / DTLS).
+# Disable with `--no-default-features` for a mock/live-only host.
 webrtc-rs = ["remotelink-net/webrtc-rs"]
 
 [dependencies]

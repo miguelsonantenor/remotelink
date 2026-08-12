@@ -57,7 +57,7 @@ Lab processes were **stopped** on park (server + both `remotelink-app` / host ch
 |--------|--------|
 | PR plan | **PRs 1–27 complete** (8b optional skipped) |
 | **Integrated monorepo** | **Yes** |
-| PeerTransport backends | **mock** · **live TCP** · **webrtc-rs** (opt-in) |
+| PeerTransport backends | **mock** · **live TCP** · **webrtc-rs** (product default) |
 | **Core product** | **COMPLETE** |
 | **Phase 1 product shell** | **DONE** (on origin) |
 | **Phase 3 live window** | **DONE** (session stays open; Disconnect hangs up) |

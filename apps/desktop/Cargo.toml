@@ -10,6 +10,15 @@ publish = false
 name = "remotelink-app"
 path = "src/main.rs"
 
+[features]
+default = ["webrtc-rs"]
+# Product media plane (host child + in-process viewer).
+webrtc-rs = [
+    "remotelink-net/webrtc-rs",
+    "remotelink-host/webrtc-rs",
+    "remotelink-viewer/webrtc-rs",
+]
+
 [dependencies]
 remotelink-common = { workspace = true }
 remotelink-host = { path = "../host" }

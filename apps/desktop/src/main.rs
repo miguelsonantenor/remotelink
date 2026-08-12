@@ -63,7 +63,7 @@ fn print_help() {
          • This PC — public ID + OTP when host is enrolled (Copy ID + OTP)\n  \
          • Connect — remote ID + OTP (paste the pair into Remote ID)\n  \
          • Live session takes over the window; Fullscreen or Esc\n  \
-         • Advanced — signaling URL, transport, Start with Windows, data folder\n\n\
+         • Advanced — signaling URL, webrtc/live, STUN, Start with Windows\n\n\
          Lab:\n  \
          1. remotelink-server\n  \
          2. remotelink-app   (Allow remote access)\n  \

@@ -15,11 +15,11 @@ name = "remotelink-viewer"
 path = "src/main.rs"
 
 [features]
-default = []
+default = ["webrtc-rs"]
 # Optional egui+winit shell. Disabled by default so windows-gnu / CI stay lean;
 # enable with `cargo run -p remotelink-viewer --features gui`.
 gui = ["dep:eframe", "dep:egui"]
-# Real webrtc-rs PeerTransport demos (pulls webrtc + tokio). Off by default for CI.
+# Product media plane: webrtc-rs PeerConnection (SDP / ICE / DTLS).
 webrtc-rs = ["remotelink-net/webrtc-rs"]
 
 [dependencies]

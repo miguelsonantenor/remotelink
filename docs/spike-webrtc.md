@@ -28,7 +28,7 @@ without coupling the encode pipeline to a browser capturer.
 | **webrtc-rs (`webrtc` 0.11)** | **Optional feature** | Real SDP/ICE/DTLS; **RTP H.264+Opus tracks** (+ DC mirror); **default-off** for CI speed |
 | **libwebrtc FFI** | **Plan B / v1 ship risk** | Browser-grade ICE/DTLS-SRTP; heavier build matrix |
 
-**Ship posture:** keep CI on **mock** (+ live TCP tests under default features). Enable `webrtc-rs` for local/dev builds that need real PeerConnection. Introduce SampleBuilder H.264 tracks as a follow-up; Plan B libwebrtc if packaging or packetization fails.
+**Ship posture:** product binaries (`host` / `viewer` / `desktop`) **default-enable `webrtc-rs`**. CI still tests mock + live on `remotelink-net` default features, plus a `webrtc-rs` lib test job. `live` TCP remains the LAN fallback. Hosted STUN/TURN is still Phase 2.
 
 ---
 

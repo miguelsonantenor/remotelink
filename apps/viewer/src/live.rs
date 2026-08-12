@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use remotelink_net::{
     create_peer_transport_with_config, ConnectionState, PeerRole, SessionDescription,
-    TransportConfig, TransportMode,
+    TransportConfig,
 };
 use remotelink_protocol::{NamedKey, SignalMessage};
 use remotelink_signaling::{http_to_ws_url, SignalingClient};
@@ -150,10 +150,7 @@ async fn run_live(
     if cfg.host_public_id.is_empty() {
         return Err("remote ID is required".into());
     }
-    let mut mode = cfg.transport;
-    if mode == TransportMode::Mock || mode == TransportMode::Auto {
-        mode = TransportMode::Live;
-    }
+    let mode = cfg.transport.for_multi_process();
     let transport_cfg = TransportConfig { mode };
 
     let ws_url = http_to_ws_url(&cfg.server).map_err(|e| format!("ws url: {e}"))?;

@@ -17,7 +17,7 @@
 //! |------------------------|---------|
 //! | unset / `mock` (default) | In-process mock — **CI path** |
 //! | `live` | TCP length-prefixed frames (feature `live`) |
-//! | `webrtc` | webrtc-rs PeerConnection (feature `webrtc-rs`, default-off) |
+//! | `webrtc` | webrtc-rs PeerConnection (feature `webrtc-rs`; on by default in host/viewer/app) |
 //! | `auto` | Prefer webrtc (if feature on) → live → mock |
 //!
 //! # Mock (default mode)
@@ -31,7 +31,7 @@
 //! [`live_loopback::LivePeerTransport`] carries media/data over real TCP for
 //! local multi-process demos. Not DTLS-SRTP / WebRTC — see `docs/spike-webrtc.md`.
 //!
-//! # webrtc-rs (feature `webrtc-rs`, default **off**)
+//! # webrtc-rs (feature `webrtc-rs`)
 //!
 //! [`webrtc_rs::WebrtcPeerTransport`] uses the pure-Rust `webrtc` crate (0.11)
 //! for real SDP / ICE / DTLS. Media prefers **RTP H.264 + Opus tracks**

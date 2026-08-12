@@ -20,8 +20,11 @@ pub struct AppConfig {
     /// Register this app in the current-user Windows startup list.
     #[serde(default)]
     pub start_with_windows: bool,
-    /// Transport mode string: live | webrtc | mock.
+    /// Transport mode string: webrtc | live | mock.
     pub transport: String,
+    /// Optional STUN/TURN URLs (`stun:host:3478`, comma-separated). Empty = host ICE only.
+    #[serde(default)]
+    pub stun_urls: String,
     /// Recent remote host IDs (most recent first).
     pub recent_hosts: Vec<String>,
 }
@@ -36,7 +39,8 @@ impl Default for AppConfig {
             display_name: hostname_guess(),
             auto_start_host: true,
             start_with_windows: false,
-            transport: "live".into(),
+            transport: "webrtc".into(),
+            stun_urls: String::new(),
             recent_hosts: Vec::new(),
         }
     }

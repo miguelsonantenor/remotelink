@@ -140,7 +140,14 @@ impl TransportConfig {
     ///
     /// Preference: **webrtc-rs** (if feature on) → **live** (if feature on) → **mock**.
     pub fn resolved_mode(&self) -> TransportMode {
-        match self.mode {
+        self.mode.resolved()
+    }
+}
+
+impl TransportMode {
+    /// Resolve `auto` given compiled features (same rules as [`TransportConfig::resolved_mode`]).
+    pub fn resolved(self) -> Self {
+        match self {
             TransportMode::Auto => {
                 #[cfg(feature = "webrtc-rs")]
                 {
@@ -155,6 +162,17 @@ impl TransportConfig {
                     TransportMode::Mock
                 }
             }
+            other => other,
+        }
+    }
+
+    /// Multi-process WSS cannot use in-process mock.
+    ///
+    /// `mock` and `auto` become webrtc when that backend is compiled, else live.
+    /// Explicit `live` / `webrtc` are unchanged.
+    pub fn for_multi_process(self) -> Self {
+        match self {
+            TransportMode::Mock | TransportMode::Auto => TransportMode::Auto.resolved(),
             other => other,
         }
     }
@@ -320,6 +338,35 @@ mod tests {
             mode: TransportMode::Auto,
         };
         assert_eq!(cfg.resolved_mode(), TransportMode::Webrtc);
+    }
+
+    #[test]
+    fn multi_process_keeps_explicit_live_and_webrtc() {
+        assert_eq!(TransportMode::Live.for_multi_process(), TransportMode::Live);
+        assert_eq!(
+            TransportMode::Webrtc.for_multi_process(),
+            TransportMode::Webrtc
+        );
+    }
+
+    #[cfg(feature = "webrtc-rs")]
+    #[test]
+    fn multi_process_promotes_mock_and_auto_to_webrtc() {
+        assert_eq!(
+            TransportMode::Auto.for_multi_process(),
+            TransportMode::Webrtc
+        );
+        assert_eq!(
+            TransportMode::Mock.for_multi_process(),
+            TransportMode::Webrtc
+        );
+    }
+
+    #[cfg(all(feature = "live", not(feature = "webrtc-rs")))]
+    #[test]
+    fn multi_process_promotes_mock_and_auto_to_live_without_webrtc() {
+        assert_eq!(TransportMode::Auto.for_multi_process(), TransportMode::Live);
+        assert_eq!(TransportMode::Mock.for_multi_process(), TransportMode::Live);
     }
 
     #[cfg(feature = "webrtc-rs")]

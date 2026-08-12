@@ -124,15 +124,15 @@ impl Default for WsHostConfig {
 }
 
 fn coerce_transport(mode: TransportMode) -> TransportMode {
-    if mode == TransportMode::Mock || mode == TransportMode::Auto {
+    let resolved = mode.for_multi_process();
+    if resolved != mode {
         eprintln!(
-            "ws-host: transport `{}` is not multi-process safe; using live TCP",
-            mode.as_str()
+            "ws-host: transport `{}` is not multi-process safe; using {}",
+            mode.as_str(),
+            resolved.as_str()
         );
-        TransportMode::Live
-    } else {
-        mode
     }
+    resolved
 }
 
 /// Enrolled identity returned to the service loop.
@@ -333,7 +333,7 @@ async fn maybe_mint_otp(
     let expires_at = resp.expires_at.to_string();
     println!("ws-host: Mode A OTP for viewer (expires {expires_at}): {code}");
     println!(
-        "ws-host: viewer example: remotelink-viewer --ws-connect --server={} --host {} --otp {code} --transport=live",
+        "ws-host: viewer example: remotelink-viewer --ws-connect --server={} --host {} --otp {code} --transport=webrtc",
         cfg.server, enrolled.public_id
     );
     Ok(Some(MintedOtp { code, expires_at }))

@@ -86,7 +86,16 @@ impl RemoteLinkApp {
     }
 
     fn transport_mode(&self) -> TransportMode {
-        TransportMode::from_str(&self.config.transport).unwrap_or(TransportMode::Live)
+        TransportMode::from_str(&self.config.transport).unwrap_or(TransportMode::Webrtc)
+    }
+
+    fn apply_webrtc_env(&self) {
+        let stun = self.config.stun_urls.trim();
+        if stun.is_empty() {
+            std::env::remove_var("REMOTELINK_WEBRTC_STUN");
+        } else {
+            std::env::set_var("REMOTELINK_WEBRTC_STUN", stun);
+        }
     }
 
     fn start_host(&mut self) {
@@ -108,12 +117,14 @@ impl RemoteLinkApp {
         // Stale status confuses the UI until the new host rewrites it.
         let _ = std::fs::remove_file(&status_path);
         self.host_error = None;
+        self.apply_webrtc_env();
         match HostWorker::start(
             self.config.server.clone(),
             self.config.display_name.clone(),
             self.transport_mode(),
             status_path,
             creds_path,
+            self.config.stun_urls.clone(),
         ) {
             Ok(w) => {
                 self.footer_note = format!("Host started ({})", w.host_exe().display());
@@ -237,6 +248,7 @@ impl RemoteLinkApp {
             self.connect_status = "A connection is already in progress.".into();
             return;
         }
+        self.apply_webrtc_env();
         self.connect_status = format!("Connecting to {host}…");
         self.viewer = Some(ViewerWorker::start(
             self.config.server.clone(),
@@ -713,13 +725,13 @@ impl eframe::App for RemoteLinkApp {
                                 .show_ui(ui, |ui| {
                                     ui.selectable_value(
                                         &mut self.config.transport,
-                                        "live".into(),
-                                        "live",
+                                        "webrtc".into(),
+                                        "webrtc",
                                     );
                                     ui.selectable_value(
                                         &mut self.config.transport,
-                                        "webrtc".into(),
-                                        "webrtc",
+                                        "live".into(),
+                                        "live",
                                     );
                                     ui.selectable_value(
                                         &mut self.config.transport,
@@ -728,6 +740,21 @@ impl eframe::App for RemoteLinkApp {
                                     );
                                 });
                         });
+                        ui.horizontal(|ui| {
+                            ui.label("STUN / TURN");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.config.stun_urls)
+                                    .desired_width(280.0)
+                                    .hint_text("stun:stun.l.google.com:19302 (empty = LAN)"),
+                            );
+                        });
+                        ui.label(
+                            egui::RichText::new(
+                                "webrtc is the product path (ICE + DTLS). live TCP is a LAN fallback. Leave STUN empty on the same network.",
+                            )
+                            .small()
+                            .weak(),
+                        );
                         ui.checkbox(
                             &mut self.config.auto_start_host,
                             "Auto-start host when app opens",

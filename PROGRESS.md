@@ -166,4 +166,10 @@ Plan PRs 1–27 done.
 - Connect hides the home form so the picture fills the window
 - Fullscreen / Esc; Copy ID + OTP pastes as one pair into Remote ID
 
+**2026-08-12 (WebRTC is the product transport):**
+- `remotelink-host` / `viewer` / `desktop` default-enable `webrtc-rs`
+- App default transport is `webrtc` (ICE + DTLS); `live` TCP remains a LAN fallback
+- Advanced STUN/TURN field → `REMOTELINK_WEBRTC_STUN` (empty = host candidates / same LAN)
+- WSS `mock`/`auto` resolve to webrtc when compiled (no longer forced to live)
+
 **Optional (post-core):** Authenticode EV signing, NVENC SDK, webrtc multi-process e2e.

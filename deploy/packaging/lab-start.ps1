@@ -37,12 +37,12 @@ if (Test-Path $appExe) {
     Start-Process -FilePath $hostExe -ArgumentList @(
         "--role=service",
         "--server=$Server",
-        "--transport=live"
+        "--transport=webrtc"
     ) -WorkingDirectory $Bin
     Write-Host ""
     Write-Host "Host window will print public_id and Mode A OTP."
     if (Test-Path $viewerExe) {
         Write-Host "Then run (replace PUBLIC_ID and CODE):"
-        Write-Host "  $viewerExe --ws-connect --server=$Server --host PUBLIC_ID --otp CODE --transport=live"
+        Write-Host "  $viewerExe --ws-connect --server=$Server --host PUBLIC_ID --otp CODE --transport=webrtc"
     }
 }

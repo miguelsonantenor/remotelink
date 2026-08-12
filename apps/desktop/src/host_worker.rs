@@ -28,6 +28,7 @@ impl HostWorker {
         transport: TransportMode,
         status_path: PathBuf,
         creds_path: PathBuf,
+        stun_urls: String,
     ) -> Result<Self, String> {
         let host_exe = resolve_host_exe()?;
         let last_error = Arc::new(Mutex::new(None));
@@ -62,6 +63,12 @@ impl HostWorker {
             .stdout(Stdio::from(log_file))
             .stderr(Stdio::from(log_err))
             .stdin(Stdio::null());
+        let stun = stun_urls.trim();
+        if stun.is_empty() {
+            cmd.env_remove("REMOTELINK_WEBRTC_STUN");
+        } else {
+            cmd.env("REMOTELINK_WEBRTC_STUN", stun);
+        }
 
         // Hide console window on Windows (host is a console binary).
         #[cfg(windows)]
