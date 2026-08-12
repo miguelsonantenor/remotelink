@@ -44,7 +44,7 @@ cargo run -p remotelink-desktop
 # binary name: remotelink-app
 # • This PC — Your ID + OTP (Allow remote access)
 # • Connect — remote ID + OTP
-# • Advanced — signaling URL (default http://127.0.0.1:8080)
+# • Advanced — signaling URL (default http://127.0.0.1:18080)
 ```
 
 Settings live under `%LOCALAPPDATA%\RemoteLink` (`config.json`, host creds, status).

@@ -4008,6 +4008,7 @@ version = "0.1.0"
 dependencies = [
  "eframe",
  "egui",
+ "remotelink-auth",
  "remotelink-common",
  "remotelink-media",
  "remotelink-net",

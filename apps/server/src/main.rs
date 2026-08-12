@@ -15,7 +15,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         )
         .init();
 
-    let listen = env::var("LISTEN_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".into());
+    let listen = env::var("LISTEN_ADDR").unwrap_or_else(|_| "0.0.0.0:18080".into());
     let addr: SocketAddr = listen.parse()?;
     let client_ip = ClientIpConfig::from_env();
 

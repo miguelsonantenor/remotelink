@@ -5,7 +5,7 @@
 //! # binary: remotelink-app
 //! ```
 //!
-//! Needs a signaling server (lab: `remotelink-server` on :8080). Host enrolls
+//! Needs a signaling server (lab: `remotelink-server` on :18080). Host enrolls
 //! automatically when “Allow remote access” is on; OTP and public ID appear
 //! on the home screen.
 

@@ -18,7 +18,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use remotelink_auth::{generate_device_keypair, mint_otp};
+use remotelink_auth::generate_device_keypair;
 use remotelink_net::{
     create_peer_transport_with_config, PeerRole, TransportConfig, TransportMode,
 };
@@ -31,12 +31,15 @@ use remotelink_signaling::{
 };
 
 use crate::control_loop::ServiceAgentClient;
-use crate::policy::{DEFAULT_HOST_OTP_PEPPER, DEFAULT_OTP_TTL_SECS};
-use crate::service::signal_to_agent;
 use crate::platform_capture::{AudioCaptureKind, VideoCaptureKind};
+use crate::policy::{HostAuthService, HostLocalConfig, DEFAULT_OTP_TTL_SECS};
+use crate::service::signal_to_agent;
 use crate::session::{parse_ice_payload, parse_sdp_payload, signal_kind, SdpPayload, SessionManager};
 use crate::tray::{default_status_path, HostTray};
 use remotelink_platform_windows::InjectorConfig;
+
+/// Product-shell lab signaling URL (8080 is often taken on Windows).
+pub const DEFAULT_LAB_SERVER: &str = "http://127.0.0.1:18080";
 
 /// Configuration for [`run_ws_host`] / [`run_ws_host_service`].
 #[derive(Debug, Clone)]
@@ -98,7 +101,7 @@ pub struct ExistingHostCreds {
 impl Default for WsHostConfig {
     fn default() -> Self {
         Self {
-            server: "http://127.0.0.1:8080".into(),
+            server: DEFAULT_LAB_SERVER.into(),
             display_name: "remotelink-host".into(),
             transport: TransportMode::Live,
             video_frames: 5,
@@ -159,7 +162,7 @@ async fn enroll_or_reuse(cfg: &WsHostConfig) -> Result<EnrolledHost, String> {
         match HostCredentialFile::load(&cfg.creds_path) {
             Ok(mut file) => {
                 // Prefer file server if caller left default; else keep CLI server.
-                let server = if cfg.server != "http://127.0.0.1:8080" {
+                let server = if !is_builtin_lab_server(&cfg.server) {
                     cfg.server.clone()
                 } else if !file.server.is_empty() {
                     file.server.clone()
@@ -240,16 +243,75 @@ struct MintedOtp {
     expires_at: String,
 }
 
+fn is_builtin_lab_server(server: &str) -> bool {
+    matches!(
+        server,
+        "http://127.0.0.1:8080"
+            | "http://localhost:8080"
+            | "http://127.0.0.1:18080"
+            | "http://localhost:18080"
+    )
+}
+
+/// Host-local OTP window used for Mode A identity bind on live sessions.
+struct LiveOtpHub {
+    policy: HostAuthService,
+}
+
+impl LiveOtpHub {
+    fn new() -> Self {
+        Self {
+            policy: HostAuthService::new(
+                HostLocalConfig::default(),
+                crate::policy::DEFAULT_HOST_OTP_PEPPER.to_vec(),
+            ),
+        }
+    }
+
+    fn mint_local(&mut self) -> Result<(String, remotelink_auth::OtpHash), String> {
+        let code = self
+            .policy
+            .mint_otp()
+            .map_err(|e| format!("mint_otp: {e}"))?;
+        let hash = self
+            .policy
+            .active_otp()
+            .ok_or_else(|| "OTP window missing after mint".to_string())?
+            .hash()
+            .clone();
+        Ok((code.to_ui_string(), hash))
+    }
+
+    fn authorize_live(&mut self, mgr: &mut SessionManager) -> Result<(), String> {
+        let code = self
+            .policy
+            .last_otp_code()
+            .ok_or_else(|| "no OTP minted".to_string())?
+            .to_string();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        self.policy
+            .authorize_session_mode_a(mgr, &code, now)
+            .map_err(|e| format!("authorize mode a: {e}"))?;
+        mgr.set_input_policy_enabled(true);
+        mgr.start_identity_challenge()
+            .map_err(|e| format!("identity challenge: {e}"))?;
+        Ok(())
+    }
+}
+
 /// Mint Mode A OTP, post hash to server, print code for the viewer CLI.
 async fn maybe_mint_otp(
     cfg: &WsHostConfig,
     enrolled: &EnrolledHost,
+    hub: &mut LiveOtpHub,
 ) -> Result<Option<MintedOtp>, String> {
     if !cfg.mint_otp {
         return Ok(None);
     }
-    let (code, hash) = mint_otp(6, DEFAULT_HOST_OTP_PEPPER)
-        .map_err(|e| format!("mint_otp: {e}"))?;
+    let (code, hash) = hub.mint_local()?;
     let digest_hex = hex::encode(hash.digest);
     let salt_hex = hex::encode(hash.salt);
     let resp = post_otp_hash(
@@ -265,17 +327,13 @@ async fn maybe_mint_otp(
     .map_err(|e| format!("post otp hash: {e}"))?;
     let expires_at = resp.expires_at.to_string();
     println!(
-        "ws-host: Mode A OTP for viewer (expires {expires_at}): {}",
-        code.as_str()
+        "ws-host: Mode A OTP for viewer (expires {expires_at}): {code}"
     );
     println!(
-        "ws-host: viewer example: remotelink-viewer --ws-connect --server={} --host {} --otp {} --transport=live",
-        cfg.server, enrolled.public_id, code.as_str()
+        "ws-host: viewer example: remotelink-viewer --ws-connect --server={} --host {} --otp {code} --transport=live",
+        cfg.server, enrolled.public_id
     );
-    Ok(Some(MintedOtp {
-        code: code.as_str().to_string(),
-        expires_at,
-    }))
+    Ok(Some(MintedOtp { code, expires_at }))
 }
 
 /// Wait for intent, accept on WSS, return session id.
@@ -325,6 +383,7 @@ async fn handle_one_session_local(
     video_frames: u32,
     wait_incoming: Duration,
     tray: Option<&HostTray>,
+    otp_hub: &mut LiveOtpHub,
 ) -> Result<String, String> {
     let session_id = accept_incoming_session(sig, wait_incoming).await?;
     if let Some(t) = tray {
@@ -384,8 +443,32 @@ async fn handle_one_session_local(
         t.mark_session_active();
     }
     if video_frames == 0 {
-        mgr.force_identity_bound_for_tests();
-        mgr.set_input_policy_enabled(true);
+        match otp_hub.authorize_live(&mut mgr) {
+            Ok(()) => {
+                // Give the viewer a moment to answer the DC challenge.
+                for _ in 0..40 {
+                    let _ = mgr.poll_inbound();
+                    if mgr.identity().identity_bound {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                }
+                if mgr.identity().identity_bound {
+                    println!("ws-host: identity bound (Mode A OTP)");
+                } else {
+                    eprintln!(
+                        "ws-host: identity challenge sent; waiting for viewer bind during media"
+                    );
+                }
+            }
+            Err(e) => {
+                eprintln!(
+                    "ws-host: Mode A bind failed ({e}); opening input after signaling OTP accept"
+                );
+                mgr.force_identity_bound_for_tests();
+                mgr.set_input_policy_enabled(true);
+            }
+        }
     }
     let (pump, end_reason) =
         drive_local_media(sig, &mut mgr, video_frames, tray).await?;
@@ -1009,7 +1092,8 @@ pub async fn run_ws_host_service(cfg: WsHostConfig) -> Result<String, String> {
         None
     };
 
-    if let Some(otp) = maybe_mint_otp(&cfg, &enrolled).await? {
+    let mut otp_hub = LiveOtpHub::new();
+    if let Some(otp) = maybe_mint_otp(&cfg, &enrolled, &mut otp_hub).await? {
         if let Some(ref t) = tray {
             t.set_otp(&otp.code, otp.expires_at);
         }
@@ -1092,9 +1176,18 @@ pub async fn run_ws_host_service(cfg: WsHostConfig) -> Result<String, String> {
                         cfg.video_frames,
                         cfg.wait_incoming,
                         tray.as_ref(),
+                        &mut otp_hub,
                     )
                     .await
                 };
+                let remint_after = cfg.video_frames == 0
+                    && cfg.mint_otp
+                    && match &session_result {
+                        Ok(_) => true,
+                        Err(e) => {
+                            !e.contains("wait incoming") && !e.contains("timeout waiting")
+                        }
+                    };
                 match session_result {
                     Ok(summary) => {
                         println!("{summary}");
@@ -1138,6 +1231,18 @@ pub async fn run_ws_host_service(cfg: WsHostConfig) -> Result<String, String> {
                         }
                         let _ = sig.close().await;
                         return Err(e);
+                    }
+                }
+                if remint_after {
+                    match maybe_mint_otp(&cfg, &enrolled, &mut otp_hub).await {
+                        Ok(Some(otp)) => {
+                            if let Some(ref t) = tray {
+                                t.set_otp(&otp.code, otp.expires_at);
+                            }
+                            println!("ws-host: new OTP minted for next viewer");
+                        }
+                        Ok(None) => {}
+                        Err(e) => eprintln!("ws-host: remint OTP failed: {e}"),
                     }
                 }
                 // Tray "Exit host" between sessions (idle).

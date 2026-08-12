@@ -114,6 +114,8 @@ pub struct HostAuthService {
     host_secret: Option<HostSecret>,
     /// Active Mode A OTP window.
     active_otp: Option<ActiveOtpWindow>,
+    /// Last minted plaintext (for tray + Mode A bind). Cleared on remint.
+    last_otp_code: Option<String>,
 }
 
 impl Default for HostAuthService {
@@ -130,6 +132,7 @@ impl HostAuthService {
             otp_pepper: otp_pepper.into(),
             host_secret: None,
             active_otp: None,
+            last_otp_code: None,
         }
     }
 
@@ -225,12 +228,18 @@ impl HostAuthService {
         let (code, rec) = mint_otp_record(digits, &self.otp_pepper, expires)
             .map_err(|e| PolicyError::Auth(e.to_string()))?;
         let hash = rec.hash().clone();
+        self.last_otp_code = Some(code.to_ui_string());
         self.active_otp = Some(ActiveOtpWindow {
             record: rec,
             hash,
             expires_at_unix: expires,
         });
         Ok(code)
+    }
+
+    /// Last minted OTP digits (plaintext shown on the host).
+    pub fn last_otp_code(&self) -> Option<&str> {
+        self.last_otp_code.as_deref()
     }
 
     /// Hash material for a plaintext code (server mint POST helper).
@@ -475,6 +484,15 @@ mod tests {
             svc.consume_otp(code.as_str(), now),
             Err(PolicyError::NoActiveOtp)
         ));
+    }
+
+    #[test]
+    fn last_otp_code_tracks_mint() {
+        let mut svc = HostAuthService::default();
+        assert!(svc.last_otp_code().is_none());
+        let code = svc.mint_otp().unwrap();
+        assert_eq!(svc.last_otp_code(), Some(code.as_str()));
+        assert!(svc.active_otp().is_some());
     }
 
     #[test]

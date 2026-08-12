@@ -137,4 +137,9 @@ Plan PRs 1–27 done.
 - `remotelink-app` Connect opens a live remote-desktop window (mouse/keys + Disconnect)
 - Hosting / STUN/TURN still deferred until the product is finished
 
+**2026-08-12 (live OTP bind + lab port):**
+- Live sessions run Mode A identity bind (OTP → DC challenge) instead of the test helper
+- Host remints a fresh OTP after each live hangup
+- Product default signaling port is **18080** (server + desktop + host + lab-start)
+
 **Optional (post-core):** Authenticode EV signing, NVENC SDK, webrtc multi-process e2e.

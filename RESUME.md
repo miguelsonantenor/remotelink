@@ -38,13 +38,12 @@ Remote still has older core release (`v0.1.0` portable zip **without** product s
 |----------|------|
 | **Phase 2** (user: when finished) | Hosted signaling + STUN/TURN (internet / NAT) |
 | **Phase 4** | MSI + Authenticode; auto-start; updates |
-| Polish | Real H.264 decode (today: mock software encoder so pixels reconstruct); full identity-bind on live input |
+| Polish | Real H.264 decode (today: mock software encoder so pixels reconstruct) |
 
 ### Lab quirks on this machine
 
-- **Port 8080 is taken** (unrelated `AgentService`) → use **`127.0.0.1:18080`**
-- Default app server is still `http://127.0.0.1:8080` → set Advanced or `--server=http://127.0.0.1:18080`
-- Connect is **session burst**, not always-on video (expected until Phase 3)
+- Lab default is **`http://127.0.0.1:18080`** (8080 is often taken by other Windows services)
+- Live sessions remint a new OTP after hangup so the next viewer can connect
 
 ---
 
@@ -58,6 +57,8 @@ Remote still has older core release (`v0.1.0` portable zip **without** product s
 | **Core product** | **COMPLETE** |
 | **Phase 1 product shell** | **DONE** (on origin) |
 | **Phase 3 live window** | **DONE** (session stays open; Disconnect hangs up) |
+| **Live Mode A identity** | **DONE** (OTP bind + remint; input gated until bound) |
+| **Lab default port** | **`127.0.0.1:18080`** |
 | Shippable artifact | Portable zip (`scripts/package-release.ps1`) — rebuild to include app |
 | MSI | Optional via WiX — unsigned until codesign |
 

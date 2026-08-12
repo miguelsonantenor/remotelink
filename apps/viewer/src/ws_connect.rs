@@ -32,7 +32,7 @@ pub struct WsViewerConfig {
 impl Default for WsViewerConfig {
     fn default() -> Self {
         Self {
-            server: "http://127.0.0.1:8080".into(),
+            server: "http://127.0.0.1:18080".into(),
             host_public_id: String::new(),
             otp: "123456".into(),
             transport: TransportMode::Live,

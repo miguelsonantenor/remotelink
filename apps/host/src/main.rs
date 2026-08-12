@@ -333,7 +333,7 @@ fn print_usage() {
         "remotelink-host {} — Windows host service / session agent\n\n\
          Usage:\n  \
          remotelink-host [--role=service|agent|ws|colocate|kill-switch] [--transport=mock|live|webrtc|auto]\n  \
-         remotelink-host --role=ws --server=http://127.0.0.1:8080 --transport=live\n  \
+         remotelink-host --role=ws --server=http://127.0.0.1:18080 --transport=live\n  \
          remotelink-host --kill-switch\n\n\
          Roles (KD5 agent-media):\n  \
          service      Long-lived WSS host when --server is set; else skeleton stubs\n  \
@@ -348,7 +348,7 @@ fn print_usage() {
          --control-listen=pipe:NAME  Named pipe leaf under \\\\.\\pipe\\\n  \
          REMOTELINK_CONTROL_LISTEN   Same as --control-listen\n\n\
          WSS host flags (role=ws|service --server):\n  \
-         --server URL     Signaling base (default http://127.0.0.1:8080; or REMOTELINK_SERVER)\n  \
+         --server URL     Signaling base (default http://127.0.0.1:18080; or REMOTELINK_SERVER)\n  \
          --display-name N Enrollment display name\n  \
          --frames N       Video frames after connect (default 5; 0 = live until hangup)\n  \
          --sessions N     Max sessions (0 = unlimited; service defaults to 0)\n  \

@@ -235,12 +235,17 @@ impl RemoteLinkApp {
                     });
                 });
                 ui.label(format!(
-                    "{} · {}×{} · video {} · audio {}",
+                    "{} · {}×{} · video {} · audio {} · bind {}",
                     snap.hud,
                     snap.width,
                     snap.height,
                     snap.video_rx,
-                    snap.audio_rx
+                    snap.audio_rx,
+                    if snap.identity_bound {
+                        "ready"
+                    } else {
+                        "pending"
+                    }
                 ));
 
                 if let (Some(rgba), w, h) = (snap.rgba.as_ref(), snap.width, snap.height) {
@@ -632,7 +637,7 @@ impl eframe::App for RemoteLinkApp {
                             ui.add(
                                 egui::TextEdit::singleline(&mut self.config.server)
                                     .desired_width(280.0)
-                                    .hint_text("http://127.0.0.1:8080"),
+                                    .hint_text("http://127.0.0.1:18080"),
                             );
                         });
                         ui.horizontal(|ui| {

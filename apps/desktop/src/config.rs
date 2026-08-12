@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 /// Default lab signaling endpoint (self-hosted / local server).
-pub const DEFAULT_SERVER: &str = "http://127.0.0.1:8080";
+pub const DEFAULT_SERVER: &str = "http://127.0.0.1:18080";
 
 /// User-facing app settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]

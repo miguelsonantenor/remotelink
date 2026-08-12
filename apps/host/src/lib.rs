@@ -48,4 +48,5 @@ pub use session::{
 };
 pub use ws_session::{
     run_ws_host, run_ws_host_blocking, run_ws_host_service, ExistingHostCreds, WsHostConfig,
+    DEFAULT_LAB_SERVER,
 };

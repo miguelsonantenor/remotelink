@@ -29,6 +29,7 @@ remotelink-protocol = { workspace = true }
 remotelink-net = { workspace = true }
 remotelink-signaling = { workspace = true }
 remotelink-media = { workspace = true }
+remotelink-auth = { workspace = true }
 tokio = { workspace = true }
 serde_json = { workspace = true }
 

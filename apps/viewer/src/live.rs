@@ -40,6 +40,8 @@ pub struct LiveViewerSnapshot {
     pub rgba: Option<Vec<u8>>,
     /// Stats HUD line from viewer-core.
     pub hud: String,
+    /// True when Mode A identity bind completed (input is allowed).
+    pub identity_bound: bool,
     /// Fatal error (session ended).
     pub error: Option<String>,
     /// True when the background thread has finished.
@@ -207,9 +209,16 @@ async fn run_live(
     viewer.set_record_limit(Some(4));
     viewer.set_focused(true);
     viewer.set_always_capture(true);
+    if let Ok(key) = remotelink_auth::SessionBindKey::from_mode_a_otp(&cfg.otp) {
+        viewer.set_bind_key(key);
+        viewer.set_require_identity_for_input(true);
+    }
     viewer
         .begin_connect(&req)
         .map_err(|e| format!("begin_connect: {e}"))?;
+    if remotelink_auth::SessionBindKey::from_mode_a_otp(&cfg.otp).is_ok() {
+        viewer.mark_session_authorized();
+    }
     viewer.attach_transport(answerer);
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(45);
@@ -346,6 +355,7 @@ async fn run_live(
                 s.height = last.frame.height;
                 s.rgba = Some(rgba);
                 s.hud = stats.hud_line();
+                s.identity_bound = stats.identity_bound;
             });
         } else {
             let stats = viewer.stats().clone();
@@ -354,6 +364,7 @@ async fn run_live(
                 s.video_rx = stats.video_frames;
                 s.audio_rx = stats.audio_packets;
                 s.hud = stats.hud_line();
+                s.identity_bound = stats.identity_bound;
             });
         }
         tokio::time::sleep(Duration::from_millis(8)).await;
