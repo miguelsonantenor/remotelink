@@ -38,6 +38,16 @@ pub enum SignalingError {
     Closed,
 }
 
+impl SignalingError {
+    /// True when the server dropped a late/colliding `signal_seq` (ICE race).
+    pub fn is_stale_signal_seq(&self) -> bool {
+        matches!(
+            self,
+            Self::Server { code, .. } if code == "stale_signal_seq"
+        )
+    }
+}
+
 /// Result alias.
 pub type SignalingResult<T> = Result<T, SignalingError>;
 

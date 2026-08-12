@@ -339,6 +339,7 @@ async fn run_live(
             }
             Ok(_) => {}
             Err(remotelink_signaling::SignalingError::Timeout(_)) => {}
+            Err(e) if e.is_stale_signal_seq() => {}
             Err(e) => {
                 end_reason = format!("signaling:{e}");
                 break;

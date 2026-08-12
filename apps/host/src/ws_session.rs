@@ -990,6 +990,7 @@ async fn drive_local_media(
             }
             Ok(_) => {}
             Err(remotelink_signaling::SignalingError::Timeout(_)) => {}
+            Err(e) if e.is_stale_signal_seq() => {}
             Err(e) => return Ok((totals, format!("signaling:{e}"))),
         }
 

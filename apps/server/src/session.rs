@@ -700,6 +700,12 @@ impl SessionRegistry {
             ));
         }
         if signal_seq < session.next_signal_seq {
+            // Host and viewer each allocate seqs independently; ICE often
+            // collides. Protocol: ignore stale sequences. Drop ICE; reject
+            // offer/answer so handshake cannot go backwards.
+            if matches!(msg, SignalMessage::IceCandidate { .. }) {
+                return Ok(());
+            }
             return Err(error_msg(
                 "stale_signal_seq",
                 format!("signal_seq {signal_seq} < next {}", session.next_signal_seq),

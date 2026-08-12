@@ -977,6 +977,27 @@ async fn sdp_ice_relay_after_accept() {
     }
 
     assert_eq!(sessions.next_signal_seq("sess-sdp-relay").await, Some(8));
+
+    // Late ICE with a colliding seq must be dropped, not tear down the session.
+    send_msg(
+        &mut host,
+        &SignalMessage::IceCandidate {
+            session_id: "sess-sdp-relay".into(),
+            signal_seq: 6,
+            candidate: remotelink_protocol::IceCandidate {
+                candidate: "candidate:stale 1 udp 1 127.0.0.1 11 typ host".into(),
+                sdp_mid: Some("0".into()),
+                sdp_m_line_index: Some(0),
+                username_fragment: None,
+            },
+        },
+    )
+    .await;
+    assert_eq!(sessions.next_signal_seq("sess-sdp-relay").await, Some(8));
+    assert_eq!(
+        sessions.session_state("sess-sdp-relay").await,
+        Some(remotelink_server::SessionState::Active)
+    );
 }
 
 #[tokio::test]
