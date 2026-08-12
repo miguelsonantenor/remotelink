@@ -42,8 +42,9 @@ One window, AnyDesk-style home screen:
 cargo run -p remotelink-server
 cargo run -p remotelink-desktop
 # binary name: remotelink-app
-# • This PC — Your ID + OTP (Allow remote access)
-# • Connect — remote ID + OTP
+# • This PC — Your ID + OTP (Copy ID + OTP for the other PC)
+# • Connect — remote ID + OTP (paste the pair into Remote ID)
+# • Live session fills the window (Fullscreen / Esc)
 # • Advanced — signaling URL (default http://127.0.0.1:18080)
 ```
 

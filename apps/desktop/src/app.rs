@@ -31,6 +31,7 @@ pub struct RemoteLinkApp {
     footer_note: String,
     last_status_poll: f64,
     minimize_on_start: bool,
+    session_fullscreen: bool,
 }
 
 impl RemoteLinkApp {
@@ -76,6 +77,7 @@ impl RemoteLinkApp {
             ),
             last_status_poll: 0.0,
             minimize_on_start: login_start,
+            session_fullscreen: false,
         };
         if allow_access {
             app.start_host();
@@ -197,11 +199,27 @@ impl RemoteLinkApp {
         }
     }
 
-    fn disconnect_viewer(&mut self) {
+    fn disconnect_viewer(&mut self, ctx: &egui::Context) {
         if let Some(v) = self.viewer.take() {
             v.request_stop();
         }
         self.connect_status = "Disconnected.".into();
+        self.set_session_fullscreen(ctx, false);
+        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(520.0, 560.0)));
+    }
+
+    fn set_session_fullscreen(&mut self, ctx: &egui::Context, on: bool) {
+        self.session_fullscreen = on;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(on));
+    }
+
+    fn apply_pasted_connect(&mut self) {
+        if let Some((id, otp)) = split_pasted_connect(&self.remote_id) {
+            if self.remote_secret.trim().is_empty() {
+                self.remote_id = id;
+                self.remote_secret = otp;
+            }
+        }
     }
 
     fn start_connect(&mut self) {
@@ -245,7 +263,15 @@ impl RemoteLinkApp {
                     ui.label(egui::RichText::new(&snap.phase).small().weak());
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.button("Disconnect").clicked() {
-                            self.disconnect_viewer();
+                            self.disconnect_viewer(ctx);
+                        }
+                        let full_label = if self.session_fullscreen {
+                            "Exit fullscreen"
+                        } else {
+                            "Fullscreen"
+                        };
+                        if ui.button(full_label).clicked() {
+                            self.set_session_fullscreen(ctx, !self.session_fullscreen);
                         }
                     });
                 });
@@ -401,6 +427,9 @@ impl eframe::App for RemoteLinkApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
             self.minimize_on_start = false;
         }
+        if self.session_fullscreen && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.set_session_fullscreen(ctx, false);
+        }
         self.poll_host_status(ctx);
         self.poll_viewer();
 
@@ -425,7 +454,7 @@ impl eframe::App for RemoteLinkApp {
             });
         });
 
-        if self.viewer.is_some() {
+        if self.viewer.is_some() && !self.session_fullscreen {
             ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(1280.0, 860.0)));
         }
 
@@ -434,7 +463,7 @@ impl eframe::App for RemoteLinkApp {
 
             if self.viewer.is_some() {
                 self.draw_live_session(ui, ctx);
-                ui.add_space(10.0);
+                return;
             }
 
             // ── This PC ──────────────────────────────────────────────
@@ -515,6 +544,19 @@ impl eframe::App for RemoteLinkApp {
                             Self::copy_to_clipboard(ctx, &otp);
                             self.footer_note = "OTP copied.".into();
                         }
+                        if public_id != "—"
+                            && !public_id.starts_with('…')
+                            && otp != "—"
+                            && ui
+                                .button("Copy ID + OTP")
+                                .on_hover_text(
+                                    "Copies both. Paste into Remote ID on the other PC.",
+                                )
+                                .clicked()
+                        {
+                            Self::copy_to_clipboard(ctx, &format_connect_pair(&public_id, &otp));
+                            self.footer_note = "ID + OTP copied.".into();
+                        }
                         if let Some(exp) = &self.host_status.otp_expires_at {
                             ui.label(
                                 egui::RichText::new(format!("expires {exp}"))
@@ -581,11 +623,14 @@ impl eframe::App for RemoteLinkApp {
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
                         ui.label("Remote ID");
-                        ui.add(
+                        let id_edit = ui.add(
                             egui::TextEdit::singleline(&mut self.remote_id)
                                 .desired_width(200.0)
-                                .hint_text("10-digit ID"),
+                                .hint_text("ID or ID + OTP"),
                         );
+                        if id_edit.changed() {
+                            self.apply_pasted_connect();
+                        }
                     });
                     ui.horizontal(|ui| {
                         ui.label("OTP");
@@ -611,7 +656,7 @@ impl eframe::App for RemoteLinkApp {
                                 .add_sized([100.0, 28.0], egui::Button::new("Disconnect"))
                                 .clicked()
                         {
-                            self.disconnect_viewer();
+                            self.disconnect_viewer(ctx);
                         }
                     });
 
@@ -765,5 +810,43 @@ impl eframe::App for RemoteLinkApp {
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         let _ = self.config.save();
+    }
+}
+
+/// Clipboard text for the host ID + OTP pair (pasteable into Connect).
+pub(crate) fn format_connect_pair(public_id: &str, otp: &str) -> String {
+    format!("{} {}", public_id.trim(), otp.trim())
+}
+
+/// Split a pasted `"ID OTP"` pair so both Connect fields fill in.
+pub(crate) fn split_pasted_connect(raw: &str) -> Option<(String, String)> {
+    let mut parts = raw.split_whitespace();
+    let id = parts.next()?.to_string();
+    let otp = parts.next()?.to_string();
+    if parts.next().is_some() || id.is_empty() || otp.is_empty() {
+        return None;
+    }
+    Some((id, otp))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{format_connect_pair, split_pasted_connect};
+
+    #[test]
+    fn connect_pair_round_trip() {
+        let text = format_connect_pair(" 1234567890 ", "AB12CD");
+        assert_eq!(text, "1234567890 AB12CD");
+        assert_eq!(
+            split_pasted_connect(&text),
+            Some(("1234567890".into(), "AB12CD".into()))
+        );
+    }
+
+    #[test]
+    fn split_ignores_single_token_and_extra_tokens() {
+        assert_eq!(split_pasted_connect("only-id"), None);
+        assert_eq!(split_pasted_connect("id otp extra"), None);
+        assert_eq!(split_pasted_connect("   "), None);
     }
 }

@@ -157,4 +157,13 @@ Plan PRs 1–27 done.
 - Fixed: OTP retry bind, idle WASAPI not fatal, colliding ICE seq dropped
 - Lab processes stopped; resume from `RESUME.md`
 
+**2026-08-12 (GitHub CI green):**
+- Linux fmt / clippy / test, Windows tests, and package stage all pass
+- Unsigned MSI builds on the Windows runner (`RemoteLink-0.1.0.msi` in artifacts)
+- Artifact: https://github.com/miguelsonantenor/remotelink/actions/runs/31637055102
+
+**2026-08-12 (live session takes over the window):**
+- Connect hides the home form so the picture fills the window
+- Fullscreen / Esc; Copy ID + OTP pastes as one pair into Remote ID
+
 **Optional (post-core):** Authenticode EV signing, NVENC SDK, webrtc multi-process e2e.

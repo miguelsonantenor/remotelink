@@ -3,7 +3,7 @@
 **Saved:** 2026-08-12 (parked after successful two-client live connect)  
 **Primary tree:** branch **`main`** at `C:\Users\Linked\Documents\remotelink`  
 **GitHub:** https://github.com/miguelsonantenor/remotelink  
-**Tip of `main`:** `4d8a883` (ICE seq race fix)
+**Tip of `main`:** see `git log -1` (CI green on 193c0f6; live-session UI after that)
 
 ## Git policy (user)
 
@@ -26,6 +26,8 @@ Lab processes were **stopped** on park (server + both `remotelink-app` / host ch
 | **Phase 1 shell** | `remotelink-app` This PC + Connect |
 | **Phase 3 live window** | Session stays open and paints decoded frames |
 | **Two-client lab** | **Worked** 2026-08-12: OTP + bind + live picture, session stayed up |
+| **GitHub CI** | **Green** on `193c0f6` (Linux + Windows + package/MSI) |
+| **Live session chrome** | Session takes over the window; Fullscreen; Copy ID + OTP |
 | Live OTP bind | Mode A DC challenge; remint after hangup; retry until host accepts |
 | Lab default port | `http://127.0.0.1:18080` (8080 is taken on this PC) |
 | Live picture | 1280×720 preview, window fills view, mouse 0..1 |
