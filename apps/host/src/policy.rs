@@ -22,8 +22,8 @@ use crate::session::{Result as SessionResult, SessionError, SessionManager};
 /// Must match server [`DEFAULT_OTP_PEPPER`] when posting hashes for prefilter.
 pub const DEFAULT_HOST_OTP_PEPPER: &[u8] = b"remotelink-otp-server-pepper-v1!";
 
-/// Default OTP TTL in seconds (5 minutes).
-pub const DEFAULT_OTP_TTL_SECS: u64 = 300;
+/// Default OTP TTL in seconds (15 minutes).
+pub const DEFAULT_OTP_TTL_SECS: u64 = 900;
 
 /// Host-local configuration (tray / service).
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -192,7 +192,16 @@ async fn run_live(
             )
         })
         .await
-        .map_err(|e| format!("wait accept: {e}"))?;
+        .map_err(|e| {
+            let msg = e.to_string();
+            if msg.contains("OTP prefilter") || msg.contains("OTP required") {
+                format!(
+                    "OTP rejected. Copy the current OTP from the other PC (codes expire and are replaced when that app restarts). {msg}"
+                )
+            } else {
+                format!("wait accept: {msg}")
+            }
+        })?;
     match accept {
         SignalMessage::SessionAccept { .. } => {
             publish(&snapshot, |s| s.status = "Accepted — negotiating…".into());

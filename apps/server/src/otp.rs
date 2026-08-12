@@ -17,7 +17,7 @@ use remotelink_auth::{verify_otp, OtpHash, OTP_SALT_LEN};
 use serde::{Deserialize, Serialize};
 
 /// Default OTP lifetime when the host omits `expires_in_secs`.
-pub const DEFAULT_OTP_TTL_SECS: u64 = 300;
+pub const DEFAULT_OTP_TTL_SECS: u64 = 900;
 /// Maximum accepted TTL (1 hour).
 pub const MAX_OTP_TTL_SECS: u64 = 3600;
 /// Cap failed verify attempts per stored OTP.
@@ -179,13 +179,8 @@ impl MemoryOtpStore {
             if row.attempts >= MAX_OTP_ATTEMPTS {
                 return OtpPrefilterResult::Reject;
             }
-            // Already bound to another session?
-            if let Some(ref bound) = row.session_intent_id {
-                if bound != session_id {
-                    return OtpPrefilterResult::Reject;
-                }
-                // Re-bind same session: re-verify.
-            }
+            // A prior viewer attempt may have bound this row to a session that
+            // never got accepted (app restart, timeout). Re-verify and rebind.
             row.attempts = row.attempts.saturating_add(1);
             let now_unix = now.timestamp().max(0) as u64;
             if row.expires_at.timestamp() <= now.timestamp() {
@@ -360,6 +355,24 @@ mod tests {
             store.prefilter_bind(1, code.as_str(), PEPPER, "sess-2", now),
             OtpPrefilterResult::NoActiveOtp
         );
+    }
+
+    #[test]
+    fn prefilter_rebinds_when_first_session_never_accepted() {
+        let store = MemoryOtpStore::new();
+        let now = Utc::now();
+        let (code, hash) = mint_otp(6, PEPPER).unwrap();
+        store.store_hash(3, hash, now + Duration::seconds(300), now);
+        assert_eq!(
+            store.prefilter_bind(3, code.as_str(), PEPPER, "viewer-1", now),
+            OtpPrefilterResult::Ok
+        );
+        assert_eq!(
+            store.prefilter_bind(3, code.as_str(), PEPPER, "viewer-2", now),
+            OtpPrefilterResult::Ok
+        );
+        store.consume_for_session(3, "viewer-2", now).unwrap();
+        assert!(store.consume_for_session(3, "viewer-1", now).is_err());
     }
 
     #[test]

@@ -170,6 +170,7 @@ async fn enroll_or_reuse(cfg: &WsHostConfig) -> Result<EnrolledHost, String> {
                     cfg.server.clone()
                 };
                 // Best-effort refresh so restarts survive access expiry.
+                let mut refresh_ok = file.refresh_token.is_empty();
                 if !file.refresh_token.is_empty() {
                     match refresh_device_token(&server, &file.public_id, &file.refresh_token).await
                     {
@@ -186,25 +187,29 @@ async fn enroll_or_reuse(cfg: &WsHostConfig) -> Result<EnrolledHost, String> {
                                 file.public_id,
                                 cfg.creds_path.display()
                             );
+                            refresh_ok = true;
                         }
                         Err(e) => {
                             eprintln!(
-                                "ws-host: token refresh failed ({e}); using stored access token"
+                                "ws-host: token refresh failed ({e}); registering a new device \
+                                 (in-memory servers forget devices on restart)"
                             );
                         }
                     }
                 }
-                println!(
-                    "ws-host: loaded public_id={} from {} (viewer: --host {})",
-                    file.public_id,
-                    cfg.creds_path.display(),
-                    file.public_id
-                );
-                return Ok(EnrolledHost {
-                    public_id: file.public_id,
-                    access_token: file.access_token,
-                    refresh_token: Some(file.refresh_token),
-                });
+                if refresh_ok {
+                    println!(
+                        "ws-host: loaded public_id={} from {} (viewer: --host {})",
+                        file.public_id,
+                        cfg.creds_path.display(),
+                        file.public_id
+                    );
+                    return Ok(EnrolledHost {
+                        public_id: file.public_id,
+                        access_token: file.access_token,
+                        refresh_token: Some(file.refresh_token),
+                    });
+                }
             }
             Err(e) => {
                 eprintln!(
