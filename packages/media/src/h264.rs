@@ -244,8 +244,8 @@ impl MockSoftwareEncoder {
 }
 
 /// Max preview stored in a mock AU (RGB24). Larger captures are downscaled.
-const MAX_PREVIEW_WIDTH: u32 = 960;
-const MAX_PREVIEW_HEIGHT: u32 = 540;
+const MAX_PREVIEW_WIDTH: u32 = 1280;
+const MAX_PREVIEW_HEIGHT: u32 = 720;
 
 struct PreviewSample {
     width: u32,
@@ -274,46 +274,69 @@ fn preview_pixels(frame: &VideoFrame) -> PreviewSample {
         .min(1.0);
     let dw = ((frame.width as f32) * scale).round().max(1.0) as u32;
     let dh = ((frame.height as f32) * scale).round().max(1.0) as u32;
-    let mut pixels = vec![0u8; dw as usize * dh as usize * 3];
-    for y in 0..dh as usize {
-        let sy = (y as u32 * frame.height / dh) as usize;
-        for x in 0..dw as usize {
-            let sx = (x as u32 * frame.width / dw) as usize;
-            let si = (sy * frame.width as usize + sx) * src_bpp;
-            let di = (y * dw as usize + x) * 3;
-            if si + src_bpp <= frame.data.len() {
-                match frame.format {
-                    PixelFormat::Rgb24 => {
-                        pixels[di] = frame.data[si];
-                        pixels[di + 1] = frame.data[si + 1];
-                        pixels[di + 2] = frame.data[si + 2];
-                    }
-                    PixelFormat::Rgba8 => {
-                        pixels[di] = frame.data[si];
-                        pixels[di + 1] = frame.data[si + 1];
-                        pixels[di + 2] = frame.data[si + 2];
-                    }
-                    PixelFormat::Bgra8 => {
-                        pixels[di] = frame.data[si + 2];
-                        pixels[di + 1] = frame.data[si + 1];
-                        pixels[di + 2] = frame.data[si];
-                    }
-                    PixelFormat::Gray8 => {
-                        let g = frame.data[si];
-                        pixels[di] = g;
-                        pixels[di + 1] = g;
-                        pixels[di + 2] = g;
-                    }
-                }
-            }
-        }
-    }
+    let pixels = box_downscale_rgb(frame, dw, dh, src_bpp);
     PreviewSample {
         width: dw,
         height: dh,
         bpp: 3,
         pixels,
     }
+}
+
+fn pixel_rgb(frame: &VideoFrame, sx: usize, sy: usize, src_bpp: usize) -> [u32; 3] {
+    let si = (sy * frame.width as usize + sx) * src_bpp;
+    if si + src_bpp > frame.data.len() {
+        return [0, 0, 0];
+    }
+    match frame.format {
+        PixelFormat::Rgb24 | PixelFormat::Rgba8 => [
+            frame.data[si] as u32,
+            frame.data[si + 1] as u32,
+            frame.data[si + 2] as u32,
+        ],
+        PixelFormat::Bgra8 => [
+            frame.data[si + 2] as u32,
+            frame.data[si + 1] as u32,
+            frame.data[si] as u32,
+        ],
+        PixelFormat::Gray8 => {
+            let g = frame.data[si] as u32;
+            [g, g, g]
+        }
+    }
+}
+
+/// Average each destination pixel over its source rectangle (less blocky than nearest).
+fn box_downscale_rgb(frame: &VideoFrame, dw: u32, dh: u32, src_bpp: usize) -> Vec<u8> {
+    let sw = frame.width.max(1);
+    let sh = frame.height.max(1);
+    let mut pixels = vec![0u8; dw as usize * dh as usize * 3];
+    for y in 0..dh {
+        let sy0 = (y as u64 * sh as u64 / dh as u64) as usize;
+        let sy1 = (((y as u64 + 1) * sh as u64 / dh as u64) as usize).max(sy0 + 1);
+        for x in 0..dw {
+            let sx0 = (x as u64 * sw as u64 / dw as u64) as usize;
+            let sx1 = (((x as u64 + 1) * sw as u64 / dw as u64) as usize).max(sx0 + 1);
+            let mut acc = [0u32; 3];
+            let mut n = 0u32;
+            for sy in sy0..sy1.min(sh as usize) {
+                for sx in sx0..sx1.min(sw as usize) {
+                    let p = pixel_rgb(frame, sx, sy, src_bpp);
+                    acc[0] += p[0];
+                    acc[1] += p[1];
+                    acc[2] += p[2];
+                    n += 1;
+                }
+            }
+            let di = (y as usize * dw as usize + x as usize) * 3;
+            if n > 0 {
+                pixels[di] = (acc[0] / n) as u8;
+                pixels[di + 1] = (acc[1] / n) as u8;
+                pixels[di + 2] = (acc[2] / n) as u8;
+            }
+        }
+    }
+    pixels
 }
 
 impl H264Encoder for MockSoftwareEncoder {

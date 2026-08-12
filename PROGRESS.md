@@ -142,4 +142,9 @@ Plan PRs 1–27 done.
 - Host remints a fresh OTP after each live hangup
 - Product default signaling port is **18080** (server + desktop + host + lab-start)
 
+**2026-08-12 (live picture quality):**
+- Mock preview is 1280×720 with box-filter downscale (was 960×540 nearest-neighbor)
+- Desktop session window fills the view (no 480px height cap); mouse coords are 0..1
+- Host logs `video=` capture backend so DXGI vs mock is visible
+
 **Optional (post-core):** Authenticode EV signing, NVENC SDK, webrtc multi-process e2e.

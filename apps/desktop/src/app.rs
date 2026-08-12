@@ -261,9 +261,11 @@ impl RemoteLinkApp {
                         );
                         let avail = ui.available_size();
                         let aspect = w as f32 / h.max(1) as f32;
-                        let mut size = egui::vec2(avail.x.max(320.0), avail.x.max(320.0) / aspect);
-                        if size.y > 480.0 {
-                            size = egui::vec2(480.0 * aspect, 480.0);
+                        let max_w = avail.x.max(320.0);
+                        let max_h = (avail.y - 8.0).max(240.0);
+                        let mut size = egui::vec2(max_w, max_w / aspect);
+                        if size.y > max_h {
+                            size = egui::vec2(max_h * aspect, max_h);
                         }
                         let response = ui.add(
                             egui::Image::new((tex.id(), size)).sense(egui::Sense::click_and_drag()),
@@ -293,8 +295,9 @@ impl RemoteLinkApp {
         let rect = response.rect;
         let pointer = ctx.input(|i| i.pointer.hover_pos());
         if let Some(pos) = pointer.filter(|_| response.hovered()) {
-            let px = ((pos.x - rect.min.x) / size.x * size.x).clamp(0.0, size.x);
-            let py = ((pos.y - rect.min.y) / size.y * size.y).clamp(0.0, size.y);
+            // UNIT capture rect: send normalized 0..1 (pixel coords were clamped to 1).
+            let px = ((pos.x - rect.min.x) / size.x).clamp(0.0, 1.0);
+            let py = ((pos.y - rect.min.y) / size.y).clamp(0.0, 1.0);
             worker.send_input(RawInput::MouseMove { px, py });
             if ctx.input(|i| i.pointer.primary_pressed()) {
                 worker.send_input(RawInput::MouseButton {
@@ -412,7 +415,7 @@ impl eframe::App for RemoteLinkApp {
         });
 
         if self.viewer.is_some() {
-            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(980.0, 720.0)));
+            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(1280.0, 860.0)));
         }
 
         egui::CentralPanel::default().show(ctx, |ui| {

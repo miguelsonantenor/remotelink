@@ -399,12 +399,17 @@ async fn handle_one_session_local(
         if video_frames == 0 {
             eprintln!("ws-host: live capture open failed ({e}); falling back to mock desktop");
             mgr.set_video_kind(VideoCaptureKind::WindowsMock);
-            mgr.set_synthetic_geometry(960, 540, 15);
+            mgr.set_synthetic_geometry(1280, 720, 20);
             mgr.start_media()
                 .map_err(|e| format!("start_media (mock fallback): {e}"))?;
         } else {
             return Err(format!("start_media: {e}"));
         }
+    }
+    if video_frames == 0 {
+        let (v, a) = mgr.capture_backends().unwrap_or(("?", "?"));
+        let enc = mgr.encode_backend().unwrap_or("?");
+        println!("ws-host: live capture video={v} audio={a} encode={enc}");
     }
 
     let outbound = mgr.take_outbound_signals();
@@ -931,7 +936,7 @@ fn configure_session_media(mgr: &mut SessionManager, live: bool) {
         return;
     }
     mgr.set_force_software(true);
-    mgr.set_synthetic_geometry(960, 540, 15);
+    mgr.set_synthetic_geometry(1280, 720, 20);
     let _ = mgr.set_injector_config(InjectorConfig::default());
     if cfg!(windows) {
         mgr.set_video_kind(VideoCaptureKind::WindowsDxgi);

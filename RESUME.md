@@ -59,6 +59,7 @@ Remote still has older core release (`v0.1.0` portable zip **without** product s
 | **Phase 3 live window** | **DONE** (session stays open; Disconnect hangs up) |
 | **Live Mode A identity** | **DONE** (OTP bind + remint; input gated until bound) |
 | **Lab default port** | **`127.0.0.1:18080`** |
+| **Live picture** | 1280×720 preview + larger window; DXGI logged |
 | Shippable artifact | Portable zip (`scripts/package-release.ps1`) — rebuild to include app |
 | MSI | Optional via WiX — unsigned until codesign |
 
