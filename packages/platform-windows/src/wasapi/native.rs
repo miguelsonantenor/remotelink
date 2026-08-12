@@ -435,7 +435,7 @@ impl AudioSource for NativeLoopbackCapture {
                 return Ok(Some(frame));
             }
             // No full packet yet — brief spin of empty pulls is idle.
-            return Ok(None);
+            Ok(None)
         }
         #[cfg(not(windows))]
         {

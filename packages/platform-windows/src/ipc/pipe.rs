@@ -216,13 +216,10 @@ fn create_server_instance(path: &str, first_instance: bool) -> io::Result<*mut c
     };
     if handle as isize == INVALID_HANDLE_VALUE {
         let err = unsafe { GetLastError() };
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!(
-                "CreateNamedPipeW({path}) failed: Win32 error {err} \
-                 (is another process holding the first instance?)"
-            ),
-        ));
+        return Err(io::Error::other(format!(
+            "CreateNamedPipeW({path}) failed: Win32 error {err} \
+             (is another process holding the first instance?)"
+        )));
     }
     // Keep SD alive until CreateNamedPipeW returns — drop here is fine.
     drop(sd);
@@ -293,10 +290,8 @@ impl NamedPipeListener {
 
         // Prepare next instance so a subsequent client can connect while we
         // serve the current one (classic Windows multi-instance pattern).
-        self.pending = match create_server_instance(&self.path, false) {
-            Ok(h) => Some(h),
-            Err(_) => None, // best-effort; accept will recreate later
-        };
+        // Best-effort; accept will recreate later if this fails.
+        self.pending = create_server_instance(&self.path, false).ok();
 
         Ok(handle_to_file(handle))
     }
@@ -361,7 +356,7 @@ fn duration_to_ms(d: Option<Duration>) -> u32 {
 
 fn get_comm_timeouts(file: &File) -> io::Result<CommTimeouts> {
     use std::os::windows::io::AsRawHandle;
-    let handle = file.as_raw_handle() as *mut core::ffi::c_void;
+    let handle = file.as_raw_handle();
     let mut timeouts = CommTimeouts {
         read_interval_timeout: 0,
         read_total_timeout_multiplier: 0,
@@ -380,7 +375,7 @@ fn get_comm_timeouts(file: &File) -> io::Result<CommTimeouts> {
 /// Set **read** total timeout on a pipe `File` (preserves write timeout).
 pub fn set_pipe_read_timeout(file: &File, read: Option<Duration>) -> io::Result<()> {
     use std::os::windows::io::AsRawHandle;
-    let handle = file.as_raw_handle() as *mut core::ffi::c_void;
+    let handle = file.as_raw_handle();
     let mut timeouts = get_comm_timeouts(file)?;
     timeouts.read_interval_timeout = 0;
     timeouts.read_total_timeout_multiplier = 0;
@@ -397,7 +392,7 @@ pub fn set_pipe_read_timeout(file: &File, read: Option<Duration>) -> io::Result<
 /// Set **write** total timeout on a pipe `File` (preserves read timeout).
 pub fn set_pipe_write_timeout(file: &File, write: Option<Duration>) -> io::Result<()> {
     use std::os::windows::io::AsRawHandle;
-    let handle = file.as_raw_handle() as *mut core::ffi::c_void;
+    let handle = file.as_raw_handle();
     let mut timeouts = get_comm_timeouts(file)?;
     timeouts.write_total_timeout_multiplier = 0;
     timeouts.write_total_timeout_constant = duration_to_ms(write);
@@ -413,7 +408,7 @@ pub fn set_pipe_write_timeout(file: &File, write: Option<Duration>) -> io::Resul
 /// Flush pipe buffers (best-effort after framed writes).
 pub fn flush_pipe(file: &File) -> io::Result<()> {
     use std::os::windows::io::AsRawHandle;
-    let handle = file.as_raw_handle() as *mut core::ffi::c_void;
+    let handle = file.as_raw_handle();
     let ok = unsafe { FlushFileBuffers(handle) };
     if ok == 0 {
         return Err(io::Error::from_raw_os_error(

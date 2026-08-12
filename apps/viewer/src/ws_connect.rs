@@ -65,7 +65,7 @@ pub async fn run_ws_viewer(cfg: WsViewerConfig) -> Result<String, String> {
         .map_err(|e| format!("hello: {e}"))?;
     println!("ws-viewer: hello_ok");
 
-    let session_id = format!("viewer-{}", &uuid_like());
+    let session_id = format!("viewer-{}", uuid_like());
     let intent_seq = sig.take_seq();
     let req = ConnectRequest::otp(&cfg.host_public_id, &cfg.otp);
     let intent = req

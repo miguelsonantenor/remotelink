@@ -526,7 +526,7 @@ pub fn run_ipc_colocate_demo(session_id: &str) -> Result<String, String> {
 
     // Answer SignalForward triggers agent-side pump_media (serve_agent_connection).
     client.close();
-    let _ = agent_thread
+    agent_thread
         .join()
         .map_err(|_| "agent thread panic".to_string())??;
 

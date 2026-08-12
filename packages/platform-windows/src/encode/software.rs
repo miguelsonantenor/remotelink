@@ -210,11 +210,9 @@ fn box_downscale_rgb(frame: &VideoFrame, dw: u32, dh: u32, src_bpp: usize) -> Ve
                 }
             }
             let di = (y as usize * dw as usize + x as usize) * 3;
-            if n > 0 {
-                pixels[di] = (acc[0] / n) as u8;
-                pixels[di + 1] = (acc[1] / n) as u8;
-                pixels[di + 2] = (acc[2] / n) as u8;
-            }
+            pixels[di] = acc[0].checked_div(n).unwrap_or(0) as u8;
+            pixels[di + 1] = acc[1].checked_div(n).unwrap_or(0) as u8;
+            pixels[di + 2] = acc[2].checked_div(n).unwrap_or(0) as u8;
         }
     }
     pixels

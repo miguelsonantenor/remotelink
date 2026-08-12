@@ -378,6 +378,7 @@ async fn accept_incoming_session(
 }
 
 /// Serve one session using an **in-process** SessionManager (legacy / single binary).
+#[allow(clippy::too_many_arguments)]
 async fn handle_one_session_local(
     sig: &mut SignalingClient,
     public_id: &str,
@@ -680,21 +681,21 @@ async fn handle_one_session_agent(
             }
             return Err("session ended from tray".into());
         }
-        if let Ok(msg) = sig.recv_timeout(Duration::from_millis(40)).await {
-            if let SignalMessage::IceCandidate { candidate, .. } = msg {
-                let payload = serde_json::to_string(&candidate).map_err(|e| e.to_string())?;
-                let (reply, more) = agent
-                    .request(&signal_to_agent(
-                        &session_id,
-                        signal_kind::ICE_CANDIDATE,
-                        &payload,
-                    ))
-                    .map_err(|e| format!("agent ice: {e}"))?;
-                if !matches!(reply, ControlMessage::Ack(_)) {
-                    return Err(format!("agent rejected ice: {reply:?}"));
-                }
-                forward_agent_ice_to_wss(sig, &session_id, &more).await?;
+        if let Ok(SignalMessage::IceCandidate { candidate, .. }) =
+            sig.recv_timeout(Duration::from_millis(40)).await
+        {
+            let payload = serde_json::to_string(&candidate).map_err(|e| e.to_string())?;
+            let (reply, more) = agent
+                .request(&signal_to_agent(
+                    &session_id,
+                    signal_kind::ICE_CANDIDATE,
+                    &payload,
+                ))
+                .map_err(|e| format!("agent ice: {e}"))?;
+            if !matches!(reply, ControlMessage::Ack(_)) {
+                return Err(format!("agent rejected ice: {reply:?}"));
             }
+            forward_agent_ice_to_wss(sig, &session_id, &more).await?;
         }
 
         let (stats_reply, more) = agent
@@ -915,14 +916,14 @@ async fn relay_offer_answer_ice_local(
                 .map_err(|e| format!("send host ice: {e}"))?;
             }
         }
-        if let Ok(msg) = sig.recv_timeout(Duration::from_millis(50)).await {
-            if let SignalMessage::IceCandidate { candidate, .. } = msg {
-                mgr.apply_signal(
-                    signal_kind::ICE_CANDIDATE,
-                    &serde_json::to_string(&candidate).map_err(|e| e.to_string())?,
-                )
-                .map_err(|e| format!("apply ice: {e}"))?;
-            }
+        if let Ok(SignalMessage::IceCandidate { candidate, .. }) =
+            sig.recv_timeout(Duration::from_millis(50)).await
+        {
+            mgr.apply_signal(
+                signal_kind::ICE_CANDIDATE,
+                &serde_json::to_string(&candidate).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| format!("apply ice: {e}"))?;
         }
         if mgr.connection_state() == remotelink_net::ConnectionState::Connected {
             break;
