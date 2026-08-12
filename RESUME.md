@@ -37,7 +37,7 @@ Remote still has older core release (`v0.1.0` portable zip **without** product s
 | Priority | Work |
 |----------|------|
 | **Phase 2** (user: when finished) | Hosted signaling + STUN/TURN (internet / NAT) |
-| **Phase 4** | MSI + Authenticode; auto-start; updates |
+| **Phase 4** | MSI + Authenticode; updates (auto-start done) |
 | Polish | Real H.264 decode (today: mock software encoder so pixels reconstruct) |
 
 ### Lab quirks on this machine
@@ -60,6 +60,7 @@ Remote still has older core release (`v0.1.0` portable zip **without** product s
 | **Live Mode A identity** | **DONE** (OTP bind + remint; input gated until bound) |
 | **Lab default port** | **`127.0.0.1:18080`** |
 | **Live picture** | 1280×720 preview + larger window; DXGI logged |
+| **Start with Windows** | HKCU Run + `--autostart` (minimized host) |
 | Shippable artifact | Portable zip (`scripts/package-release.ps1`) — rebuild to include app |
 | MSI | Optional via WiX — unsigned until codesign |
 

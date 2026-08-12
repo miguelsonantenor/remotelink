@@ -17,6 +17,9 @@ pub struct AppConfig {
     pub display_name: String,
     /// Start host service when the app opens.
     pub auto_start_host: bool,
+    /// Register this app in the current-user Windows startup list.
+    #[serde(default)]
+    pub start_with_windows: bool,
     /// Transport mode string: live | webrtc | mock.
     pub transport: String,
     /// Recent remote host IDs (most recent first).
@@ -32,6 +35,7 @@ impl Default for AppConfig {
                 .unwrap_or_else(|| DEFAULT_SERVER.into()),
             display_name: hostname_guess(),
             auto_start_host: true,
+            start_with_windows: false,
             transport: "live".into(),
             recent_hosts: Vec::new(),
         }

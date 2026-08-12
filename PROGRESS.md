@@ -147,4 +147,9 @@ Plan PRs 1–27 done.
 - Desktop session window fills the view (no 480px height cap); mouse coords are 0..1
 - Host logs `video=` capture backend so DXGI vs mock is visible
 
+**2026-08-12 (Start with Windows):**
+- Advanced checkbox writes HKCU Run → `remotelink-app --autostart`
+- Login launch starts minimized with host allowed
+- Portable install `-Startup`; uninstall removes the Run key
+
 **Optional (post-core):** Authenticode EV signing, NVENC SDK, webrtc multi-process e2e.

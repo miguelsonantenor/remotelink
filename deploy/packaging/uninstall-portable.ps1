@@ -13,6 +13,8 @@ if (-not $InstallDir) {
     $InstallDir = Join-Path $env:LOCALAPPDATA "RemoteLink"
 }
 
+reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v RemoteLink /f 2>$null | Out-Null
+
 $programs = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\RemoteLink"
 if (Test-Path $programs) {
     Remove-Item -Recurse -Force $programs

@@ -12,6 +12,7 @@
 mod app;
 mod config;
 mod host_worker;
+mod startup;
 mod status;
 mod viewer_worker;
 
@@ -27,6 +28,10 @@ fn main() {
     // Optional: --server= overrides config for this run only (not persisted until Save).
     if let Some(server) = flag_value(&args, "--server") {
         std::env::set_var("REMOTELINK_SERVER", server);
+    }
+    let autostart = args.iter().any(|a| a == "--autostart");
+    if autostart {
+        std::env::set_var("REMOTELINK_AUTOSTART", "1");
     }
 
     let options = eframe::NativeOptions {
@@ -51,11 +56,11 @@ fn print_help() {
     eprintln!(
         "remotelink-app {} — product shell (Phase 3 live session)\n\n\
          Usage:\n  \
-         remotelink-app [--server=http://HOST:PORT]\n\n\
+         remotelink-app [--server=http://HOST:PORT] [--autostart]\n\n\
          Home screen:\n  \
          • This PC — public ID + OTP when host is enrolled\n  \
          • Connect — remote ID + OTP; live remote-desktop window stays open\n  \
-         • Advanced — signaling URL, transport, data folder\n\n\
+         • Advanced — signaling URL, transport, Start with Windows, data folder\n\n\
          Lab:\n  \
          1. remotelink-server\n  \
          2. remotelink-app   (Allow remote access)\n  \

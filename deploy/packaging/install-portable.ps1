@@ -6,7 +6,8 @@
 [CmdletBinding()]
 param(
     [string]$InstallDir = "",
-    [switch]$NoStartMenu
+    [switch]$NoStartMenu,
+    [switch]$Startup
 )
 
 $ErrorActionPreference = "Stop"
@@ -37,7 +38,7 @@ if (-not $NoStartMenu) {
     $ws = New-Object -ComObject WScript.Shell
     foreach ($pair in @(
             @{ Name = "RemoteLink"; Target = "remotelink-app.exe"; Args = "" },
-            @{ Name = "RemoteLink Host (CLI)"; Target = "remotelink-host.exe"; Args = "--role=service --server=http://127.0.0.1:8080 --transport=live" },
+            @{ Name = "RemoteLink Host (CLI)"; Target = "remotelink-host.exe"; Args = "--role=service --server=http://127.0.0.1:18080 --transport=live" },
             @{ Name = "RemoteLink Viewer (CLI)"; Target = "remotelink-viewer.exe"; Args = "--help" },
             @{ Name = "RemoteLink Server"; Target = "remotelink-server.exe"; Args = "" }
         )) {
@@ -50,6 +51,15 @@ if (-not $NoStartMenu) {
         $lnk.Save()
     }
     Write-Host "Start Menu: $programs"
+}
+
+if ($Startup) {
+    $appExe = Join-Path $InstallDir "bin\remotelink-app.exe"
+    if (Test-Path $appExe) {
+        $run = "`"$appExe`" --autostart"
+        reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v RemoteLink /t REG_SZ /d $run /f | Out-Null
+        Write-Host "Start with Windows: $run"
+    }
 }
 
 Write-Host "Done. See QUICKSTART.md in $InstallDir"

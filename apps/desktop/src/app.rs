@@ -5,6 +5,7 @@ use std::str::FromStr;
 use eframe::egui;
 
 use crate::config::{ensure_parent, AppConfig};
+use crate::startup;
 use crate::host_worker::HostWorker;
 use crate::status::{read_status, status_age_secs, HostStatusSnapshot};
 use crate::viewer_worker::ViewerWorker;
@@ -29,6 +30,7 @@ pub struct RemoteLinkApp {
     host_error: Option<String>,
     footer_note: String,
     last_status_poll: f64,
+    minimize_on_start: bool,
 }
 
 impl RemoteLinkApp {
@@ -39,7 +41,18 @@ impl RemoteLinkApp {
         style.spacing.item_spacing = egui::vec2(8.0, 6.0);
         cc.egui_ctx.set_style(style);
 
-        let config = AppConfig::load();
+        let mut config = AppConfig::load();
+        let login_start = std::env::var("REMOTELINK_AUTOSTART")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        if login_start {
+            config.auto_start_host = true;
+        }
+        if config.start_with_windows {
+            if let Err(e) = startup::apply(true) {
+                eprintln!("remotelink-app: refresh Start with Windows: {e}");
+            }
+        }
         let allow_access = config.auto_start_host;
         let mut app = Self {
             config,
@@ -53,10 +66,12 @@ impl RemoteLinkApp {
             host_status: HostStatusSnapshot::default(),
             host_error: None,
             footer_note: format!(
-                "RemoteLink {} · live session (Phase 3)",
-                remotelink_common::VERSION
+                "RemoteLink {} · live session{}",
+                remotelink_common::VERSION,
+                if login_start { " · started at login" } else { "" }
             ),
             last_status_poll: 0.0,
+            minimize_on_start: login_start,
         };
         if allow_access {
             app.start_host();
@@ -382,6 +397,10 @@ impl RemoteLinkApp {
 
 impl eframe::App for RemoteLinkApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if self.minimize_on_start {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+            self.minimize_on_start = false;
+        }
         self.poll_host_status(ctx);
         self.poll_viewer();
 
@@ -676,16 +695,43 @@ impl eframe::App for RemoteLinkApp {
                             &mut self.config.auto_start_host,
                             "Auto-start host when app opens",
                         );
+                        let mut start_win = self.config.start_with_windows;
+                        if ui
+                            .checkbox(&mut start_win, "Start with Windows")
+                            .on_hover_text(
+                                "Launch RemoteLink at login (minimized) and allow remote access.",
+                            )
+                            .changed()
+                        {
+                            match startup::apply(start_win) {
+                                Ok(()) => {
+                                    self.config.start_with_windows = start_win;
+                                    let _ = self.config.save();
+                                    self.footer_note = if start_win {
+                                        "Start with Windows enabled.".into()
+                                    } else {
+                                        "Start with Windows disabled.".into()
+                                    };
+                                }
+                                Err(e) => {
+                                    self.footer_note = e;
+                                }
+                            }
+                        }
                         ui.horizontal(|ui| {
                             if ui.button("Save settings").clicked() {
-                                match self.config.save() {
-                                    Ok(()) => {
-                                        self.footer_note = format!(
-                                            "Saved {}",
-                                            AppConfig::config_path().display()
-                                        );
+                                if let Err(e) = startup::apply(self.config.start_with_windows) {
+                                    self.footer_note = e;
+                                } else {
+                                    match self.config.save() {
+                                        Ok(()) => {
+                                            self.footer_note = format!(
+                                                "Saved {}",
+                                                AppConfig::config_path().display()
+                                            );
+                                        }
+                                        Err(e) => self.footer_note = e,
                                     }
-                                    Err(e) => self.footer_note = e,
                                 }
                             }
                             if ui.button("Open data folder").clicked() {
