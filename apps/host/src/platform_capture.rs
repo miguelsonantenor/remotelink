@@ -122,8 +122,6 @@ impl HostVideoSource {
             Self::Windows(remotelink_platform_windows::DisplayCapture::Mock(_)) => "windows-mock",
             #[cfg(windows)]
             Self::Windows(remotelink_platform_windows::DisplayCapture::Dxgi(_)) => "dxgi",
-            #[cfg(not(windows))]
-            Self::Windows(_) => "windows",
         }
     }
 }

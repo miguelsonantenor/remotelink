@@ -6,6 +6,8 @@
 //! G9: service-owned session indicator + local kill-switch.
 
 #![deny(missing_docs)]
+// Windows-only tray/capture helpers are compiled on Linux CI but not called.
+#![cfg_attr(not(windows), allow(dead_code))]
 
 pub mod agent;
 pub mod chrome;

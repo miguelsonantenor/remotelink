@@ -52,6 +52,7 @@ impl TrayCommands {
         self.copy_otp_ok.load(Ordering::SeqCst)
     }
 
+    #[cfg(windows)]
     fn note_copy_otp_ok(&self) {
         self.copy_otp_ok.fetch_add(1, Ordering::SeqCst);
     }
