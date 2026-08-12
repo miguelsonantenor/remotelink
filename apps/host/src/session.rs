@@ -918,11 +918,15 @@ impl SessionManager {
         for _ in 0..video_frames {
             for _ in 0..3 {
                 let media = self.media.as_mut().expect("media checked");
-                let frame = media
+                let Some(frame) = media
                     .audio
                     .next_frame()
                     .map_err(|e| SessionError::Media(e.to_string()))?
-                    .ok_or_else(|| SessionError::Media("audio source ended".into()))?;
+                else {
+                    // Native WASAPI returns None when a 10 ms packet is not
+                    // ready yet (silence / still filling). Keep pumping video.
+                    continue;
+                };
                 let opus = media
                     .opus
                     .encode(&frame)

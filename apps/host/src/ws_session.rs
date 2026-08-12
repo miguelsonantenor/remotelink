@@ -1004,7 +1004,7 @@ async fn drive_local_media(
             }
             Err(e) => {
                 let msg = e.to_string();
-                if msg.contains("idle") {
+                if msg.contains("idle") || msg.contains("audio source ended") {
                     tokio::time::sleep(Duration::from_millis(16)).await;
                     continue;
                 }
