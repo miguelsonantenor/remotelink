@@ -9,6 +9,8 @@
 //! automatically when “Allow remote access” is on; OTP and public ID appear
 //! on the home screen.
 
+#![cfg_attr(not(windows), allow(dead_code, unused_imports))]
+
 mod app;
 mod config;
 mod host_worker;

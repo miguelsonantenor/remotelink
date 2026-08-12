@@ -1,14 +1,18 @@
 //! User-login auto-start (Windows HKCU Run key).
 
 use std::path::{Path, PathBuf};
+#[cfg(windows)]
 use std::process::Command;
 
 /// Registry value name under the current-user Run key.
+#[cfg(windows)]
 pub const RUN_VALUE_NAME: &str = "RemoteLink";
 
+#[cfg(windows)]
 const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
 
 /// Command line written to the Run key: quoted exe + `--autostart`.
+#[cfg(windows)]
 pub fn run_command_line(exe: &Path) -> String {
     format!("\"{}\" --autostart", exe.display())
 }
@@ -105,7 +109,7 @@ pub fn apply(enabled: bool) -> Result<(), String> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 mod tests {
     use super::*;
     use std::path::PathBuf;
